@@ -306,6 +306,26 @@ const ticketView = (id) => {
   return row ? { ...row, reports: [], threads: [], runs: [], sessionId: `ticket-${id}`, ...(TICKET_DETAIL[id] ?? {}) } : null;
 };
 const TICKET_AFTER = { stop: 'stopped', retry: 'working', close: 'done' };
+// The person's requests (Bots 0.11), as GET /needs lists them.
+const NEEDS = [
+  { id: 'nwaiting1', title: 'A logo for the launch', status: 'waiting', done: 0, total: 1, waiting: ['tquestion'], bots: ['bot-b'], via: 'telegram', who: 'Kada', asked: 'Make us a logo', latest: { status: 'question', at: Date.now() - 2 * MIN, botId: 'bot-b', ticket: 'tquestion', preview: 'Blue or green?' }, createdAt: Date.now() - 50 * MIN, updatedAt: Date.now() - 2 * MIN },
+  { id: 'nworking1', title: 'Q3 competitor pricing table', status: 'working', done: 1, total: 3, failed: 1, bots: ['bot-b', 'bot-c'], via: 'panel', asked: 'Compare Q3 pricing', latest: { status: 'progress', at: Date.now() - 5 * MIN, botId: 'bot-c', ticket: 'tworking1', preview: 'Europe half done' }, createdAt: Date.now() - 90 * MIN, updatedAt: Date.now() - 5 * MIN },
+  { id: 'ndone0001', title: 'Weekly numbers', status: 'done', done: 1, total: 1, bots: ['bot-b'], via: 'panel', createdAt: Date.now() - 200 * MIN, updatedAt: Date.now() - 60 * MIN, endedAt: Date.now() - 60 * MIN, latest: { status: 'done', at: Date.now() - 60 * MIN, botId: 'bot-b', ticket: 'tdone0001', preview: 'Revenue up 12%' } },
+  { id: 'nstopped1', title: 'Old idea', status: 'stopped', done: 0, total: 1, bots: ['bot-c'], createdAt: Date.now() - 400 * MIN, updatedAt: Date.now() - 300 * MIN, closed: { at: Date.now() - 300 * MIN, by: 'user' } },
+];
+const NEED_DETAIL = {
+  nwaiting1: {
+    auto: true,
+    asks: [{ id: 'm1', at: Date.now() - 50 * MIN, text: 'Make us a logo' }, { id: 'm2', at: Date.now() - 40 * MIN, text: 'Something calm, please' }],
+    results: [],
+    tickets: [TICKETS[1]],
+  },
+  ndone0001: { asks: [{ at: Date.now() - 200 * MIN, text: 'How did we do this week?' }], results: [{ at: Date.now() - 60 * MIN, botId: 'bot-b', ticket: 'tdone0001', text: 'Revenue up **12%**.' }], tickets: [TICKETS[5]] },
+};
+const needView = (id) => {
+  const row = NEEDS.find((r) => r.id === id);
+  return row ? { asks: [], results: [], tickets: [], ...row, ...(NEED_DETAIL[id] ?? {}) } : null;
+};
 
 function mockFetch(posts = []) {
   globalThis.fetch = async (url, init) => {
@@ -321,6 +341,11 @@ function mockFetch(posts = []) {
       if (path.endsWith('/skills/write')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-b' }) };
       if (path.endsWith('/apps/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.names }) };
       if (path.endsWith('/save')) return { ok: true, json: async () => ({ ok: true, bot: { ...BOTS[0], ...body.bot, id: body.bot.id ?? 'bot-new' } }) };
+      const needAct = /^\/__dsh_bots\/needs\/([^/]+)\/(rename|drop)$/.exec(path);
+      if (needAct) {
+        const view = needView(decodeURIComponent(needAct[1]));
+        return { ok: true, json: async () => ({ ok: true, ...view, ...(needAct[2] === 'drop' ? { status: 'stopped' } : { title: body.title }) }) };
+      }
       const act = /^\/__dsh_bots\/tickets\/([^/]+)\/(stop|retry|close|message)$/.exec(path);
       if (act) {
         const view = ticketView(decodeURIComponent(act[1]));
@@ -329,6 +354,11 @@ function mockFetch(posts = []) {
       }
       return { ok: true, json: async () => ({ ok: true }) };
     }
+    if (path.startsWith('/__dsh_bots/needs/')) {
+      const view = needView(decodeURIComponent(path.slice('/__dsh_bots/needs/'.length).split('?')[0]));
+      return view ? { ok: true, json: async () => view } : { ok: false, status: 404, json: async () => null };
+    }
+    if (path.startsWith('/__dsh_bots/needs')) return { ok: true, json: async () => ({ items: NEEDS, next_offset: null }) };
     if (path.startsWith('/__dsh_bots/tickets/')) {
       const view = ticketView(decodeURIComponent(path.slice('/__dsh_bots/tickets/'.length).split('?')[0]));
       return view ? { ok: true, json: async () => view } : { ok: false, status: 404, json: async () => null };
@@ -1770,28 +1800,98 @@ test('tasks: a bot page lists its open tasks and links to all of them', async ()
   });
 });
 
-test('the dispatcher: How it works saves the team setting, and a router gets the light-model hint', async () => {
-  const v = await openTab('profile', 'bot-a');
-  const modes = () => findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-modes'])[0];
-  assert.equal(modes().props['data-dsh-bots-dispatcher-modes'], 'router', 'router unless the settings say otherwise');
-  assert.equal(modes().props.role, 'radiogroup');
-  const radio = (id) => findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-mode'] === id)[0];
-  assert.equal(radio('router').props['aria-checked'], true);
-  assert.match(collect(modes()).join(' '), /Understands, hands out, reports/);
-  assert.match(collect(modes()).join(' '), /Also does small things itself/);
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 1);
-  assert.match(collect(v.tree).join(' '), /a light, fast model is enough/);
-  radio('hands-on').props.onClick();
+test('requests: the rail counts what waits for you; the board groups the person\'s requests and keeps dropped ones folded', async () => {
+  await withTaskState({ state: { needs: { waiting: 1, working: 1 } } }, async () => {
+    const v = await openView('data-dsh-bots-needs-entry');
+    const entry = findAll(v.tree, (n) => n.props['data-dsh-bots-needs-entry'])[0];
+    assert.match(collect(entry).join(' '), /Requests .*1 waiting for you/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-needs-badge'] !== undefined)[0].props['data-dsh-bots-needs-badge'], 1);
+    assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-needs']).length === 1, 'the board is shown');
+    const groups = findAll(v.tree, (n) => n.props['data-dsh-bots-need-group']).map((n) => [n.props['data-dsh-bots-need-group'], findAll(n, (x) => x.props['data-dsh-bots-need']).map((x) => x.props['data-dsh-bots-need'])]);
+    assert.deepEqual(groups, [
+      ['needs', ['nwaiting1']],
+      ['working', ['nworking1']],
+      ['done', ['ndone0001']],
+      ['stopped', []],
+    ]);
+    const text = collect(v.tree).join(' ');
+    assert.equal(collect(findAll(v.tree, (n) => n.props["data-dsh-bots-needs-week"])[0]).join(""), "This week: 4 requests · 1 done · 1 in progress · 1 waiting for you");
+    const waiting = collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nwaiting1')[0]).join(' ');
+    assert.match(waiting, /A logo for the launch/);
+    assert.match(waiting, /Waiting for you/);
+    assert.match(waiting, /Telegram · Kada/);
+    assert.match(waiting, /Blue or green\?/);
+    const working = collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nworking1')[0]).join(' ');
+    assert.match(working, /1\/3 done/);
+    assert.match(working, /Bob、Cy|Bob、/);
+    assert.match(working, /1 of its tasks did not get done/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-need-stalled'] !== undefined).length, 0, 'nothing stuck here');
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'ndone0001')[0]).join(' '), /delivered 1 h ago/);
+    // Dropped ones fold away until asked for.
+    click(v.tree, 'data-dsh-bots-needs-stopped');
+    await v.rerender(1);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nstopped1').length, 1);
+    // The tasks stay one click away.
+    click(v.tree, 'data-dsh-bots-needs-tasks');
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-tasks']).length, 1);
+    v.hooks.runCleanups();
+  });
+});
+
+test('requests: one request shows your words, the question waiting for you, what was delivered and its tasks; rename and drop post to their routes', async () => {
+  const v = await openView('data-dsh-bots-needs-entry');
+  click(v.tree, 'data-dsh-bots-need', 'nwaiting1');
   await v.rerender();
-  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/settings')).body, { patch: { dispatcher: 'hands-on' } });
-  assert.equal(modes().props['data-dsh-bots-dispatcher-modes'], 'hands-on');
-  assert.equal(radio('hands-on').props['aria-checked'], true);
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0, 'no hint for a hands-on dispatcher');
-  assert.match(collect(v.tree).join(' '), /Ada does small things itself again\./);
+  const detail = () => findAll(v.tree, (n) => n.props['data-dsh-bots-need-detail'] === 'nwaiting1')[0];
+  assert.ok(detail());
+  const text = collect(detail()).join(' ');
+  assert.match(text, /A logo for the launch/);
+  assert.match(text, /Titled with your own words/);
+  assert.match(text, /What you said .*Make us a logo .*Something calm, please/);
+  assert.match(text, /Bob asks:/);
+  assert.match(text, /Nothing delivered yet\./);
+  assert.match(text, /The tasks behind it \(1\)/);
+  assert.equal(findAll(detail(), (n) => n.props['data-dsh-bots-task'] === 'tquestion').length, 1);
+  // Rename: an input, then the route.
+  click(v.tree, 'data-dsh-bots-need-rename', 'nwaiting1');
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-title-input'])[0].props.onChange({ target: { value: 'Launch logo, calm colours' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-need-title-save');
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/needs/nwaiting1/rename')).body, { title: 'Launch logo, calm colours' });
+  // Drop: confirmed first.
+  click(v.tree, 'data-dsh-bots-need-drop', 'nwaiting1');
+  await v.rerender(1);
+  assert.match(collect(v.tree).join(' '), /Drop “A logo for the launch”\?/);
+  confirmButton(v.tree).props.onClick();
+  await v.rerender();
+  assert.ok(v.posts.some((p) => p.path.endsWith('/needs/nwaiting1/drop')));
+  // Answer: to the task that asks, in the Tasks view.
+  click(v.tree, 'data-dsh-bots-need-answer', 'tquestion');
+  await v.rerender();
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tquestion').length, 1);
   v.hooks.runCleanups();
-  // Only the dispatcher has it.
+  // A delivered one shows the result.
+  const w = await openView('data-dsh-bots-needs-entry');
+  click(w.tree, 'data-dsh-bots-need', 'ndone0001');
+  await w.rerender();
+  assert.match(collect(w.tree).join(' '), /What was delivered .*Bob/);
+  assert.equal(findAll(w.tree, (n) => n.props['data-dsh-bots-need-results'] === 1).length, 1);
+  assert.equal(findAll(w.tree, (n) => n.props['data-dsh-bots-need-drop'] !== undefined).length, 0, 'nothing to drop once delivered');
+  w.hooks.runCleanups();
+});
+
+test('the dispatcher has no mode to pick (0.11): its profile shows the light-model hint, and nothing to switch', async () => {
+  const v = await openTab('profile', 'bot-a');
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-modes'] !== undefined || n.props['data-dsh-bots-dispatcher-mode'] !== undefined).length, 0);
+  assert.doesNotMatch(collect(v.tree).join(' '), /How it works|Hands-on|Router mode/);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 1);
+  assert.match(collect(v.tree).join(' '), /It only understands, hands out and reports, so a light, fast model is enough/);
+  v.hooks.runCleanups();
+  // Only the dispatcher has the hint.
   const b = await openTab('profile', 'bot-b');
-  assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-dispatcher-modes']).length, 0);
   assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0);
   b.hooks.runCleanups();
 });
@@ -1836,8 +1936,8 @@ test('router mode: abilities a router goes without are marked, and each comes ba
       const v = await openTab('profile', 'bot-a');
       const rows = () => findAll(v.tree, (n) => n.props['data-dsh-bots-ability']).map((n) => [n.props['data-dsh-bots-ability'], n.props['data-on']]);
       assert.deepEqual(rows(), [['web', true], ['code', false], ['plugins', true], ['files', true]]);
-      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => [n.props['data-dsh-bots-router-off'], collect(n).join('')]), [['code', 'Off in Router mode'], ['files', 'Partly off in Router mode']]);
-      assert.match(collect(v.tree).join(' '), /In Router mode it does not search the web, run commands/);
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => [n.props['data-dsh-bots-router-off'], collect(n).join('')]), [['code', 'Off for dispatching'], ['files', 'Partly off for dispatching']]);
+      assert.match(collect(v.tree).join(' '), /As the dispatcher it does not search the web, run commands/);
       assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-tool'] === 'bash').length, 1, 'the per-tool list marks it too');
       // Commands back on: through routerAllow; writing files back on: its own link.
       click(v.tree, 'data-dsh-bots-ability-switch', 'code');
@@ -1851,7 +1951,7 @@ test('router mode: abilities a router goes without are marked, and each comes ba
       assert.deepEqual(v.posts.find((p) => p.path.endsWith('/save')).body.bot.tools, { deny: [], routerAllow: ['bash', 'edit', 'write'] });
       v.hooks.runCleanups();
     });
-    // Allowed back already: switching it off again only drops it from routerAllow (hands-on keeps it).
+    // Allowed back already: switching it off again only drops it from routerAllow (working alone keeps it).
     await withTaskState({ bots: [{ tools: { deny: [], routerAllow: ['bash'] } }] }, async () => {
       const v = await openTab('profile', 'bot-a');
       assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'code')[0].props['data-on'], true);
@@ -1862,7 +1962,7 @@ test('router mode: abilities a router goes without are marked, and each comes ba
       assert.deepEqual(v.posts.find((p) => p.path.endsWith('/save')).body.bot.tools, { deny: [], routerAllow: [] });
       v.hooks.runCleanups();
     });
-    // A hands-on dispatcher, and every other bot, see the abilities as before.
+    // Every other bot sees the abilities as before.
     const b = await openTab('profile', 'bot-b');
     assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-router-off'] || n.props['data-dsh-bots-router-allowed']).length, 0);
     assert.deepEqual(findAll(b.tree, (n) => n.props['data-dsh-bots-ability']).map((n) => n.props['data-on']), [true, true, true, true]);
@@ -1900,7 +2000,7 @@ test('settings: concurrent tasks, minutes before stuck and hours before archivin
   const post = v.posts.find((p) => p.path.endsWith('/settings'));
   assert.deepEqual(post.body.patch.tickets, { maxWorking: 6, stallMinutes: 20, archiveHours: 0 });
   assert.deepEqual(post.body.patch.topics, { idleHours: 6, maxContextK: 128 });
-  assert.equal('dispatcher' in post.body.patch, false, 'the settings dialog leaves the dispatcher mode alone');
+  assert.equal('dispatcher' in post.body.patch, false, 'there is no dispatcher mode to save');
   v.hooks.runCleanups();
 });
 
@@ -1916,7 +2016,7 @@ test('the router notice shows once, opens the dispatcher, and is dismissed throu
     assert.ok(notice);
     const words = collect(notice).join(' ');
     assert.match(words, /Your dispatcher now hands out the work/);
-    assert.match(words, /set How it works to Hands-on/);
+    assert.match(words, /turn that ability on under Abilities on its profile/);
     // Two sentences: what changed, and where to switch back.
     for (const lang of ['en', 'zh']) assert.equal(seen.locale.dict[lang].routerNoticeBody.split(/(?<=[.。])\s*/).filter(Boolean).length, 2, lang);
     click(tree, 'data-dsh-bots-router-notice-open');
@@ -2038,29 +2138,20 @@ test('the conversation: bot_send_message shows the task it opened, a report its 
 
 // --- what the Host emits since the Thread routing (PLAN-0.8 §13) -------------------------------
 
-test('router mode waits for a teammate: one line under How it works, and no router-only tools or notice while the dispatcher is alone', async () => {
+test('a dispatcher alone works by itself: no router-only tools or notice until the team has a teammate', async () => {
   await withTaskState({ state: { routerActive: false, routerNoticePending: true }, bots: [{ tools: { deny: [] } }] }, async () => {
     const v = await openTab('profile', 'bot-a');
-    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-modes'])[0].props['data-dsh-bots-dispatcher-modes'], 'router', 'the setting still reads router');
-    const [waiting] = findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']);
-    assert.ok(waiting);
-    assert.equal(collect(waiting).join(''), 'Router mode starts once the team has another bot; until then Ada does the work itself.');
     // Alone, it keeps every tool: nothing is marked off for a router, and no light-model hint.
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off'] || n.props['data-dsh-bots-router-allowed'] || n.props['data-dsh-bots-router-tool']).length, 0);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'code')[0].props['data-on'], true);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0);
-    assert.doesNotMatch(collect(v.tree).join(' '), /In Router mode it does not search the web, run commands/);
+    assert.doesNotMatch(collect(v.tree).join(' '), /As the dispatcher it does not search the web, run commands/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0, 'the notice waits until it applies');
-    // Hands-on has nothing to wait for.
-    click(v.tree, 'data-dsh-bots-dispatcher-mode', 'hands-on');
-    await v.rerender();
-    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']).length, 0);
     v.hooks.runCleanups();
   });
-  // With a teammate it routes: no line, the router's view of its tools, and the notice.
+  // With a teammate it routes: the router's view of its tools, and the notice.
   await withTaskState({ state: { routerActive: true, routerNoticePending: true }, bots: [{ tools: { deny: [] } }] }, async () => {
     const v = await openTab('profile', 'bot-a');
-    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']).length, 0);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 1);
     assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => n.props['data-dsh-bots-router-off']), ['code']);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 1);
@@ -2297,7 +2388,7 @@ test('task words: every stage, report status and action has English and Chinese'
     ...['progress', 'done', 'blocked', 'question'].map((s) => `report_${s}`),
     ...['stop', 'retry', 'close'].map((a) => `taskDid_${a}`),
     'kind_report',
-    ...['notSent', 'notSentChats', 'threadPart', 'threadTopic', 'followUpTask', 'followUpHint', 'routerWaiting'],
+    ...['notSent', 'notSentChats', 'threadPart', 'threadTopic', 'followUpTask', 'followUpHint'],
   ];
   for (const k of keys) {
     assert.ok(en[k], `en ${k}`);
@@ -2743,9 +2834,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.10\.2\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.11\.0\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.10.2' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.11.0' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();

@@ -544,6 +544,46 @@ test('a temporary error is retried after 15, 30 and 60 s, then the task fails; o
   env.dispose();
 });
 
+test('a model that answers with nothing (EMPTY_RESPONSE after Harness\'s retries) ends its turn quietly: the task does not fail', async () => {
+  const env = boot({ setTimeout: () => 0, clearTimeout: () => {} });
+  const { h, api } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'Fix the login bug');
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  const t = api.tickets.get(r.ticket.id);
+  const router = h.agentsById.get(sid);
+  const before = router.deliveries.length;
+  // As Harness reports it once its own retries are spent: an LlmError with code EMPTY_RESPONSE.
+  const empty = Object.assign(new Error('model "auto/gpt-6.2-sol" returned a completed response with no content'), { name: 'LlmError', failure: { message: 'model "auto/gpt-6.2-sol" returned a completed response with no content', code: 'EMPTY_RESPONSE' } });
+  h.emit('agent/error', { agent: h.agentsById.get(t.sessionId), turn: 1, step: 2, error: empty });
+  await settle();
+  const after = api.tickets.get(t.id);
+  assert.equal(after.ended, undefined);
+  assert.equal(after.error, undefined);
+  assert.equal(router.deliveries.length, before, 'nobody is told of a failure');
+  env.dispose();
+});
+
+test('NO_REPLY is never shown or sent: a turn that has nothing to say leaves the chat and the panel alone', async () => {
+  const env = boot();
+  const { h, api } = env;
+  const tg = await withTelegram(env);
+  tg.say('42', 10, 'Thanks!');
+  await settle();
+  const atlas = api.store.find('atlas');
+  await h.step(atlas.sessionId, { answer: '`NO_REPLY`' });
+  await settle();
+  assert.deepEqual(tg.c.sent, []);
+  assert.ok(!api.store.messages({ bot: atlas.id }).some((m) => m.kind === 'reply'));
+  // Anything else is an answer, as before.
+  tg.say('42', 11, 'And the logout bug?');
+  await settle();
+  await h.step(atlas.sessionId, { answer: 'Not fixed yet.' });
+  await settle();
+  assert.deepEqual(tg.c.sent, [{ chatId: '42', text: 'Not fixed yet.' }]);
+  env.dispose();
+});
+
 test('after a restart: a worker cut off mid-turn gets one recovery note; a replayed chat message is not run again', async () => {
   // Before: Kada asks in Telegram, the Router delegates, the worker starts and Harness goes down mid-turn.
   const first = boot();
@@ -1519,5 +1559,139 @@ test('a timed question past its wait stays answerable: the panel answers through
   assert.equal(api.state().asks[0].continued, true);
   h.emit('session/event', agent.session, { type: 'user/message', seq: 999, time: Date.now(), data: { id: 'm-reply', content: [{ type: 'text', text: '{}' }], source: { kind: 'user-question-reply', callId: 'call-2', outcome: 'answered' } } });
   assert.deepEqual(api.state().asks, []);
+  env.dispose();
+});
+
+// --- needs: what the person asked for, above its tasks (Bots 0.11) ---------------------------------
+
+test('needs: the router names a request once for its parallel tasks; follow-ups and new work join it; the board shows how far it got', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge', bio: 'Engineer' });
+  api.store.save({ name: 'Scout', bio: 'Researcher' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, '帮我做一份 Q3 竞品定价对比，北美和欧洲都要');
+  // Two tasks in one step, both under the same restatement (parallel calls cannot know the id yet).
+  const need = 'Q3 竞品定价对比表（北美 + 欧洲）';
+  const [a, b] = await h.step(sid, {
+    calls: [
+      { name: 'bot_send_message', args: { to: '@scout', text: 'Research Q3 competitor pricing in North America.', need } },
+      { name: 'bot_send_message', args: { to: '@forge', text: 'Research Q3 competitor pricing in Europe.', need } },
+    ],
+  });
+  assert.equal(a.need.id, b.need.id);
+  assert.match(a.text, new RegExp(`It counts toward need ${a.need.id} \\("${need.replace(/[()+]/g, '\\$&')}"\\)\\.$`));
+  const n = api.request('GET', `/needs/${a.need.id}`);
+  const v = await n;
+  assert.equal(v.title, need);
+  assert.deepEqual(v.tickets.map((t) => t.id), [a.ticket.id, b.ticket.id]);
+  assert.deepEqual(v.asks.map((x) => x.text), ['帮我做一份 Q3 竞品定价对比，北美和欧洲都要']);
+  assert.deepEqual([v.status, v.done, v.total, v.via], ['working', 0, 2, 'panel']);
+  assert.deepEqual(api.state().needs, { waiting: 0, working: 1 });
+  // The person adds to it: their words join the need through the task it went to.
+  await api.userSend(atlas, '欧洲那份加上英国');
+  const header = textOfMsg(h.agentsById.get(sid).deliveries.at(-1).message);
+  assert.match(header, new RegExp(`Open needs: ${a.need.id} "${need.replace(/[()+]/g, '\\$&')}" \\(working, 0/2 done\\)`));
+  const [more] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { ticket: b.ticket.id, text: 'Include the UK.' } }] });
+  assert.equal(more.need.id, a.need.id);
+  assert.deepEqual((await api.request('GET', `/needs/${a.need.id}`)).asks.map((x) => x.text), ['帮我做一份 Q3 竞品定价对比，北美和欧洲都要', '欧洲那份加上英国']);
+  // A question from one task: the need waits for the person, and the board says what is asked.
+  await call('bot_send_message', { status: 'question', text: 'Include VAT in the European prices?' }, b.ticket.sessionId ?? api.tickets.get(b.ticket.id).sessionId);
+  let row = (await api.request('GET', '/needs')).items[0];
+  assert.deepEqual([row.status, row.waiting, row.latest.status, row.latest.preview], ['waiting', [b.ticket.id], 'question', 'Include VAT in the European prices?']);
+  assert.deepEqual(api.state().needs, { waiting: 1, working: 0 });
+  // Both deliver: done, with the results in its detail.
+  const sa = api.tickets.get(a.ticket.id).sessionId;
+  const sb = api.tickets.get(b.ticket.id).sessionId;
+  await call('bot_send_message', { status: 'done', text: 'North America: table in docs/q3-na.md.' }, sa);
+  row = (await api.request('GET', '/needs')).items[0];
+  assert.deepEqual([row.status, row.done, row.total], ['waiting', 1, 2]);
+  await call('bot_send_message', { status: 'done', text: 'Europe and the UK, VAT included: docs/q3-eu.md.' }, sb);
+  const done = await api.request('GET', `/needs/${a.need.id}`);
+  assert.deepEqual([done.status, done.done, done.total], ['done', 2, 2]);
+  assert.ok(done.endedAt > 0);
+  assert.deepEqual(done.results.map((r) => r.text), ['North America: table in docs/q3-na.md.', 'Europe and the UK, VAT included: docs/q3-eu.md.']);
+  assert.deepEqual(done.bots.sort(), [api.store.find('forge').id, api.store.find('scout').id].sort());
+  // The person writes to a task directly (its box in the panel, or a chat follow-up): their words join the need too.
+  await api.request('POST', `/tickets/${a.ticket.id}/message`, { text: 'Add a column for annual plans' });
+  assert.equal((await api.request('GET', `/needs/${a.need.id}`)).asks.at(-1).text, 'Add a column for annual plans');
+  assert.equal((await api.request('GET', `/needs/${a.need.id}`)).status, 'working', 'the task took it up again');
+  // A new task for that need by its id (a change after delivery) counts toward it, and reopens it.
+  await api.userSend(atlas, '再加一页总结');
+  const [extra] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write a one-page summary of both tables.', need: a.need.id } }] });
+  assert.equal(extra.need.id, a.need.id);
+  assert.deepEqual([(await api.request('GET', `/needs/${a.need.id}`)).status, (await api.request('GET', `/needs/${a.need.id}`)).total], ['working', 3]);
+  // An id that names no need opens nothing.
+  const before = api.tickets.list().length;
+  await assert.rejects(call('bot_send_message', { to: '@scout', text: 'x', need: 'nzzzzzzzz' }, sid), new RegExp(`no need nzzzzzzzz; open needs: ${a.need.id}`));
+  assert.equal(api.tickets.list().length, before);
+  env.dispose();
+});
+
+test('needs: with no `need` the person\'s words name it; work nobody asked for gets none; sub-tasks and other bots never make one', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge', bio: 'Engineer' });
+  api.store.save({ name: 'Scout', bio: 'Researcher' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Fix the login bug on Safari');
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the Safari login bug.' } }] });
+  assert.equal(r.need.title, 'Fix the login bug on Safari');
+  assert.match(r.text, /pass `need` with a short restatement to name it for the person\.$/);
+  assert.equal((await api.request('GET', `/needs/${r.need.id}`)).auto, true);
+  // The router renames it: no longer automatic.
+  const renamed = await call('bot_need', { need: r.need.id, action: 'rename', title: 'Safari login fixed' }, sid);
+  assert.equal(renamed.need.title, 'Safari login fixed');
+  assert.equal(renamed.need.auto, undefined);
+  // A sub-task the worker opens counts through its parent: no need of its own.
+  const forgeTask = api.tickets.get(r.ticket.id);
+  const sub = await call('bot_send_message', { to: '@scout', text: 'Which Safari versions drop SameSite=None?', need: 'ignored' }, forgeTask.sessionId);
+  assert.equal(sub.need, undefined);
+  assert.equal((await api.request('GET', '/needs')).items.length, 1);
+  // Another bot's home passing `need` changes nothing.
+  const scoutHome = await api.userSend(api.store.find('scout'), 'Ask Forge for the release date');
+  const [fromScout] = await h.step(scoutHome, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'When is the release?', need: 'Release date' } }] });
+  assert.equal(fromScout.need, undefined);
+  // A teammate's message makes the router hand out work: nobody asked, so no need.
+  await call('bot_send_message', { to: '@atlas', text: 'Can someone review my PR?' }, scoutHome);
+  const [review] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Review Scout\'s PR.' } }] });
+  assert.equal(review.need, undefined);
+  assert.equal((await api.request('GET', '/needs')).items.length, 1);
+  // Only the router keeps needs.
+  await assert.rejects(call('bot_need', { need: r.need.id, action: 'drop' }, forgeTask.sessionId), /only the dispatcher/);
+  // Not done: it waits for the person too (the board's first group, and the rail's count).
+  api.tickets.end(r.ticket.id, { by: 'system', outcome: 'failed', error: 'no access' });
+  assert.equal((await api.request('GET', `/needs/${r.need.id}`)).status, 'failed');
+  assert.deepEqual(api.state().needs, { waiting: 1, working: 0 });
+  env.dispose();
+});
+
+test('needs: dropping one stops its open tasks; merging moves tasks and words; the panel renames and drops through its routes', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge', bio: 'Engineer' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Make a logo');
+  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Draft three logo ideas.', need: 'Three logo ideas' } }] });
+  await api.userSend(atlas, 'And a banner with that logo');
+  const [b] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Draft a banner.', need: 'A banner' } }] });
+  assert.notEqual(a.need.id, b.need.id);
+  // One request after all: merged.
+  const merged = await call('bot_need', { need: b.need.id, action: 'merge', into: a.need.id }, sid);
+  assert.equal(merged.need.id, a.need.id);
+  let v = await api.request('GET', `/needs/${a.need.id}`);
+  assert.deepEqual(v.tickets.map((t) => t.id), [a.ticket.id, b.ticket.id]);
+  assert.deepEqual(v.asks.map((x) => x.text), ['Make a logo', 'And a banner with that logo']);
+  assert.equal((await api.request('GET', `/needs/${b.need.id}`)).id, a.need.id, 'the old id finds the merged need');
+  assert.deepEqual((await api.request('GET', '/needs')).items.map((r) => r.id), [a.need.id]);
+  // The panel renames it, then the person drops it: both tasks stop.
+  v = await api.request('POST', `/needs/${a.need.id}/rename`, { title: 'Logo and banner' });
+  assert.equal(v.title, 'Logo and banner');
+  v = await api.request('POST', `/needs/${a.need.id}/drop`, {});
+  assert.equal(v.status, 'stopped');
+  assert.deepEqual(v.tickets.map((t) => t.stage), ['stopped', 'stopped']);
+  assert.equal(v.closed.by, 'user');
+  assert.deepEqual(api.state().needs, { waiting: 0, working: 0 });
+  await assert.rejects(api.request('GET', '/needs/nzzzzzzzz'), /no such need/);
   env.dispose();
 });

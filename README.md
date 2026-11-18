@@ -104,6 +104,27 @@ bot answers in that message's **thread**.
 - A thread quiet for a day leaves the Harness sidebar; a new reply brings it back, and the thread goes on where it was.
 - 0.9's topics read as the chat they were, with a link to each under its first message.
 
+## Requests: everything you asked the team for
+
+A **task** is a bot's view: one piece of work it took on. A **request** is yours: one thing you want. A request often
+takes several tasks (the dispatcher splits research between teammates, then hands the results to one who writes them
+up), and several messages (you ask, then add "include the UK in the Europe one", then ask how it is going).
+
+- **The dispatcher restates it.** When it hands out the work, it names the request in one line, in your language,
+  saying what you get rather than who does it ("Q3 competitor pricing table (North America + Europe)", not "@scout
+  researches North American pricing"). Tasks for the same request count toward it, and what you add later joins it.
+  When the dispatcher did not restate one, the title is your own words, and the page says so.
+- **Its status comes from its tasks**: **Waiting for you** (a task asks you something, or is stuck), **In progress**
+  (with how many tasks are done and the latest word), **Not done**, **Done** and **Dropped**. A follow-up reopens the
+  task, and the request is in progress again.
+- **Requests** in the sidebar sits above **Tasks**, in three groups (**Waiting for you**, **In progress**, **Done**),
+  with dropped ones folded away and this week's numbers on top. Open one for your own words (to check the restatement),
+  the question waiting for you (**Answer** opens its task), what was delivered and the tasks behind it; **Rename** it, or
+  **Drop it** (its unfinished tasks stop).
+- When you say "forget that one", the dispatcher drops the request; when two turn out to be one, it merges them.
+- Only what you ask the dispatcher for is a request: work teammates ask each other for, and work a schedule starts,
+  is not.
+
 ## Tasks: delegated work in conversations of their own
 
 When a bot hands work to a teammate, the work becomes a **task**. The teammate works on each task in a conversation
@@ -154,30 +175,27 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 
 ### The dispatcher as a router
 
-The dispatcher works in one of two ways, chosen under **How it works** on its **Profile** tab, for the whole team:
+The dispatcher understands the request, hands the work out and keeps track of it. It does not run commands, write or
+edit files, search the web, use sub-agents and workflows, draw images, make Office files or put question cards to you
+(a card holds every message after it until you answer); it can still read files and use its skills. Work that needs
+any of those goes to a teammate, never to itself (0.9 handed it to itself when no teammate fit; 0.10 doesn't), while
+its own conversation stays free for you. When you say "ask me which tone before you write", it hands the work out with
+that request and the teammate asks you in its task; when it must know something itself before it can hand a request
+out, it asks in one line of its reply, and your next message is the answer.
 
-- **Router** (the default): it understands the request, hands the work out and keeps track of it. It does not run
-  commands, write or edit files, search the web, use sub-agents and workflows, draw images, make Office files or put
-  question cards to you (a card holds every message after it until you answer); it can still read files and use its
-  skills. Work that needs any of those goes to a teammate, never to itself (0.9 handed it to itself when no teammate
-  fit; 0.10 doesn't), while its own conversation stays free for you. When you say "ask me which tone before you
-  write", it hands the work out with that request and the teammate asks you in its task; when it must know something
-  itself before it can hand a request out, it asks in one line of its reply, and your next message is the answer. Its
-  **Abilities** section lists what Router mode turns off and marks it: switch a whole ability back on, or use **Turn
-  back on** for the part of one that is off (writing and editing under Files). Even then it may not `sleep`, a
-  command must finish within 30 seconds or run in the background, and with question cards back on it takes no new
-  message until a card is answered. It never waits for a teammate: it ends its turn and is woken when something needs it, so a new
-  request is not stuck behind work in progress, and messages that arrive while it is busy are taken together at its
-  next step, and each one gets its answer. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
-  not change the model for you. In Router mode every bot that hands work to a teammate opens a task, not only the
-  dispatcher; but nobody opens one for the dispatcher: a teammate's message to it goes into its own conversation,
-  and it tells you what you should know and hands out what is work.
-- **Hands-on**: how 0.7 worked. The dispatcher also does small jobs itself, and a message from one bot's own
-  conversation to another bot goes into that bot's own conversation instead of opening a task. Tasks already open keep
-  going and report as before.
+To let it do a small job itself (a quick web search, say), turn that ability on in its **Abilities** section, which
+marks what dispatching turns off: switch a whole ability back on, or use **Turn back on** for the part of one that is
+off (writing and editing under Files). Even then it may not `sleep`, a command must finish within 30 seconds or run in
+the background, and with question cards back on it takes no new message until a card is answered.
 
-Router mode takes effect once the team has at least one bot besides the dispatcher; a dispatcher on its own does the
-work itself.
+It never waits for a teammate: it ends its turn and is woken when something needs it, so a new request is not stuck
+behind work in progress, and messages that arrive while it is busy are taken together at its next step, and each one
+gets its answer. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots
+does not change the model for you. Every bot that hands work to a teammate opens a task, not only the dispatcher; but
+nobody opens one for the dispatcher: a teammate's message to it goes into its own conversation, and it tells you what
+you should know and hands out what is work.
+
+It routes once the team has at least one bot besides the dispatcher; a dispatcher on its own does the work itself.
 
 ### Chats and threads
 
@@ -503,19 +521,22 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   limits and apps apply to its conversations only. In a task's conversation the prompt also says which
   task it is, who asked, and how to report. Edits apply at once; a new or changed app connects the next
   time the conversation starts.
-- In Router mode, `bot_send_message` from a bot's own conversation opens a task and returns at once; from
-  a task's conversation it reports to whoever asked (with a status) or opens a sub-task. A message to the
-  dispatcher opens no task: it goes into the dispatcher's own conversation (one sent from a task names it, and the
-  dispatcher's answer is added to that task). In Hands-on mode,
-  from a bot's own conversation, it puts the text into the other bot's inbox and wakes it, as in 0.7. Two
-  bots may exchange at most 16 messages in 10 minutes (new tasks and messages added to tasks count), so
-  conversations end.
+- `bot_send_message` from a bot's own conversation opens a task and returns at once; from a task's
+  conversation it reports to whoever asked (with a status) or opens a sub-task. A message to the dispatcher
+  opens no task: it goes into the dispatcher's own conversation (one sent from a task names it, and the
+  dispatcher's answer is added to that task). The dispatcher names the request a task serves with `need`
+  ([Requests](#requests-everything-you-asked-the-team-for)). Two bots may exchange at most 16 messages in 10
+  minutes (new tasks and messages added to tasks count), so conversations end.
+- A bot with nothing to say (after a report, say) answers `NO_REPLY`, which is never shown or sent to a chat app.
+  Harness counts an answer with no content as a failed model call (`returned a completed response with no
+  content`), so a bot cannot just say nothing; should a model still answer with nothing, its task does not fail
+  for it.
 - Every conversation gets `bot_list`, `bot_create`, `bot_update`, `bot_delete`, `bot_send_message`,
-  `bot_reply`, `bot_recall`, `bot_ticket` and `bot_schedule` to manage bots and tasks, and `memory_save`,
+  `bot_reply`, `bot_recall`, `bot_ticket`, `bot_need` and `bot_schedule` to manage bots and tasks, and `memory_save`,
   `memory_forget` and `memory_search`. `bot_reply` sends an answer to a named chat; `bot_recall` reads a
   task, its reports or its conversation, or a chat thread, a page at a time, so a bot looks things up
   instead of guessing; `bot_ticket` stops, closes or retries a task the bot asked for, or asks it for a
-  status report. [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md) lists their parameters. A sub-agent started in a bot's or a task's
+  status report; `bot_need` lets the dispatcher rename, merge or drop one of your requests. [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md) lists their parameters. A sub-agent started in a bot's or a task's
   conversation uses them as that bot or task; one that cannot be traced back to where it started (that
   conversation is gone) is refused.
 - A bot's memory is a section of its system prompt, read when a topic or a task's conversation starts
@@ -578,6 +599,17 @@ For the latest unreleased code, use the Git spec `git+https://github.com/kadalia
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
 
+## Upgrading from 0.10
+
+- Nothing to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are; 0.11 adds `needs.json`
+  for requests. Tasks from before the upgrade belong to no request; when you follow one up in a chat, your words name
+  a request for it.
+- Hands-on mode is gone, and there is no mode to pick: with a teammate the dispatcher routes, on its own it does the
+  work itself. A team that had picked Hands-on switches to routing and sees the notice once; turn on the small jobs
+  you want the dispatcher to do itself under its **Abilities**.
+- With models that follow the prompt to the letter (GPT, say), the occasional `returned a completed response with no
+  content` (a bot answered with nothing after a report, and its task failed) is gone.
+
 ## Upgrading from 0.9
 
 - **Quit and reopen Harness** once after the upgrade. A page reload alone gives you the new page while Harness still
@@ -608,9 +640,8 @@ Refresh the page once after installing. For AI avatars, install [Images](https:/
   tools listed under [The dispatcher as a router](#the-dispatcher-as-a-router) in its own conversation, and
   work handed from one bot to another becomes a task. The Bots panel says so once, with **Open its profile**
   and **Got it**; the notice waits until the team has a bot besides the dispatcher.
-- To go back, open the dispatcher's **Profile** and pick **Hands-on** under **How it works**. It applies at
-  once, to the whole team; tasks already open keep going and report as before. Picking a mode also clears
-  the notice.
+- From 0.8 to 0.10 the dispatcher's **Profile** could switch **How it works** back to **Hands-on**; 0.11 has no such
+  choice ([Upgrading from 0.10](#upgrading-from-010)).
 - Replies to chat apps follow the request they answer ([Chats and threads](#chats-and-threads)); in 0.7 they
   went to the chat of the latest request.
 - In **Usage**, what 0.7 called tasks are runs now (**Runs**, **Recent runs**), with the same numbers.

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'bots-tickets-'));
 const { apply } = await import('../index.js');
+const { normalizeSettings } = await import('../lib/settings.mjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -463,27 +464,17 @@ test('runs in ticket Sessions carry the ticket; usage groups by it; its end is s
   assert.ok(!topic || !String(topic.sessionId).startsWith('ticket-'));
 });
 
-test('hands-on mode behaves as 0.7: home DMs, no tickets, no router limits; switching back restores them', async () => {
-  await api.routes.settings.post({ patch: { dispatcher: 'hands-on' } });
+test('there is no hands-on mode (0.11): asking for it changes nothing, a stored one reads as router with the notice, and router allowances work as before', async () => {
+  const saved = (await api.routes.settings.post({ patch: { dispatcher: 'hands-on' } })).settings;
+  assert.equal(saved.dispatcher, 'router');
+  assert.equal(api.state().routerActive, true);
+  // A team that had picked hands-on before 0.11 is told once that its dispatcher now hands out the work.
+  assert.deepEqual(['dispatcher', 'routerNotice'].map((k) => normalizeSettings({ dispatcher: 'hands-on', routerNotice: 'dismissed' })[k]), ['router', 'pending']);
+  assert.equal(normalizeSettings({ dispatcher: 'router', routerNotice: 'dismissed' }).routerNotice, 'dismissed');
   const home = agentOf(atlasSid);
-  assert.equal(home.guards.length, 0);
-  assert.equal(home.restricts.length, 0, 'Atlas has no own denials, and no router ones now');
-  assert.match(home.sections.get('bots:persona').text(), /Do small or general tasks yourself/);
-  const count = api.tickets.list().length;
-  const r = await call('bot_send_message', { to: '@scout', text: 'What changed in Safari 18?' }, atlasSid);
-  assert.match(r.text, /^Delivered to @scout/);
-  assert.equal(api.tickets.list().length, count);
-  const scoutHome = agentOf(scout().sessionId);
-  const last = scoutHome.deliveries.at(-1);
-  assert.equal(last.mode, 'followup');
-  assert.match(textOfMsg(last.message), /^Bot message from @atlas \(Atlas\):/);
-  assert.equal(last.message.source.senderSessionId, atlasSid);
-  // Into a hands-on home, the panel's messages are follow-ups again.
-  await api.userSend(atlas(), 'Status?');
-  assert.equal(home.deliveries.at(-1).mode, 'followup');
-
-  // Back to router: the limits and the guard return; a tool the user gave back stays allowed.
-  await api.routes.settings.post({ patch: { dispatcher: 'router' } });
+  assert.match(home.sections.get('bots:persona').text(), /## You are the dispatcher/);
+  assert.doesNotMatch(home.sections.get('bots:persona').text(), /Do small or general tasks yourself/);
+  // The limits and the guard stay; a tool the user gave back stays allowed.
   assert.ok(home.restricts.at(-1).deny.includes('bash'));
   assert.equal(home.guards.length, 1);
   api.routes.save.post({ bot: { id: atlas().id, tools: { deny: [], routerAllow: ['bash'] } } });

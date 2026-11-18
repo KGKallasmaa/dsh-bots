@@ -146,28 +146,24 @@ test('a DM creates the target conversation, applies the persona and lands in its
   assert.match(text, /Deep dive/);
 });
 
-test('bot-to-bot DMs carry the sender and are rate limited per pair (hands-on mode: 0.7 DMs)', async (t) => {
-  // In router mode (0.8's default) the dispatcher's message opens a ticket instead (tickets-host.test.mjs).
-  api.routes.settings.post({ patch: { dispatcher: 'hands-on' } });
-  t.after(() => api.routes.settings.post({ patch: { dispatcher: 'router' } }));
-  const atlas = api.store.find('atlas');
+test('a teammate\'s message to the dispatcher is a DM that carries the sender, rate limited per pair; from outside any bot it has no sender', async () => {
+  // Work handed to a teammate opens a task instead (tickets-host.test.mjs); a message to the dispatcher goes to its home.
   const res = await call('bot_send_message', { to: 'researcher', text: 'hi' }, 'not-a-bot-session');
   assert.equal(res.from, null);
-  await call('bot_send_message', { to: 'atlas', text: 'warm up' });
-  const atlasSession = api.store.find('atlas').sessionId;
-  const r = await call('bot_send_message', { to: 'researcher', text: 'please summarise' }, atlasSession);
-  assert.equal(r.from.handle, 'atlas');
-  const inbox = h.agentsById.get(api.store.find('researcher').sessionId).inbox;
+  await call('bot_send_message', { to: 'researcher', text: 'warm up' });
+  const researcherSession = api.store.find('researcher').sessionId;
+  const r = await call('bot_send_message', { to: 'atlas', text: 'please review' }, researcherSession);
+  assert.equal(r.from.handle, 'researcher');
+  const inbox = h.agentsById.get(api.store.find('atlas').sessionId).inbox;
   const last = inbox.at(-1);
-  assert.match(last.content[0].text, /Bot message from @atlas/);
+  assert.match(last.content[0].text, /Bot message from @researcher/);
   assert.equal(last.source.kind, 'agent-message');
-  assert.equal(last.source.senderSessionId, atlasSession);
-  void atlas;
-  await assert.rejects(call('bot_send_message', { to: 'atlas', text: 'x' }, atlasSession), /itself/);
+  assert.equal(last.source.senderSessionId, researcherSession);
+  await assert.rejects(call('bot_send_message', { to: 'researcher', text: 'x' }, researcherSession), /itself/);
   let refused = null;
   for (let i = 0; i < 20 && !refused; i += 1) {
     try {
-      await call('bot_send_message', { to: 'researcher', text: `ping ${i}` }, atlasSession);
+      await call('bot_send_message', { to: 'atlas', text: `ping ${i}` }, researcherSession);
     } catch (e) {
       refused = e;
     }

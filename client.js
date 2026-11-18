@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.10.2';
+    const BOTS_VERSION = '0.11.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -371,22 +371,15 @@ window.__ModuleLoader__.load({
 
     // --- tasks (tickets in the Host; "tasks" on screen) ----------------------------------
 
-    /** How the dispatcher works ('router' | 'hands-on'), a team setting: the polled state's, else the settings'; router unless either says otherwise. */
-    const dispatcherOf = () => {
-      const v = store.state?.dispatcher ?? store.settings?.settings?.dispatcher;
-      return v === 'hands-on' ? 'hands-on' : 'router';
-    };
     /**
-     * Whether the dispatcher routes now: router mode, and a teammate to hand work to (the Host's
-     * `routerActive`). The only bot of a team works hands-on whatever the setting says.
+     * Whether the dispatcher routes now: it has a teammate to hand work to (the Host's `routerActive`).
+     * The only bot of a team does the work itself. There is no other mode since 0.11.
      */
-    const routerActiveOf = (state = store.state) => dispatcherOf() === 'router' && state?.routerActive !== false;
+    const routerActiveOf = (state = store.state) => state?.routerActive !== false;
     /** Keep the shared copies of the settings after a save, so the page shows them before the next poll. */
     function tookSettings(next) {
       if (next && typeof next === 'object') {
         store.settings = { ...(store.settings ?? {}), settings: next };
-        // Until the next poll says, router mode is in effect when the dispatcher has a teammate.
-        if (store.state && typeof next.dispatcher === 'string') store.state = { ...store.state, dispatcher: next.dispatcher, routerActive: next.dispatcher === 'router' && (store.state.bots?.length ?? 0) > 1 };
         // Chats show the new level of bot-to-bot detail at once.
         if (store.state && next.display && typeof next.display === 'object') store.state = { ...store.state, display: next.display };
         notify();
@@ -641,6 +634,7 @@ window.__ModuleLoader__.load({
       chevron: (s = 12) => svg(s, ['M6 9l6 6 6-6']),
       back: (s = 12) => svg(s, ['M19 12H5', 'M11 6l-6 6 6 6']),
       tasks: (s = 14) => svg(s, ['M10 6h10', 'M10 12h10', 'M10 18h10', 'M3.5 6l1.5 1.5L7.5 5', 'M3.5 12l1.5 1.5 2.5-2.5', 'M3.5 18l1.5 1.5 2.5-2.5']),
+      target: (s = 14) => svg(s, ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M12 12h.01']),
       stop: (s = 13) => svg(s, ['M7 7h10v10H7z']),
       chart: (s = 14) => svg(s, ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M21 20H3']),
       brain: (s = 14) => svg(s, ['M9 4a3 3 0 0 0-3 3v.2A3 3 0 0 0 4 10a3 3 0 0 0 1 2.2A3 3 0 0 0 6 17a3 3 0 0 0 3 3h0V4z', 'M15 4a3 3 0 0 1 3 3v.2A3 3 0 0 1 20 10a3 3 0 0 1-1 2.2A3 3 0 0 1 18 17a3 3 0 0 1-3 3h0V4z']),
@@ -1179,7 +1173,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** A red count of what needs you (tasks, or a bot's questions). */
     const NeedsBadge = ({ n, label, attr }) =>
       h('span', { [attr]: n, 'aria-label': label, title: label, style: { minWidth: 20, height: 20, padding: '0 6px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.error, color: '#fff', fontSize: TINY, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flex: 'none' } }, n > 99 ? '99+' : String(n));
-    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0 }) {
+    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0, onNeeds, needCounts = {} }) {
+      const needsWaiting = Number(needCounts?.waiting) || 0;
+      const needsWorking = Number(needCounts?.working) || 0;
       const lang = langOf(t);
       const [q, setQ] = useState('');
       const [menu, setMenu] = useState(false);
@@ -1268,6 +1264,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         h(
           'div',
           { style: { padding: 8, borderTop: `1px solid ${C.border1}` } },
+          // What you asked for (Bots 0.11), above the tasks that do it.
+          onNeeds
+            ? h(
+                'button',
+                { type: 'button', className: 'dshb-row', 'data-active': view === 'needs', 'data-dsh-bots-needs-entry': true, onClick: onNeeds },
+                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.target(16)),
+                h(
+                  'span',
+                  { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } },
+                  h('span', { style: { fontWeight: 600 } }, t('needs')),
+                  h('span', { style: { fontSize: TINY, color: needsWaiting > 0 ? C.warn : C.muted } }, needsWaiting > 0 ? t('needsWaitingHint', { n: needsWaiting }) : needsWorking > 0 ? t('needsWorkingHint', { n: needsWorking }) : t('needsHint')),
+                ),
+                needsWaiting > 0 ? h(NeedsBadge, { n: needsWaiting, label: t('needsWaitingHint', { n: needsWaiting }), attr: 'data-dsh-bots-needs-badge' }) : null,
+              )
+            : null,
           onTasks
             ? h(
                 'button',
@@ -3383,6 +3394,299 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
 
+    // --- needs: what the person asked for, one level above the tasks (Bots 0.11) ------------------
+
+    const NEED_COLOR = { waiting: C.warn, working: C.ok, failed: C.error, done: C.label, stopped: C.muted };
+    /** The board's group of a need: what needs you (a question, or it did not get done), what moves, what finished, what was dropped. */
+    const needGroupOf = (r) => (r?.status === 'waiting' || r?.status === 'failed' ? 'needs' : r?.status === 'done' ? 'done' : r?.status === 'stopped' ? 'stopped' : 'working');
+    const needIcon = (status) => (status === 'waiting' ? Icon.question(14) : status === 'failed' ? Icon.alert(14) : status === 'done' ? Icon.check(14) : status === 'stopped' ? Icon.stop(12) : Icon.target(14));
+    const needRows = (data) => (Array.isArray(data?.items) ? data.items : []).filter((r) => r && typeof r.id === 'string' && typeof r.status === 'string');
+    /** A need's status as a badge; one in progress with several tasks says how many are done. */
+    function NeedChip({ t, row }) {
+      const color = NEED_COLOR[row?.status] ?? C.muted;
+      const label = row?.status === 'working' && Number(row.total) > 1 ? t('needWorkingOf', { done: Number(row.done) || 0, total: Number(row.total) }) : t(`need_${row?.status ?? 'working'}`);
+      return h(Badge, { color, 'data-dsh-bots-need-status': row?.status }, row?.status === 'working' ? h(StatusDot, { status: 'running', size: 6 }) : null, label);
+    }
+    /** One need on the board: what you asked for, how far it got, who works on it, and the latest word. */
+    function NeedRow({ t, row, onOpen }) {
+      const latest = row.latest && typeof row.latest === 'object' && str(row.latest.preview).trim() ? row.latest : null;
+      const bots = (Array.isArray(row.bots) ? row.bots : []).filter((b) => typeof b === 'string').slice(0, 4);
+      const when = row.status === 'done' && row.endedAt ? t('needDelivered', { when: fmtAgo(t, row.endedAt) }) : fmtAgo(t, row.updatedAt);
+      return h(
+        'button',
+        { type: 'button', className: 'dshb-row', 'data-dsh-bots-need': row.id, 'data-status': row.status, onClick: () => onOpen(row.id), style: { alignItems: 'flex-start', padding: '10px 10px' } },
+        h('span', { style: { width: 30, height: 30, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none', background: tint(NEED_COLOR[row.status] ?? C.muted, 14), color: NEED_COLOR[row.status] ?? C.muted } }, needIcon(row.status)),
+        h(
+          'span',
+          { style: { display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 } },
+          h(
+            'span',
+            { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } },
+            h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 } }, str(row.title).trim() || t('untitledTask')),
+            h(NeedChip, { t, row }),
+          ),
+          h(
+            'span',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0, flexWrap: 'wrap' } },
+            bots.length ? h('span', { 'data-dsh-bots-need-bots': bots.length, style: { display: 'inline-flex', alignItems: 'center', gap: 2 } }, bots.map((b) => h(BotFace, { key: b, id: b, size: 16 }))) : null,
+            bots.length ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } }, bots.map((b) => botName(t, b)).join('、')) : null,
+            bots.length ? dotSep() : null,
+            viaBadge(t, row.via, row.who),
+            h('span', { style: { color: C.faint }, title: fmtDate(toMs(row.updatedAt)) }, when),
+          ),
+          latest
+            ? h(
+                'span',
+                { 'data-dsh-bots-need-latest': latest.status, style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
+                // A delivered need says "done" once, on its own chip.
+                row.status === 'done' ? null : h(ReportChip, { t, status: latest.status }),
+                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, str(latest.preview)),
+              )
+            : str(row.asked).trim()
+              ? h('span', { style: { fontSize: TINY, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, t('needYouSaid', { text: str(row.asked) }))
+              : null,
+          Number(row.failed) > 0 && row.status !== 'failed' ? h('span', { 'data-dsh-bots-need-failed': row.failed, style: { fontSize: TINY, color: C.error } }, t('needSomeFailed', { n: Number(row.failed) })) : null,
+          Number(row.stalled) > 0 && row.status === 'working' ? h('span', { 'data-dsh-bots-need-stalled': row.stalled, style: { fontSize: TINY, color: C.warn } }, t('needSomeStalled', { n: Number(row.stalled) })) : null,
+        ),
+      );
+    }
+    /** Every request of the person's: what waits for them, what moves, what was delivered (the tasks stay one level down). */
+    function NeedsView({ t, onOpen, onTasks }) {
+      const { data, failed } = useJson('needs?limit=300', STATE_POLL_MS);
+      const [doneShown, setDoneShown] = useState(DONE_PAGE);
+      const [showStopped, setShowStopped] = useState(false);
+      const items = needRows(data);
+      const byNewest = (a, b) => (toMs(b.updatedAt) || 0) - (toMs(a.updatedAt) || 0);
+      const groups = [
+        { id: 'needs', title: t('needsYou'), empty: t('needsYouEmpty') },
+        { id: 'working', title: t('needsWorking'), empty: t('needsWorkingEmpty') },
+        { id: 'done', title: t('needsDone'), empty: t('needsDoneEmpty') },
+      ].map((g) => ({ ...g, rows: items.filter((r) => needGroupOf(r) === g.id).sort(byNewest) }));
+      const stopped = items.filter((r) => needGroupOf(r) === 'stopped').sort(byNewest);
+      const doneCount = groups[2].rows.length;
+      groups[2].rows = groups[2].rows.slice(0, doneShown);
+      // This week, as the person counts it: what they asked for since, and where it stands.
+      const since = Date.now() - 7 * 86_400_000;
+      const week = items.filter((r) => (toMs(r.createdAt) || 0) >= since);
+      const weekOf = (fn) => week.filter(fn).length;
+      let body;
+      if (!data && items.length === 0) body = h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('needsUnavailable') : t('loading'));
+      else if (items.length === 0) body = h(Empty, { icon: Icon.target(28), title: t('needsEmptyTitle'), body: t('needsEmptyBody') });
+      else {
+        body = h(
+          'div',
+          { style: { display: 'flex', flexDirection: 'column', gap: 24 } },
+          week.length
+            ? h(
+                'div',
+                { 'data-dsh-bots-needs-week': week.length, style: { fontSize: SMALL, color: C.muted } },
+                t('needsWeek', { n: week.length, done: weekOf((r) => r.status === 'done'), working: weekOf((r) => r.status === 'working'), waiting: weekOf((r) => needGroupOf(r) === 'needs') }),
+              )
+            : null,
+          groups.map((g) =>
+            h(
+              'div',
+              { key: g.id, 'data-dsh-bots-need-group': g.id, 'data-count': g.rows.length },
+              h(
+                Section,
+                { title: [g.title, h('span', { key: 'n', style: { marginLeft: 6, fontWeight: 500, color: C.faint } }, g.id === 'done' ? doneCount : g.rows.length)] },
+                g.rows.length === 0 ? h('div', { style: { fontSize: SMALL, color: C.faint, padding: '2px 2px 4px' } }, g.empty) : h(TaskList, { attr: 'data-dsh-bots-need-list', rows: g.rows.map((r) => h(NeedRow, { key: r.id, t, row: r, onOpen })) }),
+                g.id === 'done' && doneCount > doneShown ? h('div', null, h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setDoneShown((n) => n + DONE_PAGE), 'data-dsh-bots-needs-more': true }, t('showMore'))) : null,
+              ),
+            ),
+          ),
+          stopped.length
+            ? h(
+                'div',
+                { 'data-dsh-bots-need-group': 'stopped', 'data-count': stopped.length },
+                h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setShowStopped((x) => !x), 'data-dsh-bots-needs-stopped': true }, showStopped ? t('needsHideStopped') : t('needsShowStopped', { n: stopped.length })),
+                showStopped ? h('div', { style: { marginTop: 8 } }, h(TaskList, { attr: 'data-dsh-bots-need-list', rows: stopped.map((r) => h(NeedRow, { key: r.id, t, row: r, onOpen })) })) : null,
+              )
+            : null,
+        );
+      }
+      return h(
+        'div',
+        { 'data-dsh-bots-needs': true, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '18px 24px 12px', borderBottom: `1px solid ${C.border1}` } },
+          h('span', { style: { width: 44, height: 44, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label } }, Icon.target(20)),
+          h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { style: { fontWeight: 700, fontSize: 17 } }, t('needs')), h('div', { style: { fontSize: SMALL, color: C.muted } }, t('needsSub'))),
+          onTasks ? h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.tasks(13), onClick: onTasks, 'data-dsh-bots-needs-tasks': true }, t('needsAllTasks')) : null,
+        ),
+        h('div', { className: 'dshb-scroll', style: { flex: 1, padding: '18px 24px 28px' } }, h('div', { style: { maxWidth: 900, margin: '0 auto' } }, body)),
+      );
+    }
+
+    /** One request: what you said, what was delivered, what waits for you, and the tasks behind it. */
+    function NeedDetail({ t, id, toast, onBack, onOpenTask }) {
+      const { data, failed, reload } = useJson(`needs/${encodeURIComponent(id)}`, STATE_POLL_MS);
+      const [confirm, setConfirm] = useState(false);
+      const [draft, setDraft] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const v = data && typeof data === 'object' && typeof data.id === 'string' ? data : null;
+      const back = h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-needs-back': true, onClick: onBack, style: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: SMALL } }, Icon.back(12), t('allNeeds'));
+      if (!v) {
+        return h(
+          'div',
+          { 'data-dsh-bots-need-detail': id, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: '18px 24px' } },
+          back,
+          h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('needMissing') : t('loading')),
+        );
+      }
+      const post = (path, body, okText) => {
+        if (busy) return Promise.resolve(false);
+        setBusy(true);
+        return postJson(`needs/${encodeURIComponent(v.id)}/${path}`, body)
+          .then((r) => {
+            if (r && r.ok !== false) {
+              toast(okText);
+              void reload();
+              void refreshState();
+              return true;
+            }
+            toast(r?.reason || t('actionFailed'), 'error');
+            return false;
+          })
+          .finally(() => setBusy(false));
+      };
+      const saveTitle = () => {
+        const title = str(draft).trim();
+        if (!title) return;
+        void post('rename', { title }, t('needRenamed')).then((ok) => ok && setDraft(null));
+      };
+      const asks = (Array.isArray(v.asks) ? v.asks : []).filter((a) => a && str(a.text).trim());
+      const results = (Array.isArray(v.results) ? v.results : []).filter((r) => r && str(r.text).trim());
+      const tasks = (Array.isArray(v.tickets) ? v.tickets : []).filter((r) => r && typeof r.id === 'string');
+      const waiting = new Set(Array.isArray(v.waiting) ? v.waiting : []);
+      const asking = v.latest && waiting.has(v.latest.ticket) ? v.latest : null;
+      const open = v.status === 'waiting' || v.status === 'working' || v.status === 'failed';
+      return h(
+        'div',
+        { 'data-dsh-bots-need-detail': v.id, 'data-status': v.status, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
+        h(
+          'header',
+          { style: { padding: '14px 24px 14px', borderBottom: `1px solid ${C.border1}`, display: 'flex', flexDirection: 'column', gap: 8 } },
+          h('div', null, back),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' } },
+            h(
+              'div',
+              { style: { flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 4 } },
+              draft !== null
+                ? h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                    h(Input, {
+                      value: draft,
+                      maxLength: 80,
+                      'aria-label': t('needTitleLabel'),
+                      'data-dsh-bots-need-title-input': true,
+                      onChange: (e) => setDraft(e.target.value),
+                      onKeyDown: (e) => {
+                        if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) saveTitle();
+                        if (e.key === 'Escape') setDraft(null);
+                      },
+                      style: { flex: 1, fontSize: 16, fontWeight: 600 },
+                    }),
+                    h(Btn, { kind: 'primary', size: 'sm', disabled: busy || !str(draft).trim(), onClick: saveTitle, 'data-dsh-bots-need-title-save': true }, t('save')),
+                    h(Btn, { size: 'sm', onClick: () => setDraft(null) }, t('cancel')),
+                  )
+                : h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } }, h('span', { 'data-dsh-bots-need-title': true, style: { fontWeight: 700, fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, str(v.title)), h(NeedChip, { t, row: v })),
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: SMALL, color: C.muted, flexWrap: 'wrap' } },
+                h('span', { title: fmtDate(toMs(v.createdAt)) }, t('needAsked', { when: fmtAgo(t, v.createdAt) })),
+                viaBadge(t, v.via, v.who),
+                v.status === 'done' && v.endedAt ? dotSep() : null,
+                v.status === 'done' && v.endedAt ? h('span', { title: fmtDate(toMs(v.endedAt)) }, t('needDelivered', { when: fmtAgo(t, v.endedAt) })) : null,
+              ),
+              v.auto ? h('div', { 'data-dsh-bots-need-auto': true, style: { fontSize: TINY, color: C.faint } }, t('needAutoHint')) : null,
+            ),
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+              draft === null ? h(Btn, { icon: Icon.edit(13), disabled: busy, onClick: () => setDraft(str(v.title)), 'data-dsh-bots-need-rename': v.id }, t('needRename')) : null,
+              open ? h(Btn, { kind: 'danger', icon: Icon.stop(12), disabled: busy, onClick: () => setConfirm(true), 'data-dsh-bots-need-drop': v.id }, t('needDrop')) : null,
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { className: 'dshb-scroll', style: { flex: 1, padding: '18px 24px 24px' } },
+          h(
+            'div',
+            { style: { maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 22 } },
+            asking
+              ? h(
+                  'div',
+                  { 'data-dsh-bots-need-asking': asking.ticket, className: 'dshb-card', style: { display: 'flex', flexDirection: 'column', gap: 8, borderColor: tint(C.warn, 45), background: tint(C.warn, 6) } },
+                  h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: SMALL, fontWeight: 600 } }, h(BotFace, { id: asking.botId, size: 18 }), t('needQuestion', { name: botName(t, asking.botId) })),
+                  h(Clamp, { t, text: str(asking.preview), lines: 6, style: { fontSize: SMALL } }),
+                  h('div', null, h(Btn, { kind: 'primary', size: 'sm', onClick: () => onOpenTask(asking.ticket), 'data-dsh-bots-need-answer': asking.ticket }, t('needAnswer'))),
+                )
+              : null,
+            h(
+              Section,
+              { title: t('needYourWords') },
+              asks.length === 0
+                ? h('div', { style: { fontSize: SMALL, color: C.faint } }, '—')
+                : h(
+                    'div',
+                    { 'data-dsh-bots-need-asks': asks.length, style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                    asks.map((a, i) =>
+                      h(
+                        'div',
+                        { key: `${a.at}-${i}`, style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                        h('span', { style: { fontSize: TINY, color: C.faint }, title: fmtDate(toMs(a.at)) }, fmtAgo(t, a.at)),
+                        h('div', { style: { padding: '8px 12px', borderRadius: '14px 4px 14px 14px', background: tint(C.label, 8), border: `1px solid ${C.border1}`, fontSize: FONT, alignSelf: 'flex-start', maxWidth: '100%' } }, h(Clamp, { t, text: str(a.text), lines: 6 })),
+                      ),
+                    ),
+                  ),
+            ),
+            h(
+              Section,
+              { title: t('needResults') },
+              results.length === 0
+                ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('needNoResults'))
+                : h(
+                    'div',
+                    { 'data-dsh-bots-need-results': results.length, style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+                    results.map((r, i) =>
+                      h(
+                        'div',
+                        { key: `${r.at}-${i}`, style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+                        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.faint } }, h(BotFace, { id: r.botId, size: 16 }), h('span', { style: { fontWeight: 600, color: C.muted } }, botName(t, r.botId)), h('span', { title: fmtDate(toMs(r.at)) }, fmtAgo(t, r.at))),
+                        h('div', { style: { padding: '8px 12px', borderRadius: '4px 14px 14px 14px', background: C.layer2, border: `1px solid ${C.border1}`, fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: str(r.text), lines: 10 })),
+                      ),
+                    ),
+                  ),
+            ),
+            h(
+              Section,
+              { title: t('needTasks', { n: tasks.length }) },
+              tasks.length === 0 ? h('div', { style: { fontSize: SMALL, color: C.faint } }, '—') : h(TaskList, { rows: tasks.map((r) => h(TaskRow, { key: r.id, t, row: r, onOpen: onOpenTask })) }),
+            ),
+          ),
+        ),
+        confirm
+          ? h(Confirm, {
+              t,
+              title: t('needDropTitle', { title: str(v.title) }),
+              body: t('needDropBody'),
+              confirmLabel: t('needDrop'),
+              onClose: () => setConfirm(false),
+              onConfirm: () => {
+                setConfirm(false);
+                void post('drop', {}, t('needDropped'));
+              },
+            })
+          : null,
+      );
+    }
+
     /** One task: who does it and for whom, where it came from, the reports, its usage, and what you can do with it. */
     function TicketDetail({ t, id, env, toast, onBack }) {
       const { data, failed, reload } = useJson(`tickets/${encodeURIComponent(id)}`, STATE_POLL_MS);
@@ -3866,7 +4170,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /**
      * The tool lists after switching one ability of a router dispatcher. An ability made only of tools a
      * router goes without (commands, sub-agents, images, Office) is switched through `routerAllow`, so it
-     * keeps its own setting for hands-on mode. One with other tools too (files) switches as before and
+     * keeps its own setting for when the dispatcher works alone. One with other tools too (files) switches as before and
      * comes back with the router's default; its writing tools are allowed back on their own.
      */
     function toggleRouterAbility(draft, ab, on, routerDeny) {
@@ -3879,58 +4183,6 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       }
       for (const x of [...(ab.tools ?? []), ...gated]) allow.delete(x);
       return { deny: whole ? draft.deny : toggleAbility(draft.deny, ab, false), routerAllow: sorted(allow) };
-    }
-    /** How the dispatcher works: only hand out (router) or also do small things itself (hands-on). A team setting. */
-    function DispatcherMode({ t, name, toast }) {
-      const mode = dispatcherOf();
-      const [busy, setBusy] = useState(false);
-      const choose = (next) => {
-        if (busy || next === mode) return;
-        setBusy(true);
-        postJson('settings', { patch: { dispatcher: next } })
-          .then((r) => {
-            if (r?.ok) {
-              tookSettings(r.settings && typeof r.settings === 'object' ? r.settings : { ...(store.settings?.settings ?? {}), dispatcher: next });
-              toast(t(next === 'hands-on' ? 'modeSavedHandsOn' : 'modeSavedRouter', { name }));
-              void refreshState();
-            } else toast(r?.reason || t('saveFailed'), 'error');
-          })
-          .finally(() => setBusy(false));
-      };
-      const option = (id, title, body) => {
-        const on = mode === id;
-        return h(
-          'button',
-          {
-            key: id,
-            type: 'button',
-            role: 'radio',
-            'aria-checked': on,
-            className: 'dshb-row',
-            'data-active': on,
-            'data-dsh-bots-dispatcher-mode': id,
-            disabled: busy,
-            onClick: () => choose(id),
-            style: { alignItems: 'flex-start', gap: 10, padding: '10px 12px', border: `1px solid ${on ? C.label : C.border1}`, background: on ? tint(C.label, 8) : C.layer1 },
-          },
-          h('span', { style: { width: 16, height: 16, marginTop: 1, borderRadius: '50%', border: `2px solid ${on ? C.label : C.border}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none' } }, on ? h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: C.label } }) : null),
-          h('span', { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, title), h('span', { style: { fontSize: TINY, color: C.muted, lineHeight: 1.5 } }, body)),
-        );
-      };
-      return h(
-        'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-        h(
-          'div',
-          { role: 'radiogroup', 'aria-label': t('dispatcherMode'), 'data-dsh-bots-dispatcher-modes': mode, style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 } },
-          option('router', t('modeRouter'), t('modeRouterBody')),
-          option('hands-on', t('modeHandsOn'), t('modeHandsOnBody')),
-        ),
-        // Router mode asked for, but nobody to hand work to yet.
-        mode === 'router' && !routerActiveOf()
-          ? h('div', { 'data-dsh-bots-router-waiting': true, style: { display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: TINY, color: C.muted, lineHeight: 1.5 } }, h('span', { style: { color: C.warn, display: 'inline-flex', paddingTop: 1 } }, Icon.alert(12)), t('routerWaiting', { name }))
-          : null,
-      );
     }
     const ABILITY_ICON = {
       web: () => Icon.search(15),
@@ -4068,7 +4320,6 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h(Field, { label: t('bio'), hint: t('bioHint'), style: { gridColumn: '1 / -1' } }, h(Input, { value: draft.bio, maxLength: 160, placeholder: t('bioPlaceholder'), onChange: (e) => set({ bio: e.target.value }) })),
               ),
             ),
-            isPrimary ? h(Section, { title: t('dispatcherMode'), hint: t('dispatcherModeHint') }, h(DispatcherMode, { t, name: botLabel, toast })) : null,
             h(
               Section,
               { title: t('persona'), hint: t('personaHint') },
@@ -7407,6 +7658,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [primaryTick, setPrimaryTick] = useState(true);
       const [settings, setSettings] = useState(false);
       const [ticketId, setTicketId] = useState(null); // the task shown in the Tasks view
+      const [needId, setNeedId] = useState(null); // the request shown in the Requests view
       const [tasksBot, setTasksBot] = useState(''); // the Tasks view's bot filter when another view asked for it
       const [noticeGone, setNoticeGone] = useState(false);
       const [toast, showToast] = useToast();
@@ -7421,6 +7673,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           setView('tasks');
           setTicketId(s.nav.ticket ?? null);
           setTasksBot(s.nav.ticket ? '' : (s.nav.botId ?? ''));
+        } else if (s.nav.view === 'needs') {
+          setView('needs');
+          setNeedId(s.nav.ticket ?? null);
         } else if (s.nav.view === 'activity') setView('activity');
         else if (s.nav.botId) {
           setSelected(s.nav.botId);
@@ -7452,6 +7707,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       let main;
       if (!s.state) {
         main = h('div', { style: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.faint, fontSize: SMALL } }, s.failed ? t('unavailable') : t('loading'));
+      } else if (shownView === 'needs') {
+        const toTask = (id) => {
+          setView('tasks');
+          setTasksBot('');
+          setTicketId(id ?? null);
+        };
+        main = needId ? h(NeedDetail, { key: needId, t, id: needId, toast: showToast, onBack: () => setNeedId(null), onOpenTask: toTask }) : h(NeedsView, { t, onOpen: setNeedId, onTasks: () => toTask(null) });
       } else if (shownView === 'tasks') {
         main = ticketId ? h(TicketDetail, { key: ticketId, t, id: ticketId, env: env2, toast: showToast, onBack: () => setTicketId(null) }) : h(TasksView, { t, bots, focusBot: tasksBot, onOpen: setTicketId });
       } else if (shownView === 'activity') {
@@ -7494,6 +7756,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           },
           attention: Array.isArray(s.state?.attention) ? s.state.attention.length : 0,
           openTasks: bots.reduce((n, b) => n + openTaskCount(b), 0),
+          onNeeds: () => {
+            setView('needs');
+            setNeedId(null);
+          },
+          needCounts: s.state?.needs ?? {},
         }),
         h(
           'div',
@@ -8418,6 +8685,52 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askingBadge: '{n} waiting for your answer',
         askingChip: 'Asks you',
         tasksInProgress: '{n} in progress',
+        // requests (needs, Bots 0.11)
+        needs: 'Requests',
+        needsHint: 'What you asked for',
+        needsWaitingHint: '{n} waiting for you',
+        needsWorkingHint: '{n} in progress',
+        needsSub: 'Everything you asked the team for, in a line, and how far each got. The tasks behind each are one click away.',
+        needsYou: 'Waiting for you',
+        needsYouEmpty: 'Nothing waits for you.',
+        needsWorking: 'In progress',
+        needsWorkingEmpty: 'Nothing is in progress.',
+        needsDone: 'Done',
+        needsDoneEmpty: 'Nothing delivered yet.',
+        needsShowStopped: 'Show dropped ({n})',
+        needsHideStopped: 'Hide dropped',
+        needsEmptyTitle: 'No requests yet',
+        needsEmptyBody: 'Ask your dispatcher for something in the chat. Each request shows up here in a line, with how far the team got.',
+        needsUnavailable: 'Could not load your requests.',
+        needsWeek: 'This week: {n} requests · {done} done · {working} in progress · {waiting} waiting for you',
+        needsAllTasks: 'All tasks',
+        need_waiting: 'Waiting for you',
+        need_working: 'In progress',
+        need_failed: 'Not done',
+        need_done: 'Done',
+        need_stopped: 'Dropped',
+        needWorkingOf: '{done}/{total} done',
+        needSomeFailed: '{n} of its tasks did not get done',
+        needSomeStalled: '{n} of its tasks got stuck',
+        needDelivered: 'delivered {when}',
+        needAsked: 'asked {when}',
+        needYouSaid: 'You said: {text}',
+        allNeeds: 'All requests',
+        needMissing: 'This request is not available.',
+        needYourWords: 'What you said',
+        needAutoHint: 'Titled with your own words: the dispatcher did not restate it.',
+        needResults: 'What was delivered',
+        needNoResults: 'Nothing delivered yet.',
+        needTasks: 'The tasks behind it ({n})',
+        needQuestion: '{name} asks:',
+        needAnswer: 'Answer',
+        needRename: 'Rename',
+        needRenamed: 'Renamed.',
+        needTitleLabel: 'Title',
+        needDrop: 'Drop it',
+        needDropTitle: 'Drop “{title}”?',
+        needDropBody: 'Its unfinished tasks stop, and it shows as dropped.',
+        needDropped: 'Dropped.',
         tasksSub: 'Work your bots have taken on. Each task runs in its own conversation, so several move at once.',
         tasksNeeds: 'Needs you',
         tasksNeedsEmpty: 'Nothing needs you right now.',
@@ -8490,27 +8803,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         botNoOpenTasks: '{name} has no open tasks.',
         toolReport: 'Report',
         requesterShort: 'whoever asked',
-        // the dispatcher's mode
-        dispatcherMode: 'How it works',
-        dispatcherModeHint: 'For the whole team. Each piece of work the dispatcher hands out becomes a task with its own conversation.',
-        modeRouter: 'Router',
-        modeRouterBody: 'Understands, hands out, reports. Teammates do the work.',
-        modeHandsOn: 'Hands-on',
-        modeHandsOnBody: 'Also does small things itself, as before.',
-        modeSavedRouter: '{name} now only hands out the work.',
-        modeSavedHandsOn: '{name} does small things itself again.',
-        routerModelHint: 'In Router mode it only understands, hands out and reports, so a light, fast model is enough, and every request stays quick and cheap.',
-        routerWaiting: 'Router mode starts once the team has another bot; until then {name} does the work itself.',
-        abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. In Router mode it does not search the web, run commands, write files, use sub-agents, draw, make Office files or put question cards to you (a card holds every message after it until you answer); turn one back on below if it needs it.',
-        routerOff: 'Off in Router mode',
+        // the dispatcher
+        routerModelHint: 'It only understands, hands out and reports, so a light, fast model is enough, and every request stays quick and cheap.',
+        abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. As the dispatcher it does not search the web, run commands, write files, use sub-agents, draw, make Office files or put question cards to you (a card holds every message after it until you answer); turn one back on below if it needs it.',
+        routerOff: 'Off for dispatching',
         teamOff: 'Off for the dispatcher',
         teamOffHint: 'The dispatcher hands work in parallel to its teammates, so the panel shows it as their tasks. The other bots keep sub-agents.',
-        routerPartOff: 'Partly off in Router mode',
-        routerAllowed: 'On in Router mode',
+        routerPartOff: 'Partly off for dispatching',
+        routerAllowed: 'On for dispatching',
         routerAllowBack: 'Turn back on',
-        routerOffShort: 'off in Router mode',
+        routerOffShort: 'off for dispatching',
         routerNoticeTitle: 'Your dispatcher now hands out the work',
-        routerNoticeBody: 'It listens, hands each request to a teammate as a task and reports back; every task runs in its own conversation, so several can move at once. To let it do small jobs itself again, open its profile and set How it works to Hands-on.',
+        routerNoticeBody: 'It listens, hands each request to a teammate as a task and reports back; every task runs in its own conversation, so several can move at once. To let it do a small job itself (a quick web search, say), turn that ability on under Abilities on its profile.',
         routerNoticeOpen: 'Open its profile',
         routerNoticeOk: 'Got it',
         setTasks: 'Tasks',
@@ -9305,6 +9609,52 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askingBadge: '{n} 个问题等你回答',
         askingChip: '在问你',
         tasksInProgress: '{n} 个进行中',
+        // requests (needs, Bots 0.11)
+        needs: '需求',
+        needsHint: '你提的每件事',
+        needsWaitingHint: '{n} 个等你处理',
+        needsWorkingHint: '{n} 个进行中',
+        needsSub: '你交给团队的每件事，一句话说清楚要什么、做到哪一步了。每件事背后的任务点开就能看到。',
+        needsYou: '等你处理',
+        needsYouEmpty: '没有要你处理的事。',
+        needsWorking: '进行中',
+        needsWorkingEmpty: '没有进行中的事。',
+        needsDone: '已完成',
+        needsDoneEmpty: '还没有交付的事。',
+        needsShowStopped: '显示已取消的（{n}）',
+        needsHideStopped: '收起已取消的',
+        needsEmptyTitle: '还没有需求',
+        needsEmptyBody: '在聊天里交给调度者一件事，它就会出现在这里：一句话说清楚要什么，以及团队做到了哪一步。',
+        needsUnavailable: '没能加载需求。',
+        needsWeek: '本周 {n} 个需求 · 完成 {done} · 进行中 {working} · 等你 {waiting}',
+        needsAllTasks: '全部任务',
+        need_waiting: '等你处理',
+        need_working: '进行中',
+        need_failed: '没做成',
+        need_done: '已完成',
+        need_stopped: '已取消',
+        needWorkingOf: '完成 {done}/{total}',
+        needSomeFailed: '其中 {n} 项没做成',
+        needSomeStalled: '其中 {n} 项卡住了',
+        needDelivered: '{when}交付',
+        needAsked: '{when}提出',
+        needYouSaid: '你说的：{text}',
+        allNeeds: '全部需求',
+        needMissing: '这个需求不可用。',
+        needYourWords: '你的原话',
+        needAutoHint: '标题取自你的原话，调度者没有另外转述。',
+        needResults: '交付的结果',
+        needNoResults: '还没有交付。',
+        needTasks: '背后的任务（{n}）',
+        needQuestion: '{name} 在问：',
+        needAnswer: '去回答',
+        needRename: '改标题',
+        needRenamed: '标题已更新。',
+        needTitleLabel: '标题',
+        needDrop: '不用做了',
+        needDropTitle: '不做「{title}」了？',
+        needDropBody: '它下面还没完成的任务会停下，这件事算作已取消。',
+        needDropped: '已取消。',
         tasksSub: 'Bot 们接手的工作。每个任务在自己的会话里进行，几件事可以同时推进。',
         tasksNeeds: '需要你处理',
         tasksNeedsEmpty: '现在没有需要你处理的。',
@@ -9377,27 +9727,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         botNoOpenTasks: '{name} 手上没有进行中的任务。',
         toolReport: '汇报',
         requesterShort: '发起方',
-        // the dispatcher's mode
-        dispatcherMode: '调度方式',
-        dispatcherModeHint: '对整个团队生效。调度者分出去的每件工作都是一个任务，有自己的会话。',
-        modeRouter: '只调度',
-        modeRouterBody: '听懂、分派、汇报，具体工作交给队友。',
-        modeHandsOn: '亲自动手',
-        modeHandsOnBody: '小事自己顺手做掉，和以前一样。',
-        modeSavedRouter: '{name} 现在只负责分派。',
-        modeSavedHandsOn: '{name} 又会自己做小事了。',
-        routerModelHint: '只调度时它只负责听懂、分派、汇报，用轻量、快速的模型就够了，每次请求都更快、更省。',
-        routerWaiting: '团队里再有一个 Bot 后才开始只调度，在此之前 {name} 自己动手。',
-        abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。只调度时它不联网、不执行命令、不写文件、不用子代理、不作图、不做 Office 文档，也不弹提问卡片（卡片没答之前，后面的消息都得排队）；确实需要时可以在下面逐项打开。',
-        routerOff: '只调度时关闭',
+        // the dispatcher
+        routerModelHint: '它只负责听懂、分派、汇报，用轻量、快速的模型就够了，每次请求都更快、更省。',
+        abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。作为调度者，它不联网、不执行命令、不写文件、不用子代理、不作图、不做 Office 文档，也不弹提问卡片（卡片没答之前，后面的消息都得排队）；确实需要时可以在下面逐项打开。',
+        routerOff: '调度时关闭',
         teamOff: '调度员不用',
         teamOffHint: '调度员把要并行的活交给队友，面板里能看到他们各自的任务；其他 bot 照常可以用子代理。',
-        routerPartOff: '只调度时部分关闭',
-        routerAllowed: '只调度时也可用',
+        routerPartOff: '调度时部分关闭',
+        routerAllowed: '调度时也可用',
         routerAllowBack: '重新打开',
-        routerOffShort: '只调度时关闭',
+        routerOffShort: '调度时关闭',
         routerNoticeTitle: '调度者现在只负责分派',
-        routerNoticeBody: '它会听懂请求、把每件事作为任务交给队友并汇报结果；每个任务在自己的会话里进行，几件事可以同时推进。想让它像以前一样顺手做小事，打开它的资料页，把「调度方式」改成「亲自动手」。',
+        routerNoticeBody: '它会听懂请求、把每件事作为任务交给队友并汇报结果；每个任务在自己的会话里进行，几件事可以同时推进。想让它顺手做些小事（比如联网查一下），在它资料页的「能力」里把那一项打开。',
         routerNoticeOpen: '打开它的资料页',
         routerNoticeOk: '知道了',
         setTasks: '任务',

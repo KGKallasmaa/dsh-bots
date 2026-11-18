@@ -340,7 +340,7 @@ files and `TaskView` keep the name `task` for runs.
 ### Settings
 ```ts
 settings += {
-  dispatcher: 'router' | 'hands-on',   // default 'router'; anything else reads as 'router'
+  dispatcher: 'router',                // always 'router' since 0.11 (a stored 'hands-on' reads as 'router')
   tickets: {
     maxWorking: number,                // 4; 1–32. Task Sessions working at once; a person's message to a started task may take one more
     stallMinutes: number,              // 20; 1–1440. Quiet minutes before the status check, and again before the stall
@@ -349,8 +349,8 @@ settings += {
   routerNotice: null | 'pending' | 'dismissed',  // set once on the first start of 0.8: 'pending' when bots existed before
 }
 ```
-`POST settings` takes `dispatcher` and `tickets` in `patch`; a patch with `dispatcher` also sets `routerNotice:
-'dismissed'`. Router mode is in effect when `dispatcher === 'router'` and the roster has at least two bots.
+`POST settings` takes `tickets` in `patch` (0.11 drops `dispatcher` from a patch). Router mode is in effect when the
+roster has at least two bots. A stored `dispatcher: 'hands-on'` reads as `'router'` with `routerNotice: 'pending'`.
 
 | Method | Path | Body | Answer |
 |---|---|---|---|
@@ -371,8 +371,8 @@ Router mode denies them. A save whose `tools` leaves `routerAllow` out keeps the
 ### State
 ```ts
 state += {
-  dispatcher: 'router' | 'hands-on',
-  routerActive: boolean,               // router mode in effect now
+  dispatcher: 'router',
+  routerActive: boolean,               // router mode in effect now (the dispatcher has a teammate)
   routerNoticePending: boolean,
   attention: TicketRow[],              // tasks that need a person (stage question, failed or stalled), newest change first, ≤ 50
   ticketMap: { [sessionId]: ticketId },// unarchived task Sessions
@@ -596,15 +596,15 @@ line cannot be traced (a creator that is gone and was no bot's, or a loop) acts 
 `bot_reply`, `bot_ticket`, `bot_create`, `bot_delete` and the memory tools refuse it (`bot_schedule` too, unless it
 names `bot`), and `bot_recall` reads nothing.
 
-`bot_send_message { to?, text, ticket?, status?, title?, thread? }`:
+`bot_send_message { to?, text, ticket?, status?, title?, thread?, report_to?, need? }`:
 
 | Called from | Arguments | Does | Result |
 |---|---|---|---|
 | a task Session | no `to` (or the requesting bot, or `ticket` = its own id), `text`, `status` (required) | a report: `progress` is only recorded; `done`, `blocked`, `question` reach the requester at once; `done` ends the task. From a task that has ended, or a sub-task whose parent has ended, any report is only recorded (no relay, no timeline entry) | `{ ok, text, ticket: TicketRow, to, from }` |
 | a task Session | `to`, `text`, `title?` | opens a sub-task (requester: this task) | `{ ok, text, ticket, stage, to, from }` |
-| a bot's home, `dispatcher: 'router'` | `to`, `text`, `title?`, `thread?` | opens a task; starts at once when a slot is free, else queued | `{ ok, text, ticket, stage, to, from }` |
+| a bot's home | `to`, `text`, `title?`, `thread?`, `need?` (the router home only, 0.11) | opens a task; starts at once when a slot is free, else queued | `{ ok, text, ticket, stage, need?, to, from }` |
 | the requester's Session, the requesting bot's current home, or the router home | `ticket`, `text`, `to?` (must be the task's bot) | adds a message to the task; an ended task opens again, except one the user stopped; with every slot taken it waits in `parked` | `{ ok, text, ticket, to, from }` |
-| a bot's home in hands-on mode, or any other conversation | `to`, `text` | 0.7: into the other bot's home | `{ ok, text, to, from }` |
+| a conversation of no bot | `to`, `text` | into the other bot's home | `{ ok, text, to, from }` |
 
 `title` defaults to the first line of `text`. `thread` names, when a turn has several chats, the Thread (one of the
 turn's) a new task is for; left out then, the task belongs to none. A sub-task takes no Thread. `status` is refused
@@ -837,3 +837,72 @@ closes it within 3 s of `rotatedAt` (Harness closes the active panel when the Se
 ```
 Discussions past 2000 lose the oldest archived ones. A new discussion is written at once; anchors and the rest within
 200 ms.
+
+## v0.11 — requests (needs), one dispatcher mode, no empty answers
+
+The panel says **request**; the code, routes, tools and files say **need**. A need is one thing the person asked for,
+above the tasks that do it.
+
+### Needs
+```ts
+Need = {
+  id: string,                    // n + 8 [a-z0-9]
+  title: string,                 // ≤ 80 characters: the request restated for the person, in their language
+  auto?: true,                   // titled with the person's words: the dispatcher did not restate it
+  botId: string,                 // the dispatcher that named it
+  origin: { threadKey?, via?, who? },
+  asks: { id?, at, text, via?, who? }[],   // the person's messages about it; the first kept, then the latest 19
+  tickets: string[],             // top-level tasks; a sub-task counts through the task that opened it
+  createdAt, updatedAt,
+  closed?: { at, by: 'user' | 'dispatcher' },  // dropped
+  mergedInto?: string,           // merged away: a pointer to the need that took it
+  snapshot?: { status, done, total, failed, stalled, at },  // its last status, for when its tasks are pruned
+}
+NeedRow = {
+  id, title, auto?, status: 'waiting' | 'working' | 'failed' | 'done' | 'stopped',
+  done, total, failed?, stalled?, waiting?: string[] /* task ids asking the person */,
+  bots: string[], via?, who?, threadKey?, asked? /* the first message, ≤ 200 */,
+  latest?: { status, at, botId, ticket, preview },   // a question waiting for the person first, else the latest report
+  createdAt, updatedAt, endedAt?, closed?,
+}
+NeedView = NeedRow & { asks, tickets: TicketRow[], results: { at, botId, ticket, text }[] /* done reports */ }
+```
+Status (first match): dropped → `stopped`; a task in `question`, or open with an unanswered `blocked` → `waiting`; a
+task open → `working`; all ended with one `done` → `done`; one `failed` → `failed`; else `stopped`.
+
+Which need a task counts toward, when the router home opens or adds to one with `bot_send_message`: the one `need`
+names by id (an unknown id is refused before anything opens); the need the task already counts toward (a follow-up:
+the person's words of the turn join it); one this turn made under the same words (parallel calls); a new one when
+`need` restates a request; with no `need` in a turn the person spoke in, a new `auto` one titled with their first
+message (≤ 60 characters). Work nobody asked for (a teammate's message, a schedule) counts toward none; `need` from
+any other conversation is ignored. The result's text ends with `It counts toward need <id> ("<title>").`
+
+The router reads `Open needs: <id> "<title>" (<status>[, <done>/<total> done]); …` (open needs and ones changed in
+the last day, ≤ 8) after `[Panel]` in a panel message, and as its own text block before a chat message's source line.
+
+### Tools
+- `bot_need { need, action: 'rename' | 'merge' | 'drop', title?, into? }` — the router home, or a conversation of no
+  bot. `drop` stops the need's open tasks. Result `{ ok, text, need: NeedRow }`.
+- `bot_recall` reads `needs` (`{ items: { id, title, status, done, total, …, tasks }[] }`, newest 30) and `need/<id>`.
+
+### Routes
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `needs?status=&limit=&offset=` | | `{ items: NeedRow[], next_offset }`, newest change first; `limit` ≤ 300 (100) |
+| GET | `needs/<id>` | | `NeedView` (a merged id answers with the need that took it) |
+| POST | `needs/<id>/rename` | `{ title }` | `{ ok, ...NeedView }` |
+| POST | `needs/<id>/drop` | `{}` | `{ ok, ...NeedView }`: open tasks stopped by the user |
+
+`state.needs = { waiting: number, working: number }`.
+
+### Storage
+`~/.dsh/cache/bots/needs.json` holds `{ version: 1, needs: Need[] }`, mode 600. Upkeep keeps the newest 500 settled
+needs (done, failed or stopped) and every open one.
+
+### Empty answers
+Harness's pi-ai adapter turns an answer that stops with no content into `EMPTY_RESPONSE` (`model "…" returned a
+completed response with no content`), retries it, then fails the turn. Every persona tells the bot to write only
+`NO_REPLY` when nothing needs saying; a final text that is that marker alone (any case, in backticks or with a full
+stop) is never logged as a reply, sent to a chat app or kept in a task's log. A task whose turn still fails with
+`EMPTY_RESPONSE` is not failed or retried by the plugin (the watchdog still asks one that never reports), and a run
+that ended so is not marked `error`.

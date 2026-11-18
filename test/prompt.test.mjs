@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ABILITIES } from '../lib/abilities.mjs';
-import { DEFAULT_COMMAND_MS, ROUTER_DENY, dmBody, dmHeader, noWaitReason, personaText, reportsGoDirect, runsSleep } from '../lib/prompt.mjs';
+import { DEFAULT_COMMAND_MS, NO_REPLY, ROUTER_DENY, dmBody, dmHeader, isNoReply, noWaitReason, personaText, reportsGoDirect, runsSleep } from '../lib/prompt.mjs';
 
 const atlas = { id: 'b-atlas', name: 'Atlas', handle: 'atlas', role: 'primary', persona: 'Chief of staff.', bio: 'Runs the team', skills: [] };
 const coder = { id: 'b-coder', name: 'Coder', handle: 'coder', role: 'bot', persona: '', bio: 'Writes code', skills: [] };
@@ -233,3 +233,34 @@ test('0.10: only a team\'s dispatcher is told its helpers are teammates (no sub-
   assert.doesNotMatch(personaText(atlas, [atlas], {}), /Your helpers are your teammates/);
 });
 
+
+test('every conversation has a way to say nothing that is not an empty answer (Harness fails those)', () => {
+  const variants = [
+    personaText(atlas, roster),
+    personaText(atlas, roster, { dispatcher: 'router' }),
+    personaText(coder, roster),
+    personaText(coder, roster, { tickets: true }),
+    personaText(coder, roster, { ticket }),
+    personaText(coder, roster, { ticket: { ...ticket, relay: true } }),
+  ];
+  for (const text of variants) {
+    assert.match(text, /Never end a turn with an empty answer\. When nothing needs saying .* write only NO_REPLY: it is never shown or sent\./);
+    assert.doesNotMatch(text, /without a summary|without writing to the user/);
+  }
+  assert.match(variants[0], /write only NO_REPLY instead of writing to the user/);
+  assert.match(variants[4], /after a `done` report, end your turn with only NO_REPLY\./);
+});
+
+test('the no-reply marker alone counts, in any case or dress; text around it is an answer', () => {
+  for (const t of [NO_REPLY, ' no_reply ', '`NO_REPLY`', 'NO_REPLY.', '**NO_REPLY**', 'No reply']) assert.equal(isNoReply(t), true, t);
+  for (const t of ['', 'NO_REPLY needed here, the fix is live.', 'Done. NO_REPLY', 'no', null]) assert.equal(isNoReply(t), false, String(t));
+});
+
+test('the router names each request as a need, restated for the person; nobody else is told to (0.11)', () => {
+  const router = personaText(atlas, roster, { dispatcher: 'router' });
+  assert.match(router, /Each request of the person is a need: the panel shows them their needs/);
+  assert.match(router, /pass `need` with it: the request restated for the person in one short line, in their language, saying what they get, not who does it or how/);
+  assert.match(router, /For more work on a need listed under "Open needs", pass its id\. Leave `need` out for work the person did not ask for\./);
+  assert.match(router, /drop its need with `bot_need`: its open tasks stop\. When two needs turn out to be one request, merge them/);
+  for (const text of [personaText(atlas, roster), personaText(coder, roster, { tickets: true }), personaText(coder, roster, { ticket })]) assert.doesNotMatch(text, /`need`|bot_need/);
+});

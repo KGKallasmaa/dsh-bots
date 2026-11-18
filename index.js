@@ -6,19 +6,15 @@
  * open-computer-use) and scheduled tasks. One bot is the dispatcher that
  * delegates work and schedules tasks.
  *
- * How bots hand work to each other depends on the team's `dispatcher` setting:
- *
- * - `router` (the default since 0.8): `bot_send_message` from a bot's home opens
- *   a ticket (lib/tickets.mjs) for the other bot, which works on it in a
- *   Session of its own (`ticket-<id>`) and reports back with a status; the
- *   dispatcher's home only understands, hands out and reports (its tools are
- *   limited and it may not wait). At most `tickets.maxWorking` ticket Sessions
- *   run at once; the rest queue.
- * - `hands-on` (0.7): `bot_send_message` drops the text into the other bot's
- *   home inbox, which wakes it; the reply travels back the same way.
- *
- * A ticket Session works the same way in both modes: reports go to whoever
- * asked, and asking another bot opens a sub-ticket.
+ * How bots hand work to each other: `bot_send_message` from a bot's home opens
+ * a ticket (lib/tickets.mjs) for the other bot, which works on it in a Session
+ * of its own (`ticket-<id>`) and reports back with a status; the dispatcher's
+ * home only understands, hands out and reports (its tools are limited and it
+ * may not wait), once it has a teammate. At most `tickets.maxWorking` ticket
+ * Sessions run at once; the rest queue. A ticket Session's reports go to
+ * whoever asked, and asking another bot from it opens a sub-ticket. (The 0.7
+ * `hands-on` mode, where messages went into the other bot's home, is gone
+ * since 0.11; a message from outside any bot still goes into the bot's home.)
  *
  * Everything a bot is made of is applied to its Agent's own scope when that
  * Agent comes up (and re-applied when the bot changes): a persona prompt
@@ -50,13 +46,14 @@ import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
 import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
 import { createActivity } from './lib/activity.mjs';
-import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, reportsGoDirect, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
+import { describeTiming, dmBody, dmHeader, isNoReply, NO_REPLY, noWaitReason, personaText, reportsGoDirect, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
 import { createLedger, promptTokens, report, ticketUsage, todayByBot, usageRow } from './lib/usage.mjs';
 import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
+import { clampNeedTitle, createNeeds, NEED_ID_RE, needStatus } from './lib/needs.mjs';
 import { assignmentText, clip, discussionNoteText, failedNoticeText, followUpNoticeText, NEWS_MESSAGES, nudgeText, panelHeaderText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, shownNoticeText, stalledNoticeText, threadNewsText } from './lib/cards.mjs';
-import { checkTickets, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
+import { checkTickets, isEmptyResponse, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
 import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
 import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, languageOf, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
 import { createTopics, rotationReason } from './lib/topics.mjs';
@@ -118,7 +115,7 @@ const AVATAR_ATTEMPTS = 3;
 /** Errors from a gateway or the network rather than from the request itself. */
 export const TRANSIENT = /\b(408|409|429|500|502|503|504|520|522|524)\b|connection (lost|reset|closed)|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|could not reach|did not answer within|overloaded|temporarily/i;
 
-export const TOOL_NAMES = ['bot_list', 'bot_create', 'bot_update', 'bot_delete', 'bot_send_message', 'bot_reply', 'bot_recall', 'bot_ticket', 'bot_schedule', 'memory_save', 'memory_forget', 'memory_search'];
+export const TOOL_NAMES = ['bot_list', 'bot_create', 'bot_update', 'bot_delete', 'bot_send_message', 'bot_reply', 'bot_recall', 'bot_ticket', 'bot_need', 'bot_schedule', 'memory_save', 'memory_forget', 'memory_search'];
 /** Message ids of the plugin's own deliveries start with this, so a retry can tell it already delivered one. */
 const MESSAGE_PREFIX = 'bots:';
 /**
@@ -240,6 +237,8 @@ export function apply(ctx, config, deps = {}) {
   const memory = createMemory(join(dir, 'memory'));
   const topics = createTopics(dir);
   const tickets = createTickets(dir, { now: nowMs });
+  // What the person asked for, above the tasks that do it (Bots 0.11).
+  const needs = createNeeds(dir, { now: nowMs });
   // Replies to one message talked over in a forked Session of their own (Bots 0.10).
   const discussions = createDiscussions(dir, { now: nowMs });
   // A tasks file that is there but cannot be read stops the plugin now, before anything writes over it.
@@ -326,18 +325,16 @@ export function apply(ctx, config, deps = {}) {
   }
   /** Whether `sessionId` is `bot`'s home, or a discussion forked from its conversation (it talks to the person like the home). */
   const isHomeOf = (bot, sessionId) => Boolean(bot && sessionId) && (bot.sessionId === sessionId || discussions.bySession(sessionId)?.botId === bot.id);
-  const dispatcherMode = () => settings.get().dispatcher;
   /**
-   * Router mode is in effect: the setting says so and the dispatcher has someone to hand work to. A
-   * dispatcher that is the only bot works hands-on (a router alone would have no hands); adding a
-   * second bot makes it a router, removing the last teammate makes it hands-on again.
+   * Router mode is in effect: the dispatcher has someone to hand work to. A dispatcher that is the
+   * only bot does the work itself (a router alone would have no hands); adding a second bot makes it
+   * a router, removing the last teammate makes it work alone again. Since 0.11 there is no other
+   * mode: the 0.7 hands-on dispatcher is gone.
    */
-  const routerActive = () => dispatcherMode() === 'router' && store.list().length > 1;
+  const routerActive = () => store.list().length > 1;
   /** The dispatcher works as a router (in its home; its ticket Sessions are ordinary workers). */
   const isRouter = (bot) => Boolean(bot) && bot.role === 'primary' && routerActive();
   const isRouterHome = (bot, sessionId) => isRouter(bot) && isHomeOf(bot, sessionId) && !ticketOf(sessionId);
-  /** Bot-to-bot work opens tickets (router mode), or goes to the other bot's home as in 0.7 (hands-on). */
-  const ticketsOn = () => dispatcherMode() === 'router';
 
   /**
    * Questions a bot's home or ticket Session put to the person with `ask_user_question`, by id, while
@@ -497,7 +494,7 @@ export function apply(ctx, config, deps = {}) {
               const roster = store.list();
               const ticket = ticketId ? tickets.get(ticketId) : undefined;
               return now
-                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: ticketsOn(), ...(ticket ? { ticket } : {}) })
+                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, ...(ticket ? { ticket } : {}) })
                 : '';
             },
           }),
@@ -1520,7 +1517,8 @@ export function apply(ctx, config, deps = {}) {
     store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: panelThreadKey(sid), sid });
     // The panel shows thread replies in the chat: what the person read there since, the main conversation hears first.
     const news = threadNewsFor(bot, sid);
-    const header = isRouterHome(bot, sid) ? panelHeaderText({ open: openTasksOf(bot) }, cardCtx()) : '';
+    // The router reads which tasks a message may continue, and the person's open requests (Bots 0.11).
+    const header = isRouterHome(bot, sid) ? [panelHeaderText({ open: openTasksOf(bot) }, cardCtx()), openNeedsLine(bot)].filter(Boolean).join('\n') : '';
     try {
       await sendTo(agent, { content: [news.text, header, body].filter(Boolean).map((text) => ({ type: 'text', text })), source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
     } catch (error) {
@@ -1716,6 +1714,131 @@ export function apply(ctx, config, deps = {}) {
       sessionId: t.sessionId,
       running: Boolean(t.sessionId && agents()?.get?.(t.sessionId)?.status === 'running'),
     };
+  }
+
+  // --- needs: what the person asked for, one level above its tasks (Bots 0.11, lib/needs.mjs) ---
+  /** The top-level ticket a ticket works under (itself for one that is no sub-task). */
+  function rootTicketOf(t) {
+    let cur = t;
+    for (let hops = 0; cur?.parentId && hops < 16; hops += 1) cur = tickets.get(cur.parentId) ?? null;
+    return cur ?? t;
+  }
+  /** The need a ticket (or the task that opened it) counts toward, if any. */
+  const needOfTicket = (t) => (t ? needs.byTicket(rootTicketOf(t).id) : undefined);
+  const needTasks = (n) => n.tickets.map((id) => tickets.get(id)).filter(Boolean);
+  const needStatusOf = (n) => needStatus(n, needTasks(n), stageOf);
+  /** Keep a need's latest status (for when its tasks are pruned). */
+  const refreshNeed = (n) => (n ? needs.snapshot(n.id, needStatusOf(n)) : undefined);
+  // Every change of a task may move its need.
+  tickets.onChange((t) => {
+    try {
+      if (t) refreshNeed(needOfTicket(t));
+    } catch (error) {
+      ctx.logger?.debug?.(`bots: a need's status: ${error?.message ?? error}`);
+    }
+  });
+  /** Needs the dispatcher may add to: open ones, and ones that settled in the last day (a change to a result). */
+  function openNeedsOf(bot) {
+    const since = nowMs() - 24 * 3600_000;
+    return needs.list().filter((n) => (!bot || n.botId === bot.id) && (['waiting', 'working'].includes(needStatusOf(n).status) || n.updatedAt >= since));
+  }
+  /** How the dispatcher reads open needs: `n… "title" (working, 1/3 done)`. */
+  const needPhrase = (n) => {
+    const s = needStatusOf(n);
+    return `${n.id} "${n.title}" (${s.status}${s.total > 1 ? `, ${s.done}/${s.total} done` : ''})`;
+  };
+  /** The line a message to the dispatcher lists its needs in, or ''. */
+  const openNeedsLine = (bot) => {
+    const list = openNeedsOf(bot).slice(0, 8);
+    return list.length ? `Open needs: ${list.map(needPhrase).join('; ')}` : '';
+  };
+  /** A chat message as the person sent it: without the open-needs block the router reads before it. */
+  const withoutNeedsLine = (text) => String(text ?? '').replace(/^Open needs: [^\n]*\n/, '');
+  /** That line as a text block before a chat message, for the router's own conversations only. */
+  const needsNoteFor = (target, sessionId) => {
+    const bot = store.get(target?.id) ?? target;
+    const line = bot && isRouterHome(bot, sessionId) ? openNeedsLine(bot) : '';
+    return line ? [{ type: 'text', text: line }] : [];
+  };
+  /** One need as the panel's board lists it. */
+  function needRow(n) {
+    const s = needStatusOf(n);
+    const list = needTasks(n);
+    // The latest word from its tasks: a question waiting for the person first.
+    const reports = list.flatMap((t) => t.reports.map((r) => ({ ...r, botId: t.botId, ticket: t.id }))).sort((a, b) => a.at - b.at);
+    const asked = s.waiting.length ? reports.filter((r) => s.waiting.includes(r.ticket) && (r.status === 'question' || r.status === 'blocked')).at(-1) : undefined;
+    const latest = asked ?? reports.at(-1);
+    const first = n.asks[0];
+    return {
+      id: n.id,
+      title: n.title,
+      ...(n.auto ? { auto: true } : {}),
+      status: s.status,
+      done: s.done,
+      total: s.total,
+      ...(s.failed ? { failed: s.failed } : {}),
+      ...(s.stalled ? { stalled: s.stalled } : {}),
+      ...(s.waiting.length ? { waiting: s.waiting } : {}),
+      bots: [...new Set(list.map((t) => t.botId))],
+      ...(n.origin?.via ? { via: n.origin.via } : {}),
+      ...(n.origin?.who && n.origin.who !== 'the user' ? { who: n.origin.who } : {}),
+      ...(n.origin?.threadKey ? { threadKey: n.origin.threadKey } : {}),
+      ...(first ? { asked: clip(first.text, 200).text } : {}),
+      ...(latest ? { latest: { status: latest.status, at: latest.at, botId: latest.botId, ticket: latest.ticket, preview: clip(String(latest.text ?? '').trim(), PREVIEW_CHARS).text } } : {}),
+      createdAt: n.createdAt,
+      updatedAt: Math.max(n.updatedAt, ...list.map((t) => t.updatedAt)),
+      ...(s.endedAt ? { endedAt: s.endedAt } : {}),
+      ...(n.closed ? { closed: n.closed } : {}),
+    };
+  }
+  /** One need in full: the row, the person's words, its tasks and what they delivered. */
+  function needView(n) {
+    const list = needTasks(n);
+    const results = list
+      .flatMap((t) => t.reports.filter((r) => r.status === 'done').map((r) => ({ at: r.at, botId: t.botId, ticket: t.id, text: clip(String(r.text ?? ''), 4000).text })))
+      .sort((a, b) => a.at - b.at);
+    return { ...needRow(n), asks: n.asks, tickets: list.map(ticketRow), results };
+  }
+  const needOr404 = (id) => {
+    const n = needs.get(String(id ?? ''));
+    if (!n) throw new Error('no such need');
+    return n;
+  };
+  /** Drop a need: its open tasks stop, and it shows as dropped. */
+  function dropNeed(n, by) {
+    for (const t of needTasks(n)) if (!t.ended) endTicket(t, { by: by === 'user' ? 'user' : 'requester', outcome: 'stopped' });
+    return needs.close(n.id, { by });
+  }
+  /** Where a need was asked, from the task that serves it. */
+  const needOrigin = (t) => ({ ...(t?.origin?.threadKey ? { threadKey: t.origin.threadKey } : {}), via: t?.origin?.via || 'panel', ...(t?.origin?.who ? { who: t.origin.who } : {}) });
+  /**
+   * The need a task the dispatcher opens or adds to counts toward: the one `given` names by id; the
+   * need the task already counts toward (a follow-up: the person's words join it); one this turn made
+   * under the same words (parallel calls); a new one when `given` restates a request; with nothing
+   * given in a turn the person spoke in, one under their own words (marked `auto`). Work nobody asked
+   * for (a teammate's request, a schedule) counts toward none. Undefined then.
+   */
+  function needFor(bot, sessionId, given, t) {
+    const n = needOfTurn(bot, sessionId, given, t);
+    if (n) refreshNeed(n);
+    return n ? needs.get(n.id) : undefined;
+  }
+  function needOfTurn(bot, sessionId, given, t) {
+    const st = turnState.get(sessionId);
+    const asks = st?.asks ?? [];
+    const root = rootTicketOf(t);
+    if (given && NEED_ID_RE.test(given)) return needs.addTicket(needs.get(given).id, root.id, asks);
+    const current = needs.byTicket(root.id);
+    if (current) return needs.addAsks(current.id, asks) ?? current;
+    if (!given && asks.length === 0) return undefined;
+    const title = given ? clampNeedTitle(given) : clampNeedTitle(asks[0].text, 60);
+    const made = st ? (st.needs ??= new Map()) : new Map();
+    const key = given ? title.toLowerCase() : '';
+    const same = made.get(key);
+    if (same && needs.get(same)) return needs.addTicket(same, root.id, asks);
+    const n = needs.create({ title, botId: bot.id, origin: needOrigin(t), asks, tickets: [root.id], ...(given ? {} : { auto: true }) });
+    made.set(key, n.id);
+    return n;
   }
 
   /** A Thread as a ticket subscribes to it: its key and label (`Slack · Acme #general · thread`). */
@@ -2029,6 +2152,15 @@ export function apply(ctx, config, deps = {}) {
       cur = back ?? cur;
     }
     cur = tickets.touch(cur.id, human ? { human: true } : { requester: true }) ?? cur;
+    // The person's own words to a task (a chat follow-up, the panel's task box) join its need (Bots 0.11).
+    if (human && !sender) {
+      try {
+        const n = needOfTicket(cur);
+        if (n) needs.addAsks(n.id, [{ ...(key ? { id: key } : {}), at: nowMs(), text: body, ...(chat?.kind ? { via: chat.kind } : {}), ...(chat?.who ? { who: chat.who } : {}) }]);
+      } catch {
+        // The need is a view; the message goes on.
+      }
+    }
     const who = sender ? `@${sender.handle} (${sender.name})` : 'the user';
     if (!cur.startedAt) {
       cur = tickets.patch(cur.id, { text: `${cur.text}\n\n--- Added by ${who} ---\n${body}` }) ?? cur;
@@ -2326,6 +2458,9 @@ export function apply(ctx, config, deps = {}) {
   function ticketError(t, error) {
     if (!t || t.ended || retryTimers.has(t.id)) return;
     if (error?.name === 'AbortError') return; // stopped on purpose (Harness reports no cancellation here anyway)
+    // Nothing to say, even after Harness's retries (some models end a turn with an empty answer after
+    // a report): the turn ended quietly. The watchdog still asks a task that never reports.
+    if (isEmptyResponse(error)) return;
     // A model failure is an `LlmError` whose `failure` holds the facts (`status`, `message`, `code`).
     const facts = error?.failure && typeof error.failure === 'object' ? error.failure : error;
     const reason = String(facts?.message ?? error?.message ?? error?.error?.message ?? (typeof error === 'string' ? error : '') ?? '').trim() || 'the model call failed';
@@ -2461,6 +2596,7 @@ export function apply(ctx, config, deps = {}) {
     await watch(now);
     tickets.flush();
     tickets.prune();
+    needs.prune();
     await pump();
   }
 
@@ -2566,6 +2702,7 @@ export function apply(ctx, config, deps = {}) {
         const note = first ? `${discussionNoteText({})}\n` : '';
         const sent = await sendTo(into.agent, {
           content: [
+            ...needsNoteFor(target, into.agent.session.id),
             { type: 'text', text: `${note}${header}${threadNote(meta.threadKey)}` },
             { type: 'text', text: body },
           ],
@@ -2580,6 +2717,7 @@ export function apply(ctx, config, deps = {}) {
       const agent = await agentOf(store.get(target.id) ?? target);
       const sent = await sendTo(agent, {
         content: [
+          ...needsNoteFor(target, agent.session.id),
           { type: 'text', text: `${header}${threadNote(meta.threadKey)}` },
           { type: 'text', text: body },
         ],
@@ -2723,7 +2861,8 @@ export function apply(ctx, config, deps = {}) {
           st.answers = new Set();
           st.acted = false;
           turnState.set(session.id, st);
-          let said = textOf(event.data.content);
+          // The router's list of open needs before a chat message is context, not what the person said.
+          let said = kind === 'user' ? withoutNeedsLine(textOf(event.data.content)) : textOf(event.data.content);
           // A message typed in the panel (Bots 0.9) is logged already; its topic joins the turn's Threads.
           const panelId = kind === 'user' ? /^bots:panel:(p[a-z0-9]{8})$/.exec(id)?.[1] : undefined;
           const typed = panelId ? store.message(panelId) : undefined;
@@ -2751,11 +2890,17 @@ export function apply(ctx, config, deps = {}) {
             channels.noteInput(session.id, { threadKey: key, origin: { ...(t.origin?.who ? { who: t.origin.who } : {}), ...(th?.label ? { label: th.label } : {}), ...(t.origin?.replyTo ? { replyTo: t.origin.replyTo } : {}) }, ticket: t.id });
           }
           const thread = via ? via.threadKey : homeThreadOf(session.id);
+          // The person's words in the dispatcher's turn: a need it names now keeps them (Bots 0.11).
+          const asked = (m) => {
+            if (isRouterHome(bot, session.id) && m?.text) st.asks = [...(st.asks ?? []), { id: m.id, at: m.at ?? nowMs(), text: m.text, ...(m.via ? { via: m.via } : {}), ...(m.who ? { who: m.who } : {}) }];
+          };
           if (kind === 'user' && typed) {
             // Logged when it was sent.
+            asked(typed);
           } else if (kind === 'user') {
             const topic = !via && isPanelThread(thread) ? panelTopicOf(thread) : '';
             const logged = store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}), ...(topic ? { topic } : {}) });
+            asked(logged);
             if (home) {
               const refs = [messageRef(logged.id)];
               // A chat message: by its id in the chat app, and its Thread's latest exchange with the home.
@@ -2778,7 +2923,8 @@ export function apply(ctx, config, deps = {}) {
           if (id && st.reports.has(id)) st.answers.add(id);
           else st.acted = true;
         }
-        const text = calls.length > 0 ? '' : textOf(content);
+        // NO_REPLY: the bot had nothing to say (an empty answer is an error in Harness), so nothing is shown or sent.
+        const text = calls.length > 0 || isNoReply(textOf(content)) ? '' : textOf(content);
         const why = trigger.get(session.id);
         // Shown in the bot's chat: what it says to the user. Hidden: acknowledging a schedule notice,
         // the closing words of a turn that answered a bot by DM, and those of a turn whose only inputs
@@ -2832,7 +2978,7 @@ export function apply(ctx, config, deps = {}) {
         const task = openTasks.get(sid);
         if (!task) return;
         for (const b of Array.isArray(msg.content) ? msg.content : []) {
-          if (b?.type === 'text' && b.text?.trim()) logLine(task, `[assistant] ${b.text.trim()}`);
+          if (b?.type === 'text' && b.text?.trim() && !isNoReply(b.text)) logLine(task, `[assistant] ${b.text.trim()}`);
           else if (b?.type === 'tool-call') {
             let args = '';
             try {
@@ -2853,7 +2999,10 @@ export function apply(ctx, config, deps = {}) {
       } else if (event.type === 'turn/end') {
         const task = openTasks.get(sid);
         const reason = event.data?.reason?.kind;
-        if (task && reason && reason !== 'completed') task.status = reason === 'error' ? 'error' : reason === 'aborted' ? 'stopped' : task.status;
+        // A model that answered with nothing, even after Harness's retries, ended its turn quietly: no error.
+        if (task && reason && reason !== 'completed' && !(reason === 'error' && isEmptyResponse(event.data?.reason?.error ?? event.data?.reason?.failure))) {
+          task.status = reason === 'error' ? 'error' : reason === 'aborted' ? 'stopped' : task.status;
+        }
         settleSoon(sid);
       }
     } catch (error) {
@@ -3471,7 +3620,7 @@ export function apply(ctx, config, deps = {}) {
     if (e?.type === 'assistant/message') {
       const parts = [];
       for (const b of Array.isArray(d.message?.content) ? d.message.content : []) {
-        if (b?.type === 'text' && b.text?.trim()) parts.push(`[assistant] ${b.text.trim()}`);
+        if (b?.type === 'text' && b.text?.trim() && !isNoReply(b.text)) parts.push(`[assistant] ${b.text.trim()}`);
         else if (b?.type === 'tool-call') {
           let args = '';
           try {
@@ -3633,12 +3782,13 @@ export function apply(ctx, config, deps = {}) {
       name: 'bot_send_message',
       description: [
         'Message another bot, or report on the task this conversation works on. Make the text self-contained: the other bot cannot see this conversation. Do not reply to acknowledgements.',
-        "- To delegate: `to` (the bot's @handle) and `text`. Depending on how the team works, this opens a task (ticket) that the bot works on in a conversation of its own, or drops the text into that bot's own conversation; the result says which. Either way the call returns at once and the answer (a report, or a bot message) arrives here by itself: never wait or poll for it.",
+        "- To delegate: `to` (the bot's @handle) and `text`. From a bot's own conversation or a task this opens a task (ticket) that the bot works on in a conversation of its own; from elsewhere it drops the text into that bot's own conversation; the result says which. Either way the call returns at once and the answer (a report, or a bot message) arrives here by itself: never wait or poll for it.",
         '- When this turn involves several topics or chats, name the one a new task is for with `thread` (as its message header shows it), so its answer goes there.',
         '- When the dispatcher only routes, a message to it opens no task: it goes into its own conversation, and it passes on to the person what they should know. Work goes to the teammate who does it.',
         '- A task from a topic or chat answers the person there itself; pass `report_to: "me"` to get its reports back instead (to combine several results).',
         '- To add to an open task you asked for (an answer to its question, a change, a message of the person\'s that continues it): `ticket` (its id) and `text`.',
         '- In a task conversation, to report to whoever asked: leave out `to`, give `text` and a `status` (progress, done, blocked, question).',
+        '- The dispatcher names the person\'s request a task serves with `need`: a short restatement for a new request, or the id of a need already open.',
       ].join('\n'),
       parameters: {
         to: { type: 'string', description: '@handle (or id / name) of the bot. Leave it out to report on your own task.' },
@@ -3648,6 +3798,7 @@ export function apply(ctx, config, deps = {}) {
         title: { type: 'string', description: 'A short title for a new task; taken from the first line of text when left out.' },
         thread: { type: 'string', description: 'Only when this turn involves several topics or chats: the thread (as the message header "(thread …)" shows it) the new task, or the message added to a task, is for. A new task then answers there, and follow-ups there reach it. Left out with several, a new task belongs to none of them.' },
         report_to: { type: 'string', enum: ['thread', 'me'], description: 'For a new task: "thread" (default) — its bot answers the person in the topic or chat the request came from; "me" — its reports come back to you.' },
+        need: { type: 'string', description: 'Dispatcher only: the person\'s request this task serves. For a new request, restate it for the person in one short line in their language, saying what they get (not who does it); tasks for the same request pass the same line or the need id the first call returned. For more work on an open need ("Open needs: …"), its id (n…).' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ to: v.to, from: v.from, ...(v.ticket ? { ticket: v.ticket } : {}) }) },
       isConcurrencySafe: () => true,
@@ -3671,16 +3822,24 @@ export function apply(ctx, config, deps = {}) {
               status === 'progress'
                 ? `Recorded on task ${ticket.id}; progress does not interrupt whoever asked. Go on with the work.`
                 : shown
-                  ? `Shown to the person as it is, in ${shown.where}${to ? `; @${to.handle} is told` : ''}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' Their answer will arrive here by itself; end your turn now.'}`
+                  ? `Shown to the person as it is, in ${shown.where}${to ? `; @${to.handle} is told` : ''}.${status === 'done' ? ` The task is done: end your turn with only ${NO_REPLY}.` : ` Their answer will arrive here by itself; end your turn now with only ${NO_REPLY}.`}`
                 : unread
-                  ? `Recorded "${status}" on task ${ticket.id}, but nobody is told: ${unread === 'ended' ? `the task has ended (${stageOf(ticket)})` : `the task that asked for it${parent ? `, ${parent},` : ''} has ended`}. The report is kept on the task; end your turn now.`
-                  : `Reported "${status}" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}${relayed || !to ? '' : ' (it could not be reached just now; the report is kept on the task)'}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' An answer will arrive here by itself; end your turn now.'}`;
+                  ? `Recorded "${status}" on task ${ticket.id}, but nobody is told: ${unread === 'ended' ? `the task has ended (${stageOf(ticket)})` : `the task that asked for it${parent ? `, ${parent},` : ''} has ended`}. The report is kept on the task; end your turn now with only ${NO_REPLY}.`
+                  : `Reported "${status}" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}${relayed || !to ? '' : ' (it could not be reached just now; the report is kept on the task)'}.${status === 'done' ? ` The task is done: end your turn with only ${NO_REPLY}.` : ` An answer will arrive here by itself; end your turn now with only ${NO_REPLY}.`}`;
             return { ok: true, text: said, ticket: row(ticket), to: face(to), from: face(sender) };
           }
         }
         if (status) throw new Error(mine ? `\`status\` is for reports to whoever asked for task ${mine.id} (leave out "to"); to ask @${named?.handle ?? 'a bot'} for help, leave out \`status\`` : '`status` is only for reports from a task conversation; leave it out here');
 
         const chosen = typeof args.thread === 'string' && args.thread.trim() !== '' ? threadRef(args.thread, sessionId) : '';
+        // The person's request it serves (Bots 0.11): only the dispatcher's own conversation names one.
+        const routing = Boolean(sender) && !mine && isRouterHome(sender, sessionId);
+        const needArg = routing ? String(args.need ?? '').trim().replace(/^need\//, '') : '';
+        if (needArg && NEED_ID_RE.test(needArg) && !needs.get(needArg)) {
+          const open = openNeedsOf(sender).map((n) => n.id);
+          throw new Error(`no need ${needArg}${open.length ? `; open needs: ${open.join(', ')}` : ''}. For a new request, pass a short line restating it instead`);
+        }
+        const needText = (n) => (n ? ` It counts toward need ${n.id} ("${n.title}")${n.auto ? '; pass `need` with a short restatement to name it for the person' : ''}.` : '');
         // Adding to an existing ticket.
         if (wantTicket) {
           const t = tickets.get(wantTicket);
@@ -3697,7 +3856,8 @@ export function apply(ctx, config, deps = {}) {
           const target = store.get(next.botId);
           const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
           const after = reportsGoDirect(next) ? `${handleOf(next.botId)} answers the person ${isPanelThread(next.showIn ?? next.origin?.threadKey) ? 'in the panel' : 'in the chat'} itself` : `${handleOf(next.botId)}'s report will arrive here by itself`;
-          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${after}; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
+          const need = routing ? needFor(sender, sessionId, needArg, next) : undefined;
+          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
 
@@ -3714,9 +3874,10 @@ export function apply(ctx, config, deps = {}) {
         }
 
         // A new ticket: from a task conversation (a sub-task), or from a bot's home when tasks are on.
-        if (sender && sessionId && (mine || (ticketsOn() && isHomeOf(sender, sessionId)))) {
+        if (sender && sessionId && (mine || isHomeOf(sender, sessionId))) {
           const relay = String(args.report_to ?? '').trim().toLowerCase() === 'me';
           const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay });
+          const need = routing ? needFor(sender, sessionId, needArg, t) : undefined;
           const stage = stageOf(t);
           const who = named.id === sender.id ? 'yourself' : `@${named.handle}`;
           const answer = reportsGoDirect(t)
@@ -3725,10 +3886,10 @@ export function apply(ctx, config, deps = {}) {
           const said =
             stage === 'failed'
               ? `Task ${t.id} for ${who} could not start: ${t.error ?? 'unknown error'}.`
-              : `Opened task ${t.id} for ${who} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}). ${answer}`;
-          return { ok: stage !== 'failed', text: said, ticket: row(t), stage, to: face(named), from: face(sender) };
+              : `Opened task ${t.id} for ${who} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}). ${answer}${needText(need)}`;
+          return { ok: stage !== 'failed', text: said, ticket: row(t), stage, ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(named), from: face(sender) };
         }
-        // 0.7: into the other bot's home (the user from any conversation; any home in hands-on mode).
+        // Into the other bot's home: the user, from a conversation that belongs to no bot.
         if (chosen) throw new Error('`thread` is for opening a task; this message goes to the bot\'s own conversation, so leave it out');
         await deliver(sender ?? null, named, args.text, sessionId);
         return { ok: true, text: `Delivered to @${named.handle}. Its answer will arrive as a new message; continue with other work or end your turn.`, to: face(named), from: face(sender) };
@@ -3792,12 +3953,24 @@ export function apply(ctx, config, deps = {}) {
       description:
         'Read tasks (tickets) and chat threads by reference instead of guessing: `tickets` (a page of them, open ones first), `ticket/<id>` (its card), `ticket/<id>/text` (what was asked), `ticket/<id>/reports`, `ticket/<id>/transcript` (its conversation), `thread/<key>` (a chat thread: its tasks and latest messages), `bot/<handle>` (that bot\'s tasks). Every id on a card can be read this way; long text comes in pages (`offset`). From a task conversation you can read that task, its parent and sub-tasks, and its threads.',
       parameters: {
-        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key> or bot/<handle>.' },
+        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key>, bot/<handle>, needs or need/<id>.' },
         offset: { type: 'number', description: 'Where the next page starts: the `next_offset` of the last one.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
       isConcurrencySafe: () => true,
       execute: async (args, exec) => {
+        const ref = String(args.ref ?? '').trim();
+        // The person's requests (Bots 0.11): what each asked for and how far it got.
+        if (ref === 'needs' || /^need\/n[a-z0-9]{8}$/.test(ref)) {
+          if (ref === 'needs') {
+            const items = needs.list().slice(0, 30).map((n) => ({ id: n.id, title: n.title, ...needStatusOf(n), tasks: n.tickets }));
+            return { ok: true, items, text: JSON.stringify({ needs: items }, null, 1) };
+          }
+          const n = needs.get(ref.slice(5));
+          if (!n) throw new Error(`no ${ref}`);
+          const v = { ...needRow(n), asks: n.asks.map((a) => ({ at: a.at, text: a.text })), tasks: n.tickets };
+          return { ok: true, ...v, text: JSON.stringify(v, null, 1) };
+        }
         const result = await readResource(String(args.ref ?? ''), {
           viewer: viewerOf(actorOf(exec)),
           tickets,
@@ -3862,6 +4035,43 @@ export function apply(ctx, config, deps = {}) {
           said = parked ? `Every worker slot is taken: ${bot} gets the status request on task ${t.id} when one frees; the report arrives here by itself, do not wait for it.` : `Asked ${bot} for a status report on task ${t.id}; it arrives here by itself, do not wait for it.`;
         }
         return { ok: true, text: said, ticket: ticketRow(tickets.get(next.id) ?? next) };
+      },
+    }),
+    defineTool({
+      name: 'bot_need',
+      description:
+        'Keep the person\'s requests (needs) as they mean them; the panel shows each with how far its tasks got. `rename` one when they change what they want (`title`: the new short line), `merge` one into another when two turn out to be the same request (`into`: the need that stays), `drop` one when they no longer want it (its open tasks stop). `bot_recall` with `needs` lists them.',
+      parameters: {
+        need: { type: 'string', required: true, description: 'The need id (n…).' },
+        action: { type: 'string', required: true, enum: ['rename', 'merge', 'drop'] },
+        title: { type: 'string', description: 'For rename: the request restated in one short line, in the person\'s language.' },
+        into: { type: 'string', description: 'For merge: the id of the need that takes this one\'s tasks.' },
+      },
+      output: { schema: anyValue, render: (_a, v) => text(v.text) },
+      execute: async (args, exec) => {
+        const { sessionId, bot: sender } = actor(exec);
+        if (sender && !isRouterHome(sender, sessionId)) throw new Error('only the dispatcher keeps the person\'s needs; report on your task instead');
+        const n = needs.get(String(args.need ?? '').trim());
+        if (!n) throw new Error(`no need ${String(args.need ?? '').trim()}. bot_recall {"ref":"needs"} lists them.`);
+        const action = String(args.action ?? '').trim().toLowerCase();
+        let next;
+        let said;
+        if (action === 'rename') {
+          if (!String(args.title ?? '').trim()) throw new Error('rename needs a `title`');
+          next = needs.rename(n.id, args.title);
+          said = `Need ${n.id} is now "${next.title}".`;
+        } else if (action === 'merge') {
+          const into = needs.get(String(args.into ?? '').trim());
+          if (!into) throw new Error('merge needs `into`: the id of the need that stays');
+          if (into.id === n.id) throw new Error('a need cannot be merged into itself');
+          next = needs.merge(n.id, into.id);
+          said = `Merged need ${n.id} into ${next.id} ("${next.title}"): its tasks count toward that one now.`;
+        } else if (action === 'drop') {
+          const open = needTasks(n).filter((t) => !t.ended).length;
+          next = dropNeed(n, sender ? 'dispatcher' : 'user');
+          said = `Dropped need ${n.id} ("${n.title}")${open ? `; stopped its ${open} open task${open > 1 ? 's' : ''}` : ''}.`;
+        } else throw new Error('action is one of rename, merge, drop');
+        return { ok: true, text: said, need: needRow(next) };
       },
     }),
     defineTool({
@@ -4425,8 +4635,10 @@ export function apply(ctx, config, deps = {}) {
       limits: { skills: MAX_SKILLS, skillsOn: MAX_SKILLS_ON },
       teamNotes: memory.notes('team').length,
       dispatcher: s.dispatcher,
-      // The setting asks for a router, and the dispatcher has a teammate to hand work to: it routes now.
+      // The dispatcher has a teammate to hand work to: it routes now.
       routerActive: routerActive(),
+      // The person's requests (Bots 0.11): how many wait for them, and how many are being worked on.
+      needs: needCounts(),
       routerNoticePending: s.routerNotice === 'pending',
       // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
       attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
@@ -4810,8 +5022,8 @@ export function apply(ctx, config, deps = {}) {
         const patch = body.patch && typeof body.patch === 'object' ? { ...body.patch } : {};
         delete patch.codex;
         delete patch.prices;
-        // Picking a dispatcher mode is having seen the notice about it.
-        if (patch.dispatcher !== undefined) patch.routerNotice = 'dismissed';
+        // The dispatcher always routes (0.11): there is no mode to pick.
+        delete patch.dispatcher;
         const saved = settings.save(patch);
         settingsChanged();
         return { ok: true, settings: saved };
@@ -4821,6 +5033,8 @@ export function apply(ctx, config, deps = {}) {
     'router-notice/dismiss': { post: () => (settings.save({ routerNotice: 'dismissed' }), { ok: true, routerNoticePending: false }) },
     // Tasks (tickets), PLAN-0.8 §6.3. `tickets/:id…` and `threads/:key` are under `paramRoutes`.
     tickets: { get: (url) => ticketList(url) },
+    // The person's requests (Bots 0.11). `needs/:id…` is under `paramRoutes`.
+    needs: { get: (url) => needList(url) },
     memory: { get: (url) => memoryView(url.searchParams.get('bot') ?? 'team') },
     'memory/put': {
       post: (body) => {
@@ -4969,8 +5183,51 @@ export function apply(ctx, config, deps = {}) {
     if (!t) throw new Error('no such task');
     return t;
   };
-  /** Routes with a path parameter: `tickets/<id>[/<action>]`, `threads/<key>` (the key URI-encoded). */
+  /** GET /needs: the person's requests, newest first (`status` filters: waiting,working,…). */
+  function needList(url) {
+    const want = (url.searchParams.get('status') ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+    const limit = Math.min(300, Math.max(1, Math.floor(Number(url.searchParams.get('limit')) || 100)));
+    const offset = Math.max(0, Math.floor(Number(url.searchParams.get('offset')) || 0));
+    const rows = needs.list().map(needRow).filter((r) => !want.length || want.includes(r.status)).sort((a, b) => b.updatedAt - a.updatedAt);
+    return { items: rows.slice(offset, offset + limit), next_offset: offset + limit < rows.length ? offset + limit : null };
+  }
+  /** How many of the person's requests wait for them (a question, or not done: the board's first group), and how many are being worked on. */
+  function needCounts() {
+    const out = { waiting: 0, working: 0 };
+    try {
+      for (const n of needs.list()) {
+        const st = needStatusOf(n).status;
+        if (st === 'waiting' || st === 'failed') out.waiting += 1;
+        else if (st === 'working') out.working += 1;
+      }
+    } catch {
+      // The rail does without.
+    }
+    return out;
+  }
+  /** Routes with a path parameter: `tickets/<id>[/<action>]`, `needs/<id>[/<action>]`, `threads/<key>` (the key URI-encoded). */
   const paramRoutes = {
+    needs: {
+      get: (rest) => {
+        if (rest.length !== 1) throw new Error('no such route');
+        return needView(needOr404(rest[0]));
+      },
+      post: (rest, body) => {
+        const [id, action] = rest;
+        const n = needOr404(id);
+        switch (action) {
+          case 'rename': {
+            const next = needs.rename(n.id, body.title);
+            if (!next) throw new Error('a need needs a title');
+            return { ok: true, ...needView(next) };
+          }
+          case 'drop':
+            return { ok: true, ...needView(dropNeed(n, 'user')) };
+          default:
+            throw new Error('no such route');
+        }
+      },
+    },
     tickets: {
       get: (rest) => {
         if (rest.length !== 1) throw new Error('no such route');

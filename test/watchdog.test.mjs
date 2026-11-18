@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RETRY_DELAYS_MS, SETTLED_STAGES, checkTickets, isTransient, requesterReminders, retryDelay } from '../lib/watchdog.mjs';
+import { RETRY_DELAYS_MS, SETTLED_STAGES, checkTickets, isEmptyResponse, isTransient, requesterReminders, retryDelay } from '../lib/watchdog.mjs';
 
 const NOW = Date.parse('2026-11-17T12:00:00Z');
 const ago = (min) => NOW - min * 60_000;
@@ -75,6 +75,17 @@ test('transient errors: message strings', () => {
   assert.equal(isTransient({ status: 429, code: 'insufficient_quota' }), false, 'out of quota does not clear by waiting');
   assert.equal(isTransient({ code: 'rate_limit_exceeded' }), true);
   for (const v of [null, undefined, 0, true, {}, []]) assert.equal(isTransient(v), false, String(v));
+});
+
+test('an empty answer is recognised in every shape Harness reports it, and nothing else is', () => {
+  const failure = { message: 'model "m" returned a completed response with no content', code: 'EMPTY_RESPONSE' };
+  assert.equal(isEmptyResponse(failure), true);
+  assert.equal(isEmptyResponse(Object.assign(new Error(failure.message), { name: 'LlmError', failure })), true);
+  assert.equal(isEmptyResponse({ kind: 'error', error: failure }), true);
+  assert.equal(isEmptyResponse(new Error('x', { cause: failure })), true);
+  for (const other of [null, undefined, 'EMPTY_RESPONSE', { code: 'TRANSPORT' }, { failure: { code: 'SERVER', status: 503 } }]) assert.equal(isEmptyResponse(other), false, JSON.stringify(other));
+  // It is no temporary error either: the plugin does not retry what Harness already retried.
+  assert.equal(isTransient(failure), false);
 });
 
 test('retries wait 15, 30, 60 seconds, then stop', () => {
