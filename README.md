@@ -336,7 +336,9 @@ Every bot keeps **notes** that outlast its topics, and the team shares one more 
   lines and tasks of that task, the task that asked for it and its sub-tasks, and no digests.
 - **Every night** (03:00 by default) memory is **consolidated**: each bot's notes are merged, corrected
   and trimmed with its recent journal, the shared notes too, and the day's work is written up as the
-  team's **daily digest**. **Consolidate now** runs it at once.
+  team's **daily digest**. **Consolidate now** runs it at once. Notes and digests are written in the
+  language you write to the bots in, judged from your recent messages; a note left in another language
+  is rewritten in it.
 - A bot reads its notes, the team notes, its last few journal lines and the latest digest when a topic
   or a task's conversation starts, and again at the next run after you edit memory or the nightly
   consolidation ran. Within a topic the memory part of its prompt stays the same, so the model's prompt
