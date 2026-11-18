@@ -17,7 +17,7 @@ It is built for two situations:
 - **Work that is naturally split between roles**: code needs a builder, a tester and a reviewer; content
   needs a researcher, a writer and a designer; research needs a skeptic.
 
-![Team templates](docs/en-teams.png)
+![Team templates](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-teams.png)
 
 ## Hire a whole team in one click
 
@@ -41,7 +41,7 @@ Hiring:
 - adds the team's scheduled tasks and makes its lead the dispatcher;
 - offers to send the lead a kickoff message, so the team starts working right away.
 
-![Chat](docs/en-chat.png)
+![Chat](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-chat.png)
 
 ## An example (one-person company)
 
@@ -278,7 +278,7 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 - **Schedules** are ordinary Harness scheduled tasks, also on the Automation page. A scheduled task missed while
   Harness was closed runs when it starts again, once (its latest occurrence): that is Harness's rule, and Bots adds
   no runs of its own. A team with many schedules can open several tasks at once after a start, and use many tokens.
-- **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona. A bot can do it too:
+- **AI avatars**: with the [Images plugin](https://github.com/kadaliao/dsh-images), draw a bot's avatar from its persona. A bot can do it too:
   ask the dispatcher to give the team new avatars and describe the look, or point it at an image file. A bot's
   drawing runs in the background, so it goes on answering you: a ring turns around the avatar while the picture is
   drawn, the new one shows when it is ready, and the bot hears that it is ready (or why it failed) and tells you. A restart of
@@ -302,7 +302,7 @@ model's thinking levels when it has them. Besides the models Harness already has
   tokens, and neither signs the other out. Claude Code's login is shown but not offered: Anthropic allows a
   Claude subscription only in Claude Code and claude.ai, so add Claude with an API key instead.
 
-![Model sources](docs/en-model-sources.png)
+![Model sources](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-model-sources.png)
 
 ## Topics: conversations that don't grow forever
 
@@ -348,9 +348,9 @@ Every bot keeps **notes** that outlast its topics, and the team shares one more 
   or token is never stored.
 - Memory work runs on each bot's own model unless Settings names a cheaper one.
 
-![A bot's memory](docs/en-memory.png)
+![A bot's memory](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-memory.png)
 
-![Team memory](docs/en-team-memory.png)
+![Team memory](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-team-memory.png)
 
 ## Usage
 
@@ -362,7 +362,7 @@ takes one run or more, **By task** adds them up, and a task's own page shows its
 estimates from your own prices or LiteLLM's public price list (**Prices**); a model with no price shows its
 tokens only.
 
-![Usage](docs/en-usage.png)
+![Usage](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-usage.png)
 
 ## Message your team from Feishu, Telegram, Slack or Discord
 
@@ -513,7 +513,7 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   `memory_forget` and `memory_search`. `bot_reply` sends an answer to a named chat; `bot_recall` reads a
   task, its reports or its conversation, or a chat thread, a page at a time, so a bot looks things up
   instead of guessing; `bot_ticket` stops, closes or retries a task the bot asked for, or asks it for a
-  status report. [API.md](API.md) lists their parameters. A sub-agent started in a bot's or a task's
+  status report. [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md) lists their parameters. A sub-agent started in a bot's or a task's
   conversation uses them as that bot or task; one that cannot be traced back to where it started (that
   conversation is gone) is refused.
 - A bot's memory is a section of its system prompt, read when a topic or a task's conversation starts
@@ -557,7 +557,7 @@ permission and restart it.
 
 ## Install
 
-Add this repository's index in DeepSeek Harness (**Plugins → Discover → Sources**):
+Add the [DSH Plugins](https://github.com/kadaliao/dsh-plugins) index in DeepSeek Harness (**Plugins → Discover → Sources**):
 
 ```
 https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
@@ -566,13 +566,15 @@ https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 then install **Bots**. The Discover tab is part of the experimental **Custom plugin markets**
 feature; turn it on under **Plugins → Experimental plugins** if you don't see it.
 
-Without Discover, paste the Git spec into the plugin manager:
+Without Discover, paste the package name into the plugin manager:
 
 ```
-git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/bots
+@kadaliao/dsh-bots
 ```
 
-Refresh the page once after installing. For AI avatars, install [Images](../images) too.
+For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
+
+Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
 
 ## Upgrading from 0.9
 

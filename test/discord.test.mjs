@@ -128,7 +128,7 @@ test('start identifies with the message intents and resolves with the bot on REA
   assert.deepEqual(me, { id: BOT, username: 'helper', name: 'Helper Bot' });
   assert.equal(h.calls[0].url, 'https://discord.com/api/v10/gateway/bot');
   assert.equal(h.calls[0].headers.Authorization, `Bot ${TOKEN}`);
-  assert.match(h.calls[0].headers['User-Agent'], /^DiscordBot \(https:\/\/github\.com\/kadaliao\/dsh-plugins, [\d.]+\)$/);
+  assert.match(h.calls[0].headers['User-Agent'], /^DiscordBot \(https:\/\/github\.com\/kadaliao\/dsh-bots, [\d.]+\)$/);
   assert.equal(ws.url, GATEWAY);
   assert.deepEqual(ws.sent[0], { op: 2, d: { token: TOKEN, intents: 1 | 512 | 4096 | 32768, properties: { os: process.platform, browser: 'dsh-bots', device: 'dsh-bots' } } });
   assert.deepEqual(h.states(), ['connecting', 'connected']);

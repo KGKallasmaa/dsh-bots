@@ -44,10 +44,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kadaliao/dsh-plugins.git",
-    "directory": "plugins/bots"
+    "url": "git+https://github.com/kadaliao/dsh-bots.git"
   },
-  "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/bots",
+  "homepage": "https://github.com/kadaliao/dsh-bots#readme",
+  "bugs": "https://github.com/kadaliao/dsh-bots/issues",
   "license": "MIT",
   "keywords": ["dsh", "deepseek-harness", "dsh-plugin", "bots", "agents", "multi-agent", "persona", "schedule", "mcp", "computer-use", "memory", "usage"]
 }

@@ -13,7 +13,7 @@ bot 在它的**讨论串**里回答，只看得到这条消息和它之前的内
 - **一人公司（OPC）**：一个人经营业务，需要一整个「员工团队」——研发、增长、客户、财务，再加一个每天早上给你简报的幕僚长。
 - **需要分工协作的工作**：开发要有人写、有人测、有人审；内容要有人调研、有人写、有人做图；研究要有人挑刺。
 
-![团队模板](docs/teams.png)
+![团队模板](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/teams.png)
 
 ## 一键雇用一支团队
 
@@ -35,7 +35,7 @@ bot 在它的**讨论串**里回答，只看得到这条消息和它之前的内
 - 建好定时任务，让负责人成为调度员；
 - 最后可以一键把「开场任务」发给负责人，团队就开始干活了。
 
-![聊天](docs/chat.png)
+![聊天](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/chat.png)
 
 ## 一段示例（一人公司）
 
@@ -212,7 +212,7 @@ Bot 在普通的 Harness 会话里工作，所以 Harness 能做的它都能做�
 
 - **定时任务**：就是 Harness 的定时任务，也出现在「自动化」页面。Harness 没开着时错过的定时任务，下次启动时由 Harness 补跑，
   每个只补最近的那一次（这是 Harness 的规则，Bots 不另外补）；团队的定时任务多时，启动后会一下子开出好几个任务、用掉不少 token。
-- **AI 头像**：装了 [图片插件](../images) 就能按 bot 的人设生成头像。bot 自己也能做：让调度员给团队换一批头像，
+- **AI 头像**：装了 [图片插件](https://github.com/kadaliao/dsh-images) 就能按 bot 的人设生成头像。bot 自己也能做：让调度员给团队换一批头像，
   说清楚想要的样子就行，也可以指给它一张本地图片。bot 画头像是在后台进行的，不耽误它回你的话：画的时候头像上有一圈在转，
   画好就换上；画好了（或没画成、为什么）bot 会收到通知并告诉你。Harness 重启会丢掉正在画的头像。
 - **图标**：应用库里每个应用都用它自己的官方 logo（有 App 的用 App Store 图标，没有的用官网或官方仓库里的 logo）。
@@ -231,7 +231,7 @@ Bot 在普通的 Harness 会话里工作，所以 Harness 能做的它都能做�
   另一边都会拿到新令牌，谁也不会把谁踢下线。Claude Code 的登录会显示出来但不提供：Anthropic 只允许
   在 Claude Code 和 claude.ai 里使用 Claude 订阅，请改用 API Key 添加 Claude。
 
-![模型来源](docs/model-sources.png)
+![模型来源](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/model-sources.png)
 
 ## 话题：对话不会无限变长
 
@@ -269,9 +269,9 @@ bot 知道的事靠记忆延续。下面几种情况会开新话题：
   置顶的笔记不会被自动整理改动；看起来像 Key 或 Token 的内容一律不存。
 - 记忆工作默认使用各 bot 自己的模型，也可以在设置里指定一个更便宜的。
 
-![bot 的记忆](docs/memory.png)
+![bot 的记忆](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/memory.png)
 
-![团队记忆](docs/team-memory.png)
+![团队记忆](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/team-memory.png)
 
 ## 用量
 
@@ -281,7 +281,7 @@ bot 知道的事靠记忆延续。下面几种情况会开新话题：
 直到 bot 重新空闲）；一个任务有一个或多个回合，**按任务** 把它们加在一起，任务详情页里也有它自己的用量。
 费用是估算：用你填的价格，或 LiteLLM 公开价格表（**价格**）；没有价格的模型只显示 tokens。
 
-![用量](docs/usage.png)
+![用量](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/usage.png)
 
 ## 在飞书、Telegram、Slack 或 Discord 里给团队发消息
 
@@ -406,7 +406,7 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 所有会话都能用 `bot_list`、`bot_create`、`bot_update`、`bot_delete`、`bot_send_message`、`bot_reply`、`bot_recall`、
   `bot_ticket`、`bot_schedule` 管理 bot 和任务，以及 `memory_save`、`memory_forget`、`memory_search`。
   `bot_reply` 把答复发到指定的聊天；`bot_recall` 分页读取任务、任务的汇报或会话，以及聊天讨论串，让 bot 去查而不是猜；
-  `bot_ticket` 停止、关闭或重试自己发起的任务，或者请它汇报进度。参数见 [API.md](API.md)。
+  `bot_ticket` 停止、关闭或重试自己发起的任务，或者请它汇报进度。参数见 [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md)。
   在 bot 或任务的会话里启动的子代理，以那个 bot 或任务的身份使用这些工具；追溯不到来源（启动它的会话已经不在）的子代理会被拒绝。
 - bot 的记忆是它系统提示词里的一段，在话题或任务的会话开始时读取（面板里改了记忆或每晚整理后，在下一个回合开始时重读），
   回合进行中不会变。bot 的 Agent 空闲时回合结束；记忆总结读的是这个回合的过程（提示、回复、工具调用和简短的工具结果），
@@ -436,7 +436,7 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 
 ## 安装
 
-在 DeepSeek Harness 里加入本仓库的索引（**Plugins → Discover → Sources**）：
+在 DeepSeek Harness 里加入 [DSH Plugins](https://github.com/kadaliao/dsh-plugins) 的索引（**Plugins → Discover → Sources**）：
 
 ```
 https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
@@ -445,13 +445,15 @@ https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 然后安装 **Bots**。Discover 标签属于实验性的 **Custom plugin markets** 功能；看不到的话先在
 **Plugins → Experimental plugins** 里打开。
 
-不用 Discover 的话，把 Git 地址填进插件管理器：
+不用 Discover 的话，把包名贴进插件管理器：
 
 ```
-git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/bots
+@kadaliao/dsh-bots
 ```
 
-安装后刷新一次页面。想要 AI 头像，再装上[图片插件](../images)。
+想用还没发布的最新代码，改用 Git spec `git+https://github.com/kadaliao/dsh-bots.git#main`。
+
+安装后刷新一次页面。想要 AI 头像，再装上[图片插件](https://github.com/kadaliao/dsh-images)。
 
 ## 从 0.9 升级
 
