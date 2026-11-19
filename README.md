@@ -30,12 +30,20 @@ Open the Bots panel (sidebar, or `/bots`), pick a team template and click **Hire
 | **Content studio** | Scout (research), Quill (writer), Pixel (design) | Monday topic planning |
 | **Research desk** | Memo (writer), Analyst, Market, Skeptic | — |
 
-A team has no lead: there is one dispatcher, the front desk, and it hands out the work of every team you hire. Hire
-a second team and it joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who
-belongs together. Within a team, the bot that delivers a kind of work asks its teammates for their parts: Builder has
-Tester and Review check a change, Quill asks Scout for research and Pixel for visuals, Memo has Analyst and Market dig
-and Skeptic check the draft. The dispatcher is an ordinary bot: rename it, give it another avatar or persona on its
-**Profile**, or make another bot the dispatcher from its own Profile.
+There is one dispatcher, the front desk, and it hands out the work of every team you hire. Hire a second team and it
+joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who belongs together.
+
+A team whose work runs as a pipeline has a **lead**: the bot that delivers the result, and brings in the others.
+Builder leads the software squad (it plans a goal as small changes, checks the plan with you, and has Tester and
+Review check each change), Quill the content studio (Scout researches, Pixel draws), Memo the research desk (Analyst
+and Market dig, Skeptic checks the draft). The dispatcher hands such a team's work to its lead, never past it, unless
+you name a member yourself ("ask @tester to reproduce it"); the lead's teammates report back to the lead, and the lead
+answers you once. The one-person company is four peers (product, growth, customers, money), so it has no lead: the
+dispatcher gives each one its own part. You can still message any bot directly, a lead or a member. Change who leads
+on a bot's **Profile** (**Leads …**), or ask the dispatcher to; a team has one lead at most.
+
+The dispatcher is an ordinary bot: rename it, give it another avatar or persona on its **Profile**, or make another
+bot the dispatcher from its own Profile. It leads no team.
 
 Hiring:
 
@@ -660,6 +668,13 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.14
+
+- Teams hired since 0.11.1 get their lead at the first start: Builder in the software squad, Quill in the content
+  studio, Memo in the research desk (the bot with that handle). Taking it away on the bot's Profile sticks.
+- Builder's persona and bio, and the content studio's **Plan this week** task, take their 0.15 words where they still
+  read as hired; ones you edited stay as they are.
 
 ## Upgrading from 0.13
 

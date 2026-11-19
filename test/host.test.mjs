@@ -398,7 +398,9 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
     assert.equal(api.store.primary().id, atlas.id);
     const roster = personaText(api.store.get(atlas.id), api.store.list(), { teamNames: { opc: 'One-person company', research: 'Research desk' } });
     assert.match(roster, /\n- One-person company:\n {2}- @forge — [^\n]+\n {2}- @echo/);
-    assert.match(roster, /\n- Research desk:\n {2}- @memo — Memo:/);
+    // Bots 0.15: a team that runs as a pipeline is led by the bot that delivers; a team of peers has no lead.
+    assert.match(roster, /\n- Research desk, led by @memo:\n {2}- @memo — Memo \(lead\):/);
+    assert.equal(api.store.list().filter((b) => b.lead).map((b) => b.handle).join(), 'memo');
     // A lead hired before 0.11.1 that is not the dispatcher is offered once for removal.
     assert.deepEqual(api.state().oldLeads, []);
     const desk = api.store.save({ name: 'Desk', handle: 'desk', team: 'research' });

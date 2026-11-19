@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.14.0';
+    const BOTS_VERSION = '0.15.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -1179,6 +1179,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, label: label(g.id) }));
     }
 
+    /** The tag of a team's lead (Bots 0.15): the dispatcher hands the team's work to it. */
+    const LeadTag = ({ t, attr }) =>
+      h('span', { 'data-dsh-bots-lead-tag': attr ?? true, title: t('teamLeadHint'), style: { flex: 'none', fontSize: 10.5, fontWeight: 600, lineHeight: '16px', padding: '0 5px', borderRadius: 4, background: C.layer2, color: C.muted } }, t('teamLead'));
     /** A red count of what needs you (tasks, or a bot's questions). */
     const NeedsBadge = ({ n, label, attr }) =>
       h('span', { [attr]: n, 'aria-label': label, title: label, style: { minWidth: 20, height: 20, padding: '0 6px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.error, color: '#fff', fontSize: TINY, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flex: 'none' } }, n > 99 ? '99+' : String(n));
@@ -1210,6 +1213,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               { style: { display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 } },
               h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name || b.handle),
               b.id === primaryId ? h('span', { title: t('dispatcher'), style: { color: '#f5b301', display: 'inline-flex' } }, Icon.crown(12)) : null,
+              b.lead && b.id !== primaryId ? h(LeadTag, { t, attr: b.id }) : null,
               h('span', { style: { color: C.faint, fontSize: TINY, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `@${b.handle}`),
             ),
             work
@@ -4671,6 +4675,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       model: bot.model && bot.model.model ? { provider: str(bot.model.provider), model: str(bot.model.model), ...(bot.model.reasoningEffort ? { reasoningEffort: str(bot.model.reasoningEffort) } : {}) } : null,
       deny: Array.isArray(bot.tools?.deny) ? bot.tools.deny.slice().sort() : [],
       routerAllow: Array.isArray(bot.tools?.routerAllow) ? bot.tools.routerAllow.map(String).sort() : [],
+      lead: Boolean(bot.lead),
     });
     /** A clean avatar value: an image keeps its url, anything else is initials (emoji rows from v0.1 too). */
     function avatarOf(a) {
@@ -4759,7 +4764,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const save = () => {
         if (!valid || busy) return;
         setBusy(true);
-        const payload = { id: bot.id, name: draft.name.trim(), handle: draft.handle, bio: draft.bio.trim(), persona: draft.persona, model: draft.model, tools: { deny: draft.deny, routerAllow: draft.routerAllow } };
+        const payload = { id: bot.id, name: draft.name.trim(), handle: draft.handle, bio: draft.bio.trim(), persona: draft.persona, model: draft.model, tools: { deny: draft.deny, routerAllow: draft.routerAllow }, ...(bot.team && bot.role !== 'primary' ? { lead: draft.lead } : {}) };
         if (draft.avatar) payload.avatar = avatarOf(draft.avatar);
         postJson('save', { bot: payload })
           .then((r) => {
@@ -4825,6 +4830,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const routerBlocked = (names) => names.filter((x) => routerDeny.has(x) && !routerAllow.has(x));
       const inEffect = routing ? new Set([...draft.deny, ...routerBlocked([...routerDeny])]) : denied;
       const botLabel = draft.name || bot.name;
+      const teamLabel = bot.team ? pick(teamsOf().find((x) => x.id === bot.team)?.name ?? bot.team, lang) : '';
+      const otherLead = bot.team ? botsOf().find((b) => b.id !== bot.id && b.team === bot.team && b.lead) : null;
       return h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -4857,6 +4864,20 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   ),
                 ),
                 h(Field, { label: t('bio'), hint: t('bioHint'), style: { gridColumn: '1 / -1' } }, h(Input, { value: draft.bio, maxLength: 160, placeholder: t('bioPlaceholder'), onChange: (e) => set({ bio: e.target.value }) })),
+                // A bot hired as part of a team may lead it (Bots 0.15); the dispatcher leads none.
+                bot.team && !isPrimary
+                  ? h(
+                      'div',
+                      { 'data-dsh-bots-lead': bot.team, style: { gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'flex-start' } },
+                      h(Switch, { on: draft.lead, onChange: (v) => set({ lead: v }), title: t('leadsTeam', { team: teamLabel }), 'data-dsh-bots-lead-switch': true, style: { marginTop: 2 } }),
+                      h(
+                        'div',
+                        { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } },
+                        h('span', { style: { fontSize: SMALL, fontWeight: 600 } }, t('leadsTeam', { team: teamLabel })),
+                        h('span', { style: { fontSize: TINY, color: C.muted, lineHeight: 1.5 } }, draft.lead ? t('leadsTeamOn', { team: teamLabel }) : otherLead ? t('leadsTeamOther', { team: teamLabel, name: otherLead.name || `@${otherLead.handle}` }) : t('leadsTeamOff', { team: teamLabel })),
+                      ),
+                    )
+                  : null,
               ),
             ),
             h(
@@ -7841,6 +7862,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 { key: m.key, style: { display: 'flex', alignItems: 'center', gap: 7, fontSize: SMALL, minWidth: 0 } },
                 h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: m.color, flex: 'none' } }),
                 h('span', { style: { fontWeight: 600, flex: 'none' } }, memberName(m, lang)),
+                team.lead === m.key ? h(LeadTag, { t, attr: m.key }) : null,
                 h('span', { style: { color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, roleOf(m, lang)),
               ),
             ),
@@ -8004,6 +8026,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   'div',
                   { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
                   h('span', { style: { fontWeight: 700 } }, pick(m.name, lang)),
+                  team.lead === m.key ? h(LeadTag, { t, attr: m.key }) : null,
                   h('span', { className: 'dshb-mono', style: { fontSize: TINY, color: C.faint } }, `@${m.handle}`),
                 ),
                 h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.55 } }, pick(m.bio, lang)),
@@ -8655,6 +8678,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         noBotsShort: 'No bots yet.',
         noBio: 'No bio yet',
         dispatcher: 'Dispatcher',
+        teamLead: 'Lead',
+        teamLeadHint: 'Leads its team: the dispatcher hands the team\'s work to it',
+        leadsTeam: 'Leads {team}',
+        leadsTeamOn: 'The dispatcher hands {team}\'s work to this bot, which plans it and brings in its teammates.',
+        leadsTeamOff: 'Make this bot the lead of {team}: the dispatcher then hands the team\'s work to it, and it brings in its teammates. Without a lead, the dispatcher gives each member its own part.',
+        leadsTeamOther: '{name} leads {team} now. Turn this on to make this bot the lead instead.',
         dispatcherHint: 'The dispatcher receives your requests and hands work to the other bots.',
         activity: 'Activity',
         activityHint: '{n} messages',
@@ -9675,6 +9704,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         noBotsShort: '还没有 Bot。',
         noBio: '还没有简介',
         dispatcher: '调度者',
+        teamLead: '负责人',
+        teamLeadHint: '团队负责人：调度者把团队的活交给它',
+        leadsTeam: '{team}负责人',
+        leadsTeamOn: '调度者把{team}的活交给它，由它拆分、分给队友。',
+        leadsTeamOff: '设为{team}的负责人：调度者会把团队的活交给它，由它分给队友。没有负责人时，调度者直接给每个成员派活。',
+        leadsTeamOther: '现在由 {name} 负责{team}。打开后改由这个 bot 负责。',
         dispatcherHint: '调度者接收你的请求，并把工作分派给其他 Bot。',
         activity: '动态',
         activityHint: '{n} 条消息',

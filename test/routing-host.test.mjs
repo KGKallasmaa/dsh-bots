@@ -261,6 +261,53 @@ test('hiring a team with no dispatcher makes one first: the team never brings it
   }
 });
 
+test('0.15: a team hired with 0.11.1–0.14 gets its lead at start, once, and its routine as 0.15 words it', async () => {
+  const { TEAMS_0_14 } = await import('../lib/teams-0.14.mjs');
+  const { TEAMS } = await import('../lib/teams.mjs');
+  const entries = [];
+  const scheduleService = {
+    async create(req) {
+      const e = { id: `sch-${entries.length + 1}`, title: req.title, prompt: req.prompt, kind: 'weekly', status: 'active', target: req.target };
+      entries.push(e);
+      return e;
+    },
+    async catalog() {
+      return entries;
+    },
+    async edit({ id, patch }) {
+      const e = entries.find((x) => x.id === id);
+      Object.assign(e, patch);
+      return e;
+    },
+  };
+  const env = boot({ services: { schedule: scheduleService } });
+  try {
+    const { api } = env;
+    const was = TEAMS_0_14.dev.bots.builder;
+    const atlas = api.store.find('atlas');
+    const builder = api.store.save({ name: 'Builder', handle: 'builder', team: 'dev', persona: was.persona.en, bio: was.bio.en });
+    const tester = api.store.save({ name: 'Tester', handle: 'tester', team: 'dev' });
+    api.store.save({ name: 'Quill', handle: 'quill', team: 'content', persona: 'Mine.' });
+    const plan = TEAMS_0_14.content.desk[0];
+    entries.push({ id: 'plan', title: plan.title.en, prompt: plan.prompt.en, kind: 'weekly', status: 'active', target: { kind: 'session', sessionId: atlas.sessionId ?? 'sess-atlas' } });
+    api.store.patch(atlas.id, { sessionId: entries[0].target.sessionId });
+    const first = await api.migrateTeams();
+    assert.deepEqual(first.leads.bots.map((b) => b.id).sort(), [builder.id, api.store.find('quill').id].sort());
+    const now = TEAMS.find((t) => t.id === 'dev').bots.find((b) => b.handle === 'builder');
+    assert.deepEqual([api.store.get(builder.id).lead, api.store.get(builder.id).persona, api.store.get(tester.id).lead], [true, now.persona.en, undefined]);
+    assert.equal(api.store.find('quill').persona, 'Mine.', 'its own persona is kept; it leads all the same');
+    assert.equal(entries[0].prompt, TEAMS.find((t) => t.id === 'content').desk[0].prompt.en);
+    assert.equal(api.settings.get().teamLeads, 'given');
+    // A lead the person takes away is not given again.
+    api.store.save({ id: builder.id, lead: false });
+    const again = await api.migrateTeams();
+    assert.deepEqual(again.leads, { bots: [], edits: [] });
+    assert.equal(api.store.get(builder.id).lead, undefined);
+  } finally {
+    env.dispose();
+  }
+});
+
 test('a team hired from the 0.11.0 templates is brought to the current ones at start, once', async () => {
   const { TEAMS_0_11 } = await import('../lib/teams-0.11.mjs');
   const { TEAMS } = await import('../lib/teams.mjs');
@@ -302,7 +349,7 @@ test('a team hired from the 0.11.0 templates is brought to the current ones at s
     assert.deepEqual(entries.map((e) => [e.title, e.target.sessionId === desk.sessionId, e.weekdays, e.time]), [['市场脉搏', true, [1], '10:00:00']]);
     assert.match(entries[0].prompt, /^市场脉搏：让 Echo/);
     // Nothing is left to do at the next start.
-    assert.deepEqual(await api.migrateTeams(), { bots: [], edits: [], moves: [], drops: [] });
+    assert.deepEqual(await api.migrateTeams(), { bots: [], edits: [], moves: [], drops: [], leads: { bots: [], edits: [] } });
   } finally {
     env.dispose();
   }
@@ -2100,6 +2147,42 @@ test('a done report while the person\'s message to the task waits unread leaves 
   assert.equal(api.tickets.get(t.id).ended.outcome, 'done');
   assert.equal((await api.request('GET', `/needs/${card.id}`)).status, 'done');
   assert.deepEqual(api.store.messages({ bot: env.atlas.id }).filter((m) => m.kind === 'reply' && m.ticket === t.id).map((m) => m.text), ['The page is live.', 'Footer added.']);
+  env.dispose();
+});
+
+test('0.15: the dispatcher hands a led team\'s work to its lead, past it only when the person names the member; one lead per team', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  const builder = api.store.save({ name: 'Builder', handle: 'builder', team: 'dev', lead: true });
+  const tester = api.store.save({ name: 'Tester 测试', handle: 'tester', team: 'dev' });
+  await api.userSend(env.atlas, 'The sign-up form drops the last name');
+  const sid = api.store.find('atlas').sessionId;
+  await assert.rejects(
+    h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@tester', text: 'Reproduce the sign-up bug.', need: 'Sign-up keeps the last name' } }] }),
+    /@tester is on Software squad, which @builder leads: hand the team's work to @builder/,
+  );
+  const [toLead] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@builder', text: 'The sign-up form drops the last name.', need: 'Sign-up keeps the last name' } }] });
+  assert.equal(api.tickets.get(toLead.ticket.id).botId, builder.id);
+  // The person names the member (by name, any case): it may go to them directly.
+  await api.userSend(env.atlas, '让 tester 先复现一下');
+  const [direct] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@tester', text: 'Reproduce the sign-up bug.', need: 'Sign-up keeps the last name' } }] });
+  assert.equal(api.tickets.get(direct.ticket.id).botId, tester.id);
+  // The lead itself brings in its teammate: a sub-task, not refused.
+  const [sub] = await h.step(api.tickets.get(toLead.ticket.id).sessionId, { calls: [{ name: 'bot_send_message', args: { to: '@tester', text: 'Test the fix.' } }] });
+  assert.equal(api.tickets.get(sub.ticket.id).parentId, toLead.ticket.id);
+  // One lead per team; the dispatcher leads none; a bot of no team cannot lead.
+  await call('bot_update', { bot: '@tester', lead: true }, sid);
+  assert.deepEqual(api.store.list().filter((b) => b.lead).map((b) => b.handle), ['tester']);
+  await assert.rejects(call('bot_update', { bot: '@forge', lead: true }, sid), /@forge was not hired as part of a team/);
+  await call('bot_update', { bot: '@tester', lead: false }, sid);
+  assert.deepEqual(api.store.list().filter((b) => b.lead), []);
+  // A team with no lead: the dispatcher hands each member its own part.
+  await api.userSend(env.atlas, 'Check the checkout too');
+  const [none] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@tester', text: 'Check the checkout.', need: 'Checkout works' } }] });
+  assert.equal(api.tickets.get(none.ticket.id).botId, tester.id);
+  api.store.save({ id: builder.id, lead: true });
+  api.store.setPrimary(builder.id);
+  assert.equal(api.store.get(builder.id).lead, undefined, 'a bot made the dispatcher leads no team');
   env.dispose();
 });
 

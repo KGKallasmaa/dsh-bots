@@ -40,8 +40,8 @@ import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SK
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
 import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
-import { OLD_LEADS, TEAMS, teamTiming, teamView } from './lib/teams.mjs';
-import { planTeamMigration } from './lib/team-migration.mjs';
+import { OLD_LEADS, TEAMS, namesBot, teamTiming, teamView } from './lib/teams.mjs';
+import { planLeadMigration, planTeamMigration } from './lib/team-migration.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
@@ -4249,7 +4249,7 @@ export function apply(ctx, config, deps = {}) {
     }),
     defineTool({
       name: 'bot_update',
-      description: "Change a bot (yourself included): name, bio, persona, avatar (letters and colour, a picture drawn by AI, or an image file), skills, or make it the dispatcher. Only the fields you pass change.",
+      description: "Change a bot (yourself included): name, bio, persona, avatar (letters and colour, a picture drawn by AI, or an image file), skills, make it the dispatcher, or make it its team's lead. Only the fields you pass change.",
       parameters: {
         bot: { type: 'string', required: true, description: '@handle, id or name of the bot.' },
         name: { type: 'string' },
@@ -4262,6 +4262,7 @@ export function apply(ctx, config, deps = {}) {
         add_skills: { ...skillInput, description: `Skills to add (a skill with the same name is replaced). At most ${MAX_SKILLS_ON} can be on at once; past that they are added switched off.` },
         remove_skills: { type: 'array', items: { type: 'string' }, description: 'Names of skills to remove.' },
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
+        lead: { type: 'boolean', description: "Only for a bot hired as part of a team: true to make it the team's lead (the dispatcher hands the team's work to it, and it brings in its teammates), false to take that away (the dispatcher then hands each member its work)." },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bot: v.bot }) },
       execute: async (args, exec) => {
@@ -4277,6 +4278,11 @@ export function apply(ctx, config, deps = {}) {
           tooManySkills(next.skills.length);
         }
         if (args.make_dispatcher === true) next.role = 'primary';
+        if (typeof args.lead === 'boolean') {
+          if (!bot.team) throw new Error(`@${bot.handle} was not hired as part of a team; only a team has a lead`);
+          if (args.lead && (bot.role === 'primary' || next.role === 'primary')) throw new Error('the dispatcher leads no team: it hands out the work of all of them');
+          next.lead = args.lead;
+        }
         const pic = await applyPicture(store.save(next), args, caller.restricted ? {} : caller);
         const saved = pic.bot;
         return { ok: true, text: `Updated ${card(saved)}.${pic.note}${offNote(args.add_skills, saved)}`, bot: face(saved) };
@@ -4423,6 +4429,15 @@ export function apply(ctx, config, deps = {}) {
             to: face(named),
             from: face(sender),
           };
+        }
+
+        // A team with a lead takes its work through it (Bots 0.15): the dispatcher hands a member of that team
+        // work past its lead only when the person named that member in this turn.
+        if (routing) {
+          const lead = leadOf(named);
+          if (lead && lead.id !== named.id && !turnAsks.some((a) => namesBot(a.text, named))) {
+            throw new Error(`@${named.handle} is on ${TEAM_NAMES[named.team] ?? named.team}, which @${lead.handle} leads: hand the team's work to @${lead.handle}, which plans it and brings in @${named.handle} and the others when they are needed. Hand it to @${named.handle} directly only when the person names @${named.handle} themselves.`);
+          }
         }
 
         // A new ticket: from a task conversation (a sub-task), or from a bot's home when tasks are on.
@@ -5326,8 +5341,25 @@ export function apply(ctx, config, deps = {}) {
     }
     const done = plan.bots.length + (scheduled ? plan.edits.length + plan.moves.length + plan.drops.length : 0);
     if (done) ctx.logger?.info?.(`bots: brought ${plan.bots.length} team bot(s) and ${done - plan.bots.length} scheduled task(s) to the 0.11.1 templates`);
-    return plan;
+    // Teams hired with 0.11.1–0.14 (Bots 0.15): the lead their template names, once, and the texts 0.15 changed.
+    if (scheduled && done > plan.bots.length) {
+      try {
+        entries = await schedulesOf(null);
+      } catch {
+        // As read before.
+      }
+    }
+    const giveLeads = settings.get().teamLeads !== 'given';
+    const leads = planLeadMigration({ bots: store.list(), entries, deskId: desk?.id ?? null, giveLeads });
+    for (const { id, patch } of leads.bots) store.save({ id, ...patch });
+    if (scheduled) for (const { id, prompt } of leads.edits) await scheduleSave(null, { id, prompt });
+    if (giveLeads) settings.save({ teamLeads: 'given' });
+    if (leads.bots.length || leads.edits.length) ctx.logger?.info?.(`bots: brought ${leads.bots.length} team bot(s) and ${scheduled ? leads.edits.length : 0} scheduled task(s) to the 0.15 templates`);
+    return { ...plan, leads };
   }
+
+  /** The bot that leads `bot`'s team (Bots 0.15; itself when it leads), or null for a team of peers or a bot of no team. */
+  const leadOf = (bot) => (bot?.team ? store.list().find((b) => b.team === bot.team && b.lead && b.role !== 'primary') ?? null : null);
 
   /** Bots hired as a team's lead before 0.11.1 that are not the dispatcher: they only pass messages on. */
   const oldLeads = () => store.list().filter((b) => b.role !== 'primary' && b.team && OLD_LEADS[b.team] === b.handle);
@@ -5340,9 +5372,9 @@ export function apply(ctx, config, deps = {}) {
   /**
    * Hire a team: create its bots (handles made unique), attach the Harness skills it has,
    * import the GitHub skills it names, add its apps (left for the user to fill keys), and
-   * schedule its tasks. A team has no lead (0.11.1): its work goes through the one dispatcher,
-   * made first when there is none, which gets the team's `desk` tasks (one it already has by
-   * that title is not added twice). Returns what was made and what was skipped.
+   * schedule its tasks. Its work goes through the one dispatcher (0.11.1), made first when there
+   * is none, which gets the team's `desk` tasks (one it already has by that title is not added
+   * twice); the bot its template names leads it (0.15). Returns what was made and what was skipped.
    */
   async function hireTeam(teamId, lang) {
     const team = TEAMS.find((t) => t.id === teamId);
@@ -5400,6 +5432,8 @@ export function apply(ctx, config, deps = {}) {
           ...(existing ? {} : { skills, apps }),
           tools: { deny },
           team: team.id,
+          // The bot that delivers the team's work leads it (Bots 0.15); a team of peers has no lead.
+          ...(team.lead === b.key && existing?.role !== 'primary' ? { lead: true } : {}),
         },
         { createdBy: 'user' },
       );

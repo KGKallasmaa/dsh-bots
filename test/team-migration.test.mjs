@@ -84,3 +84,43 @@ test('what was brought over is not brought again', () => {
   const moved = entries.map((e) => ({ ...e, prompt: first.edits.find((x) => x.id === e.id)?.prompt ?? e.prompt }));
   assert.deepEqual(planTeamMigration({ bots: after, entries: moved, deskId: 'd', deskText }), { bots: [], edits: [], moves: [], drops: [] });
 });
+
+// --- Bots 0.15: teams hired with 0.11.1–0.14 get the lead their template names ------------------
+
+import { planLeadMigration } from '../lib/team-migration.mjs';
+import { TEAMS_0_14 } from '../lib/teams-0.14.mjs';
+
+const team = (id) => TEAMS.find((t) => t.id === id);
+const hired = (id, teamId, handle, lang, extra = {}) => {
+  const b = team(teamId).bots.find((x) => x.handle === handle);
+  const old = TEAMS_0_14[teamId]?.bots?.[handle];
+  return { id, team: teamId, handle, role: 'bot', persona: (old ?? b).persona[lang], bio: (old ?? b).bio[lang], ...extra };
+};
+
+test('0.15: a team hired without a lead gets the one its template names, and the texts 0.15 changed, once', () => {
+  const bots = [
+    { id: 'a', handle: 'atlas', role: 'primary' },
+    hired('b', 'dev', 'builder', 'zh'),
+    hired('t', 'dev', 'tester', 'zh'),
+    hired('f', 'opc', 'forge', 'en'),
+    hired('q', 'content', 'quill', 'en', { persona: 'My own words.' }),
+  ];
+  const plan0 = TEAMS_0_14.content.desk[0];
+  const entries = [
+    { id: 's1', botId: 'a', title: plan0.title.en, prompt: plan0.prompt.en },
+    { id: 's2', botId: 'a', title: plan0.title.zh, prompt: 'Edited by the person.' },
+  ];
+  const plan = planLeadMigration({ bots, entries, deskId: 'a', giveLeads: true });
+  const builder = team('dev').bots.find((x) => x.handle === 'builder');
+  // Builder leads the squad and reads as 0.15; Quill leads the studio, its edited persona kept; the company has no lead.
+  assert.deepEqual(plan.bots, [
+    { id: 'b', patch: { lead: true, persona: builder.persona.zh, bio: builder.bio.zh } },
+    { id: 'q', patch: { lead: true } },
+  ]);
+  assert.deepEqual(plan.edits, [{ id: 's1', prompt: team('content').desk[0].prompt.en }]);
+  // Once given, a lead taken away stays away; texts already brought over change nothing.
+  const after = bots.map((b) => (b.id === 'b' ? { ...b, persona: builder.persona.zh, bio: builder.bio.zh } : b));
+  assert.deepEqual(planLeadMigration({ bots: after, entries: [], deskId: 'a', giveLeads: false }), { bots: [], edits: [] });
+  // A team that has a lead already keeps it, whoever it is.
+  assert.deepEqual(planLeadMigration({ bots: [hired('b', 'dev', 'builder', 'en', { persona: builder.persona.en, bio: builder.bio.en }), hired('t', 'dev', 'tester', 'en', { lead: true })], entries: [], deskId: null, giveLeads: true }), { bots: [], edits: [] });
+});

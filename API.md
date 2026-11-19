@@ -1102,3 +1102,37 @@ turn, its new work counts toward the card as for a board card (0.12).
 `Need += { links?: { kind: 'github', ref, url? }[] }` (≤ 10), on `NeedRow`. `Project += { repo: string }` (`owner/repo`,
 from a github.com address too; unique: `acme/site belongs to project WEB already`), on `ProjectView` when set and in
 `projects/save`.
+
+## v0.15 — team leads
+
+A team whose work runs as a pipeline is led by the bot that delivers it; the dispatcher stays the one front desk.
+
+```ts
+Bot += { lead?: true }        // only with `team`, never the dispatcher; one per team (saving one clears the others)
+Team += { lead?: string }     // the key of the bot that leads it: dev → builder, content → writer (Quill), research → writer (Memo); opc: none
+TeamView += { lead?: string }
+Settings += { teamLeads: null | 'given' }   // 'given' once teams hired before 0.15 got their leads
+```
+
+- **Hiring** sets `lead` on the template's lead bot. `POST save` takes `lead` (true/false) for a bot of a team;
+  `setPrimary` clears it on the new dispatcher. `bot_update` adds `lead` (refused for a bot of no team, and `true`
+  for the dispatcher).
+- **The dispatcher** (router home): `bot_send_message` with `to` a member of a team that has a lead, not the lead,
+  is refused (`@tester is on Software squad, which @builder leads: hand the team's work to @builder, …`) unless a
+  message of the person's in this turn names that bot: its `@handle`, or the first word of its name (3+ ASCII
+  characters), as a word of its own, in any case (`namesBot` in `lib/teams.mjs`). Adding to an open task of a
+  member (`ticket`), a card handed to a member on the board, and other bots' messages are not checked.
+- **Prompts**: the roster writes a led team as `- Software squad, led by @builder:` and tags the lead `(lead)`; a
+  router persona reads that such a team takes its work through its lead. The lead reads `## You lead Software
+  squad` (its teammates; plan first and check a bigger plan with the person; hand parts out as sub-tasks; answer
+  once; another team's work goes to its lead). A member reads that the team's work comes to it from the lead. Bots
+  of a team without a lead read nothing new.
+- **Templates**: Builder plans a goal as at most 5 changes and checks a bigger plan with the person (persona and
+  bio); the software squad's and content studio's kickoffs hand the start to Builder and Quill; the content studio's
+  **Plan this week** has Quill propose the topics, from Scout's research.
+- **Teams hired with 0.11.1–0.14** (`planLeadMigration`, at start, after the 0.11.1 migration): once (`teamLeads`),
+  a led team none of whose bots leads it gets the bot with its lead's handle; a persona, bio or routine that still
+  reads exactly as 0.11.1–0.14 hired it (`lib/teams-0.14.mjs`) takes its 0.15 text. `migrateTeams()` answers
+  `{ …0.11.1 plan, leads: { bots, edits } }`.
+- **Panel**: a lead is tagged **Lead** in the rail and on the team templates; a team bot's Profile has a **Leads …**
+  switch.

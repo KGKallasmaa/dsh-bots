@@ -264,3 +264,27 @@ test('the router names each request as a need, restated for the person; nobody e
   assert.match(router, /drop its need with `bot_need`: its open tasks stop\. When two needs turn out to be one request, merge them/);
   for (const text of [personaText(atlas, roster), personaText(coder, roster, { tickets: true }), personaText(coder, roster, { ticket })]) assert.doesNotMatch(text, /`need`|bot_need/);
 });
+
+test('0.15: a team with a lead says so in the roster; the dispatcher goes through it; the lead plans and brings in its team', () => {
+  const builder = { id: 'b-builder', name: 'Builder', handle: 'builder', role: 'bot', persona: '', bio: 'Engineer', skills: [], team: 'dev', lead: true };
+  const tester = { id: 'b-tester', name: 'Tester', handle: 'tester', role: 'bot', persona: '', bio: 'Tests', skills: [], team: 'dev' };
+  const forge = { id: 'b-forge', name: 'Forge', handle: 'forge', role: 'bot', persona: '', bio: 'Product', skills: [], team: 'opc' };
+  const all = [atlas, builder, tester, forge];
+  const teamNames = { dev: 'Software squad', opc: 'One-person company' };
+  const router = personaText(atlas, all, { dispatcher: 'router', tickets: true, teamNames });
+  assert.match(router, /\n- Software squad, led by @builder:\n {2}- @builder — Builder \(lead\): Engineer\n {2}- @tester — Tester: Tests\n/);
+  assert.match(router, /\n- One-person company:\n {2}- @forge/);
+  assert.match(router, /takes its work through its lead: hand the team's work to the lead as the person put it/);
+  const lead = personaText(builder, all, { dispatcher: 'router', tickets: true, teamNames });
+  assert.match(lead, /\n## You lead Software squad\nYour teammates: @tester\. The dispatcher hands the team's work to you/);
+  assert.match(lead, /plan it first; a plan bigger than a quick fix you check with the person/);
+  const member = personaText(tester, all, { dispatcher: 'router', tickets: true, teamNames });
+  assert.match(member, /\n@builder leads Software squad, your team: the team's work comes to you from it\./);
+  assert.doesNotMatch(member, /## You lead/);
+  // A team of peers: no lead lines for its members.
+  const peer = personaText(forge, all, { dispatcher: 'router', tickets: true, teamNames });
+  assert.doesNotMatch(peer, /leads One-person company|## You lead/);
+  // In a task too: the lead's sub-tasks report back to it.
+  const inTask = personaText(builder, all, { ticket: { ...ticket, botId: builder.id }, teamNames });
+  assert.match(inTask, /## You lead Software squad/);
+});
