@@ -960,6 +960,68 @@ test('teams: with a roster, the template list asks nothing about the dispatcher:
   });
 });
 
+test('0.16.1: a team folds to one line in the rail (its faces, who is at work, its questions); the bot you have open stays; this browser remembers', async () => {
+  const kept = new Map();
+  const shim = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, String(v)) };
+  const before = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { value: shim, configurable: true, writable: true });
+  const dee = { ...BOTS[2], id: 'bot-d', name: 'Dee', handle: 'dee', team: 'squad', asking: 2 };
+  try {
+    await withRoster([BOTS[0], { ...BOTS[1], team: 'opc' }, { ...BOTS[2], team: 'opc' }, dee], async () => {
+      const v = await mountPanel();
+      const rowIds = () => findAll(v.tree, (n) => n.props['data-dsh-bots-row']).map((n) => n.props['data-dsh-bots-row']);
+      assert.deepEqual(rowIds(), ['bot-a', 'bot-b', 'bot-c', 'bot-d']);
+      // The dispatcher's group has no fold.
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-group-toggle']).map((n) => n.props['data-dsh-bots-group-toggle']), ['opc', 'squad']);
+      // Open Bob, then fold his team: he stays in sight, the rest of it folds into faces.
+      click(v.tree, 'data-dsh-bots-row', 'bot-b');
+      await v.rerender();
+      click(v.tree, 'data-dsh-bots-group-toggle', 'opc');
+      await v.rerender();
+      assert.deepEqual(rowIds(), ['bot-a', 'bot-b', 'bot-d']);
+      const opc = findAll(v.tree, (n) => n.props['data-dsh-bots-group'] === 'opc')[0];
+      assert.equal(opc.props['data-folded'], true);
+      assert.equal(findAll(opc, (n) => n.props['data-dsh-bots-group-faces'])[0].props['data-dsh-bots-group-faces'], 2);
+      assert.equal(findAll(opc, (n) => n.props['aria-expanded'] === false).length, 1);
+      // A folded team's questions show on its header.
+      click(v.tree, 'data-dsh-bots-group-toggle', 'squad');
+      await v.rerender();
+      assert.deepEqual(rowIds(), ['bot-a', 'bot-b']);
+      const [badge] = findAll(v.tree, (n) => n.props['data-dsh-bots-group-asking'] !== undefined);
+      assert.equal(badge.props['data-dsh-bots-group-asking'], 2);
+      assert.deepEqual(JSON.parse(kept.get('dsh-bots:rail-folded')), ['opc', 'squad']);
+      v.hooks.runCleanups();
+      // Opened again, the panel keeps both folded; unfolding one brings its rows back.
+      const w = await mountPanel();
+      assert.deepEqual(findAll(w.tree, (n) => n.props['data-folded']).map((n) => n.props['data-dsh-bots-group']), ['opc', 'squad']);
+      click(w.tree, 'data-dsh-bots-group-toggle', 'squad');
+      await w.rerender();
+      assert.ok(findAll(w.tree, (n) => n.props['data-dsh-bots-row'] === 'bot-d').length === 1);
+      assert.deepEqual(JSON.parse(kept.get('dsh-bots:rail-folded')), ['opc']);
+      w.hooks.runCleanups();
+    });
+  } finally {
+    if (before) Object.defineProperty(globalThis, 'localStorage', before);
+    else delete globalThis.localStorage;
+  }
+});
+
+test('0.16.1: the rail\'s views are one-line tiles, two to a line, with their words as tooltips', async () => {
+  await withTaskState({ state: { attention: ATTENTION, needs: { waiting: 0, working: 2 } }, ...TASK_COUNTS }, async () => {
+    const v = await mountPanel();
+    const nav = findAll(v.tree, (n) => n.props['data-dsh-bots-nav'])[0];
+    assert.equal(nav.props.style.gridTemplateColumns, 'repeat(2, minmax(0, 1fr))');
+    const tiles = findAll(nav, (n) => n.type === 'button');
+    assert.deepEqual(tiles.map((n) => collect(n).join(' ').split(' ')[0]), ['Requests', 'Tasks', 'Activity', 'Usage', 'Memory', 'Hire']);
+    // Under way, not waiting for you: a plain count, no red badge.
+    const requests = tiles[0];
+    assert.equal(findAll(requests, (n) => n.props['data-dsh-bots-needs-badge'] !== undefined).length, 0);
+    assert.equal(findAll(requests, (n) => n.props['data-dsh-bots-nav-count'])[0].props['data-dsh-bots-nav-count'], 2);
+    assert.equal(requests.props.title, 'Requests · 2 in progress');
+    v.hooks.runCleanups();
+  });
+});
+
 test('0.16: a new bot joins a hired team; on its Profile it moves, and the lead switch follows the team chosen', async () => {
   await withRoster([BOTS[0], { ...BOTS[1], team: 'opc', lead: true }, BOTS[2]], async () => {
     const w = await mountPanel();
@@ -1752,7 +1814,8 @@ test('tasks: the rail badge counts what needs you; the view groups needs you, in
     assert.match(text, /No tasks yet/);
     assert.match(text, /hands work to a teammate/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-badge'] !== undefined).length, 0);
-    assert.match(text, /Work handed to your bots/);
+    // The rail's tile says it in its tooltip (0.16.1).
+    assert.match(findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-entry'])[0].props.title, /Work handed to your bots/);
     v.hooks.runCleanups();
     TICKETS.push(saved.find((r) => r.id === 'tdone0001'));
     const w = await openView('data-dsh-bots-tasks-entry');
@@ -1885,7 +1948,9 @@ test('requests: the rail counts what waits for you; the board groups the person\
   await withTaskState({ state: { needs: { waiting: 1, working: 1 } } }, async () => {
     const v = await openView('data-dsh-bots-needs-entry');
     const entry = findAll(v.tree, (n) => n.props['data-dsh-bots-needs-entry'])[0];
-    assert.match(collect(entry).join(' '), /Requests .*1 waiting for you/);
+    // A one-line tile: its name and the red count; the words are its tooltip (0.16.1).
+    assert.equal(entry.props.title, 'Requests · 1 waiting for you');
+    assert.match(collect(entry).join(' '), /Requests .*1/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-needs-badge'] !== undefined)[0].props['data-dsh-bots-needs-badge'], 1);
     assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-needs']).length === 1, 'the board is shown');
     const groups = findAll(v.tree, (n) => n.props['data-dsh-bots-need-group']).map((n) => [n.props['data-dsh-bots-need-group'], findAll(n, (x) => x.props['data-dsh-bots-need']).map((x) => x.props['data-dsh-bots-need'])]);
@@ -2327,6 +2392,33 @@ test('chat: with several chats in a turn, the plain reply says it reached none o
     assert.equal(badge.props.title, 'Telegram · Kada, Telegram · Lin, Slack · Bob · thread, Discord · 998877');
     const sent = findAll(v.tree, (n) => n.props['data-dsh-bots-event'] === 'reply' && findAll(n, (x) => x.props['data-dsh-bots-via']).length).map((n) => collect(findAll(n, (x) => x.props['data-dsh-bots-via'])[0]).join(''));
     assert.deepEqual(sent, ['Slack · Bob · thread', 'Telegram · Lin', 'Telegram · Kada']);
+    v.hooks.runCleanups();
+  });
+});
+
+test('chat: a turn the model could not finish shows the Host’s notice in the error colour, and the activity view marks it failed (0.16.1)', async () => {
+  const now = Date.now();
+  await withFixtures(() => {
+    MESSAGES.push(
+      { id: 'm17', from: 'user', to: 'bot-a', text: 'Plan the release', at: now - 9_000, kind: 'user', thread: 'panel:sess-a' },
+      { id: 'm18', from: 'bot-a', to: 'user', chat: 'bot-a', text: "Couldn't reply: the model call failed (Connection error.). Send it again in a moment.", at: now - 8_000, kind: 'reply', error: 'Connection error.', thread: 'panel:sess-a' },
+      { id: 'm19', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Here is the plan.', at: now - 7_000, kind: 'reply', thread: 'panel:sess-a' },
+    );
+  }, async () => {
+    const v = await openTab('chat', 'bot-a');
+    const failed = findAll(v.tree, (n) => n.props['data-dsh-bots-turn-failed']);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].props['data-dsh-bots-turn-failed'], 'm18');
+    assert.match(collect(failed[0]).join(''), /Connection error\./);
+    // The notice is no Markdown answer; an ordinary answer keeps its body.
+    const row = (id) => findAll(v.tree, (n) => n.props['data-dsh-bots-msg-id'] === id)[0];
+    assert.equal(findAll(row('m18'), (n) => n.props['data-dsh-bots-reply-text']).length, 0);
+    assert.equal(findAll(row('m19'), (n) => n.props['data-dsh-bots-reply-text']).length, 1);
+    click(v.tree, 'data-dsh-bots-activity');
+    await v.rerender();
+    const [badge] = findAll(v.tree, (n) => n.props['data-dsh-bots-turn-failed']);
+    assert.equal(collect(badge).join(''), 'Failed');
+    assert.equal(badge.props.title, 'Connection error.');
     v.hooks.runCleanups();
   });
 });
@@ -2968,9 +3060,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.16\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.16\.1\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.16.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.16.1' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();

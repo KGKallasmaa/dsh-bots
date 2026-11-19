@@ -45,8 +45,8 @@ import { deskTasksOfLead, planLeadMigration, planTeamMigration } from './lib/tea
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
-import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
-import { createActivity } from './lib/activity.mjs';
+import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, turnFailedText, unmaskApps } from './lib/channels.mjs';
+import { clipLine, createActivity, scrub } from './lib/activity.mjs';
 import { describeTiming, dmBody, dmHeader, isNoReply, NO_REPLY, noWaitReason, personaText, reportsGoDirect, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
@@ -2892,8 +2892,8 @@ export function apply(ctx, config, deps = {}) {
   /** The time a bot's home last spoke to a person (a reply in the timeline), for reminders. */
   function lastReplyAt(botId) {
     const rows = store.messages({ bot: botId, limit: 2000 });
-    // Plain text that reached no chat (`notSent`: the turn had several) told nobody.
-    for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i].from === botId && rows[i].kind === 'reply' && !rows[i].notSent) return Number(rows[i].at) || 0;
+    // Plain text that reached no chat (`notSent`: the turn had several) told nobody, nor did the notice of a failed turn.
+    for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i].from === botId && rows[i].kind === 'reply' && !rows[i].notSent && !rows[i].error) return Number(rows[i].at) || 0;
     return 0;
   }
 
@@ -3301,6 +3301,42 @@ export function apply(ctx, config, deps = {}) {
     const st = turnState.get(sessionId);
     return Boolean(st) && !st.other && st.reports.size > 0 && st.answers.size > 0 && !st.acted;
   };
+  /** What a turn answers that the person reads: their message, a report passed on to them, a scheduled run. */
+  const NOTICE_TRIGGERS = new Set(['user', 'report', 'schedule']);
+  /**
+   * A home or thread turn ended in an error once Harness's own retries were spent (the model
+   * could not be reached, say). The person hears so where the answer would have gone, the panel
+   * and the turn's chats; otherwise the chat just goes quiet. A model that answered with nothing
+   * ends its turn quietly as before, and a stopped turn says nothing.
+   */
+  function failedTurnNotice(bot, sessionId, event) {
+    const reason = event.data?.reason;
+    if (reason?.kind !== 'error') return;
+    const error = reason.error ?? reason.failure;
+    if (isEmptyResponse(error)) return;
+    const why = trigger.get(sessionId);
+    if (!NOTICE_TRIGGERS.has(why)) return;
+    const said = String(error?.message ?? error?.failure?.message ?? error?.code ?? (typeof error === 'string' ? error : '')).trim();
+    const detail = clipLine(scrub(said, channelSecrets()), 160) || 'error';
+    const text = turnFailedText(bot, detail, { asked: why === 'user' });
+    const plan = channels.replyPlan(sessionId);
+    // The turn's one Thread gets it as a reply would; with several chats, each of them does.
+    const sent = channels.noteReply(sessionId, text);
+    if (plan.mode === 'choose') {
+      for (const o of plan.origins) {
+        if (o.kind === 'panel' || !o.chatId) continue;
+        try {
+          channels.replyTo(sessionId, o, text);
+        } catch (e) {
+          ctx.logger?.warn?.(`bots: the failure notice of @${bot.handle} did not reach ${o.threadKey}: ${e?.message ?? e}`);
+        }
+      }
+    }
+    const thread = sent ? sent.threadKey : homeThreadOf(sessionId);
+    const topic = isPanelThread(thread) ? panelTopicOf(thread) : '';
+    const logged = store.log({ from: bot.id, to: 'user', chat: bot.id, text, kind: 'reply', error: detail, ...(sent && sent.kind !== 'panel' ? { via: sent.kind } : {}), ...(thread ? { thread } : {}), ...(topic ? { topic } : {}) });
+    if (bot.sessionId === sessionId) discussions.anchor(messageRef(logged.id), { sessionId, seq: event.seq });
+  }
   /** A tool call's arguments as an object (`argsRaw` or Harness's `arguments`, a JSON string). */
   const callArgs = (b) => {
     const raw = b?.argsRaw ?? b?.arguments ?? b?.args ?? b?.input;
@@ -3493,6 +3529,8 @@ export function apply(ctx, config, deps = {}) {
           }
         }
       } else if (event.type === 'turn/end') {
+        // Before the turn's chats are forgotten: a turn that failed says so where its answer would have gone.
+        failedTurnNotice(bot, session.id, event);
         channels.noteTurnEnd(session.id);
         // What the turn took in counts with the answer it gave: a reply to it forks after that answer.
         if (bot.sessionId === session.id) for (const r of turnState.get(session.id)?.anchored ?? []) discussions.anchor(r, { sessionId: session.id, seq: event.seq });

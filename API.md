@@ -575,6 +575,7 @@ Message += { thread?: string, ticket?: string, status?: 'done' | 'blocked' | 'qu
 | `user` | `via`, `who`, `thread`, `ticket` | a chat follow-up that went straight to the task |
 | `reply` | `thread`, `via?` | a bot's reply; `via` when it went to a chat (`bot_reply` too) |
 | `reply` | `notSent: true`, `choices` | plain text of a turn with several chats: sent to none; `choices` are its chat Thread keys |
+| `reply` | `error`, `thread`, `via?` | (0.16.1) a home or thread turn that answered a person's message, a report or a scheduled run ended in an error once Harness's retries were spent (not an empty answer, not a stop): a notice in the bot's language, sent where its answer would have gone (the turn's one Thread, or each of its chats). `error` is the error's message, secrets scrubbed. It does not count as telling the person (reminders still come) |
 
 Entries written before 0.8 have none of these fields.
 

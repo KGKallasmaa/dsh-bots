@@ -32,7 +32,9 @@ Open the Bots panel (sidebar, or `/bots`), pick a team template and click **Hire
 | **Research desk** | Memo (writer), Analyst, Market, Skeptic | — |
 
 There is one dispatcher, the front desk, and it hands out the work of every team you hire. Hire a second team and it
-joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who belongs together.
+joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who belongs together. With many
+teams, click a team's name in the list to fold it to one line (its faces, who is at work, its questions); this browser
+remembers it, and the bot you have open stays in sight.
 
 Every team has a **lead**, listed first: the bot that owns the team's result and brings in the others.
 Builder leads the software squad (it plans a goal as small changes, checks the plan with you, and has Tester and

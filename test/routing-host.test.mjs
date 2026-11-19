@@ -127,7 +127,7 @@ function fakeHarness({ services: extra = {} } = {}) {
     return agent;
   };
   /** One turn: the step takes its steering (or the next follow-up), the prompt is assembled, its messages reported, tools run. */
-  async function step(sessionId, { answer, calls = [], claim } = {}) {
+  async function step(sessionId, { answer, calls = [], claim, end = { kind: 'completed' } } = {}) {
     const agent = agentsById.get(sessionId);
     const claimed = claim ?? (agent.inbox.nextStep.length ? agent.inbox.nextStep.splice(0) : agent.inbox.nextTurn.splice(0, 1));
     agent.status = 'running';
@@ -140,7 +140,7 @@ function fakeHarness({ services: extra = {} } = {}) {
       results.push(await tools.get(c.name).execute(c.args, { agent }));
     }
     if (answer) emit('session/event', agent.session, { type: 'assistant/message', seq: ++seq, time: Date.now(), data: { message: { content: [{ type: 'text', text: answer }], source: { kind: 'model', provider: 'magpie', model: 'm' } }, usage: { inputTokens: 10, outputTokens: 5 } } });
-    emit('session/event', agent.session, { type: 'turn/end', seq: ++seq, time: Date.now(), data: { turn: 1, reason: { kind: 'completed' } } });
+    emit('session/event', agent.session, { type: 'turn/end', seq: ++seq, time: Date.now(), data: { turn: 1, reason: end } });
     agent.status = 'idle';
     emit('agent/status', { agent, status: 'idle' });
     return results;
@@ -678,6 +678,69 @@ test('a model that answers with nothing (EMPTY_RESPONSE after Harness\'s retries
   assert.equal(after.error, undefined);
   assert.equal(router.deliveries.length, before, 'nobody is told of a failure');
   env.dispose();
+});
+
+test('a turn that fails after Harness\'s retries says so in the panel and the turn\'s chat; an empty answer or a stop stays quiet (0.16.1)', async () => {
+  const clock = { t: Date.now() };
+  const env = boot({ now: () => clock.t });
+  const { h, api, call } = env;
+  const tg = await withTelegram(env);
+  const atlas = api.store.find('atlas');
+  const failures = () => api.store.messages({ bot: atlas.id }).filter((m) => m.kind === 'reply' && m.error);
+  const unreachable = (message) => ({ kind: 'error', error: { message, code: 'TRANSPORT' } });
+  // From the panel: the chat shows the notice, sent nowhere else.
+  const sid = await api.userSend(atlas, 'Plan the release');
+  await h.step(sid, { end: unreachable('Connection error.') });
+  await settle();
+  assert.equal(failures().length, 1);
+  assert.equal(failures()[0].error, 'Connection error.');
+  assert.match(failures()[0].text, /^Couldn't reply: the model call failed \(Connection error\.\)/);
+  assert.equal(failures()[0].via, undefined);
+  assert.deepEqual(tg.c.sent, []);
+  // From Telegram: the chat hears it as well, with nothing that looks like a key.
+  tg.say('42', 10, 'Are you there?');
+  await settle();
+  await h.step(sid, { end: unreachable('Connection error. Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz') });
+  await settle();
+  assert.equal(tg.c.sent.length, 1);
+  assert.equal(tg.c.sent[0].chatId, '42');
+  assert.match(tg.c.sent[0].text, /Connection error\./);
+  assert.doesNotMatch(tg.c.sent[0].text, /sk-abcdef/);
+  assert.equal(failures().at(-1).via, 'telegram');
+  // A model that answered with nothing, and a stopped turn: no notice.
+  tg.c.sent.length = 0;
+  tg.say('42', 11, 'Hello?');
+  await settle();
+  await h.step(sid, { end: { kind: 'error', error: { message: 'no content', code: 'EMPTY_RESPONSE' } } });
+  tg.say('42', 12, 'Never mind');
+  await settle();
+  await h.step(sid, { end: { kind: 'aborted' } });
+  await settle();
+  assert.deepEqual(tg.c.sent, []);
+  assert.equal(failures().length, 2);
+  // A report the dispatcher could not pass on: the notice does not count as telling the person, so the reminder comes.
+  api.store.save({ name: 'Forge' });
+  tg.say('42', 13, 'Fix the login bug');
+  await settle();
+  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', report_to: 'me' } }] });
+  await call('bot_send_message', { status: 'done', text: 'Fixed.' }, api.tickets.get(a.ticket.id).sessionId);
+  await h.step(sid, { end: unreachable('Connection error.') });
+  await settle();
+  assert.equal(failures().length, 3);
+  assert.match(failures().at(-1).text, /^Couldn't finish: .*Say "continue"/);
+  const router = h.agentsById.get(sid);
+  const before = router.deliveries.length;
+  clock.t += 2 * 60_000;
+  await api.watch(clock.t);
+  assert.equal(router.deliveries.slice(before).filter((d) => /^\[Reminder\]/.test(textOfMsg(d.message))).length, 1);
+  env.dispose();
+});
+
+test('the failure notice speaks the bot\'s language', async () => {
+  const { turnFailedText } = await import('../lib/channels.mjs');
+  assert.equal(turnFailedText({ name: 'Atlas 幕僚长' }, 'Connection error.'), '没能回复：调用模型失败（Connection error.）。稍后再发一次。');
+  assert.equal(turnFailedText({ name: 'Atlas 幕僚长' }, '', { asked: false }), '没能做完：调用模型失败（error）。稍后回一句“继续”。');
+  assert.equal(turnFailedText({ name: 'Atlas' }, 'HTTP 502'), "Couldn't reply: the model call failed (HTTP 502). Send it again in a moment.");
 });
 
 test('NO_REPLY is never shown or sent: a turn that has nothing to say leaves the chat and the panel alone', async () => {

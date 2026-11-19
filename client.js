@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.16.0';
+    const BOTS_VERSION = '0.16.1';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -698,6 +698,8 @@ select.dshb-input{padding-right:6px}
 .dshb-row{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:none;border-radius:10px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .1s}
 .dshb-row:hover{background:${C.hover}}
 .dshb-row[data-active=true]{background:${tint(C.label, 13)}}
+.dshb-navtile{padding:7px 9px;gap:7px;border-radius:8px;font-size:${SMALL}}
+.dshb-grouphead:hover{background:${C.hover};color:${C.muted}}
 .dshb-tab{position:relative;height:38px;padding:0 2px;margin-right:18px;border:none;background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};font-weight:600;cursor:pointer}
 .dshb-tab:hover{color:${C.primary}}
 .dshb-tab[data-active=true]{color:${C.primary}}
@@ -1200,6 +1202,35 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** A red count of what needs you (tasks, or a bot's questions). */
     const NeedsBadge = ({ n, label, attr }) =>
       h('span', { [attr]: n, 'aria-label': label, title: label, style: { minWidth: 20, height: 20, padding: '0 6px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.error, color: '#fff', fontSize: TINY, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flex: 'none' } }, n > 99 ? '99+' : String(n));
+    /** The team groups folded in the rail, remembered in this browser only (a convenience: it may be gone). */
+    const FOLDED_KEY = 'dsh-bots:rail-folded';
+    function readFolded() {
+      try {
+        const v = JSON.parse(globalThis.localStorage?.getItem(FOLDED_KEY) ?? '[]');
+        return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+      } catch {
+        return [];
+      }
+    }
+    function writeFolded(ids) {
+      try {
+        globalThis.localStorage?.setItem(FOLDED_KEY, JSON.stringify(ids));
+      } catch {
+        // Not kept: it is folded until the panel reloads.
+      }
+    }
+    /**
+     * One of the rail's views (requests, tasks, activity, …) as a one-line tile: its name, and on the
+     * right what needs you (red) or what is under way (a plain count). The longer words are its tooltip.
+     */
+    const NavTile = ({ icon, label, hint, active, attr, onClick, badge = 0, badgeLabel, badgeAttr, count = 0 }) =>
+      h(
+        'button',
+        { type: 'button', className: 'dshb-row dshb-navtile', 'data-active': active, [attr]: true, title: hint ? `${label} · ${hint}` : label, 'aria-label': hint ? `${label} · ${hint}` : label, onClick },
+        h('span', { style: { color: C.label, display: 'inline-flex', flex: 'none' } }, icon),
+        h('span', { style: { flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
+        badge > 0 ? h(NeedsBadge, { n: badge, label: badgeLabel, attr: badgeAttr }) : count > 0 ? h('span', { 'data-dsh-bots-nav-count': count, style: { flex: 'none', fontSize: TINY, color: C.muted, fontVariantNumeric: 'tabular-nums' } }, count > 99 ? '99+' : String(count)) : null,
+      );
     function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0, onNeeds, needCounts = {} }) {
       const needsWaiting = Number(needCounts?.waiting) || 0;
       const needsWorking = Number(needCounts?.working) || 0;
@@ -1211,11 +1242,23 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         .filter((b) => !needle || [b.name, b.handle, b.bio].some((s) => str(s).toLowerCase().includes(needle)))
         .sort((a, b) => (a.id === primaryId ? -1 : b.id === primaryId ? 1 : 0));
       const groups = needle ? null : groupByTeam(t, lang, shown);
-      const row = (b) => {
-        // At work: its own conversation, else the freshest of its tasks; the line under its name says what it does.
+      // Team groups folded to one line, so many teams fit (the dispatcher's own group always shows).
+      const [folded, setFolded] = useState(readFolded);
+      const fold = (id) =>
+        setFolded((cur) => {
+          const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+          writeFolded(next);
+          return next;
+        });
+      /** What a bot does now: its own conversation, else the freshest of its tasks. */
+      const liveOf = (b) => {
         const live = liveBot(b);
         const work = live.activity ? live.activity : botTaskActivity(b.id);
-        const status = live.status === 'running' || work ? 'running' : (live.status ?? 'offline');
+        return { live, work, status: live.status === 'running' || work ? 'running' : (live.status ?? 'offline') };
+      };
+      const row = (b) => {
+        // The line under its name says what it does.
+        const { live, work, status } = liveOf(b);
         return h(
           'button',
           { key: b.id, type: 'button', className: 'dshb-row', 'data-active': view === 'bot' && b.id === selected, 'data-dsh-bots-row': b.id, onClick: () => onSelect(b.id) },
@@ -1279,76 +1322,81 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           shown.length === 0
             ? h('div', { style: { padding: '18px 10px', fontSize: SMALL, color: C.faint, textAlign: 'center' } }, bots.length ? t('noMatch') : t('noBotsShort'))
             : groups
-              ? groups.map((g) =>
-                  h(
+              ? groups.map((g) => {
+                  const id = g.id || 'other';
+                  const foldable = g.id !== 'desk';
+                  const isFolded = foldable && folded.includes(id);
+                  // Folded, the bot you have open stays in sight.
+                  const rows = isFolded ? g.bots.filter((b) => view === 'bot' && b.id === selected) : g.bots;
+                  // Questions of the bots folded out of sight show on the header.
+                  const asking = g.bots.filter((b) => !rows.includes(b)).reduce((n, b) => n + (Number(b.asking) || 0), 0);
+                  const busy = isFolded ? g.bots.filter((b) => liveOf(b).status === 'running').length : 0;
+                  const label = [
+                    foldable ? h('span', { key: 'c', style: { display: 'inline-flex', flex: 'none', transform: isFolded ? 'rotate(-90deg)' : 'none', transition: 'transform .12s' } }, Icon.chevron(11)) : null,
+                    h('span', { key: 'l', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, g.label),
+                    h('span', { key: 'n', style: { fontWeight: 500, flex: 'none' } }, g.bots.length),
+                    h('span', { key: 's', style: { flex: 1 } }),
+                    // Folded: the faces of the team, who is at work, and what waits for your answer.
+                    isFolded
+                      ? h(
+                          'span',
+                          { key: 'f', 'data-dsh-bots-group-faces': g.bots.length, style: { display: 'inline-flex', alignItems: 'center', flex: 'none' } },
+                          g.bots.slice(0, 5).map((b, i) => h('span', { key: b.id, style: { marginLeft: i ? -5 : 0, display: 'inline-flex', borderRadius: '50%', boxShadow: `0 0 0 1.5px ${C.base}` } }, h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 18, title: b.name || `@${b.handle}` }))),
+                          g.bots.length > 5 ? h('span', { style: { marginLeft: 4, fontWeight: 500 } }, `+${g.bots.length - 5}`) : null,
+                        )
+                      : null,
+                    busy > 0 ? h('span', { key: 'b', 'data-dsh-bots-group-busy': busy, title: t('groupBusy', { n: busy }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, flex: 'none', fontWeight: 500, color: C.muted } }, h(StatusDot, { status: 'running', size: 6 }), busy) : null,
+                    asking > 0 ? h(NeedsBadge, { key: 'a', n: asking, label: t('askingBadge', { n: asking }), attr: 'data-dsh-bots-group-asking' }) : null,
+                  ];
+                  const headStyle = { display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '8px 10px 3px', fontSize: TINY, fontWeight: 700, color: C.faint, letterSpacing: '.02em', minHeight: 26 };
+                  return h(
                     'div',
-                    { key: g.id || '-', 'data-dsh-bots-group': g.id || 'other', style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-                    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px 3px', fontSize: TINY, fontWeight: 700, color: C.faint, letterSpacing: '.02em' } }, g.label, h('span', { style: { fontWeight: 500 } }, g.bots.length)),
-                    g.bots.map(row),
-                  ),
-                )
+                    { key: g.id || '-', 'data-dsh-bots-group': id, 'data-folded': isFolded || undefined, style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+                    foldable
+                      ? h('button', { type: 'button', className: 'dshb-grouphead', 'data-dsh-bots-group-toggle': id, 'aria-expanded': !isFolded, title: isFolded ? t('groupUnfold') : t('groupFold'), onClick: () => fold(id), style: { ...headStyle, border: 'none', background: 'transparent', font: 'inherit', textAlign: 'left', cursor: 'pointer', borderRadius: 8 } }, label)
+                      : h('div', { style: headStyle }, label),
+                    rows.map(row),
+                  );
+                })
               : shown.map(row),
         ),
         h(
           'div',
-          { style: { padding: 8, borderTop: `1px solid ${C.border1}` } },
+          // The views, two to a line: the list of bots above keeps the room (Bots 0.16.1).
+          { 'data-dsh-bots-nav': true, style: { padding: 8, borderTop: `1px solid ${C.border1}`, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 2 } },
           // What you asked for (Bots 0.11), above the tasks that do it.
           onNeeds
-            ? h(
-                'button',
-                { type: 'button', className: 'dshb-row', 'data-active': view === 'needs', 'data-dsh-bots-needs-entry': true, onClick: onNeeds },
-                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.target(16)),
-                h(
-                  'span',
-                  { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } },
-                  h('span', { style: { fontWeight: 600 } }, t('needs')),
-                  h('span', { style: { fontSize: TINY, color: needsWaiting > 0 ? C.warn : C.muted } }, needsWaiting > 0 ? t('needsWaitingHint', { n: needsWaiting }) : needsWorking > 0 ? t('needsWorkingHint', { n: needsWorking }) : t('needsHint')),
-                ),
-                needsWaiting > 0 ? h(NeedsBadge, { n: needsWaiting, label: t('needsWaitingHint', { n: needsWaiting }), attr: 'data-dsh-bots-needs-badge' }) : null,
-              )
+            ? h(NavTile, {
+                icon: Icon.target(15),
+                label: t('needs'),
+                hint: needsWaiting > 0 ? t('needsWaitingHint', { n: needsWaiting }) : needsWorking > 0 ? t('needsWorkingHint', { n: needsWorking }) : t('needsHint'),
+                active: view === 'needs',
+                attr: 'data-dsh-bots-needs-entry',
+                onClick: onNeeds,
+                badge: needsWaiting,
+                badgeLabel: t('needsWaitingHint', { n: needsWaiting }),
+                badgeAttr: 'data-dsh-bots-needs-badge',
+                count: needsWorking,
+              })
             : null,
           onTasks
-            ? h(
-                'button',
-                { type: 'button', className: 'dshb-row', 'data-active': view === 'tasks', 'data-dsh-bots-tasks-entry': true, onClick: onTasks },
-                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.tasks(16)),
-                h(
-                  'span',
-                  { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } },
-                  h('span', { style: { fontWeight: 600 } }, t('tasks')),
-                  h('span', { style: { fontSize: TINY, color: attention > 0 ? C.warn : C.muted } }, attention > 0 ? t('tasksNeedYou', { n: attention }) : openTasks > 0 ? t('tasksInProgress', { n: openTasks }) : t('tasksHint')),
-                ),
-                attention > 0 ? h(NeedsBadge, { n: attention, label: t('tasksNeedYou', { n: attention }), attr: 'data-dsh-bots-tasks-badge' }) : null,
-              )
+            ? h(NavTile, {
+                icon: Icon.tasks(15),
+                label: t('tasks'),
+                hint: attention > 0 ? t('tasksNeedYou', { n: attention }) : openTasks > 0 ? t('tasksInProgress', { n: openTasks }) : t('tasksHint'),
+                active: view === 'tasks',
+                attr: 'data-dsh-bots-tasks-entry',
+                onClick: onTasks,
+                badge: attention,
+                badgeLabel: t('tasksNeedYou', { n: attention }),
+                badgeAttr: 'data-dsh-bots-tasks-badge',
+                count: openTasks,
+              })
             : null,
-          h(
-            'button',
-            { type: 'button', className: 'dshb-row', 'data-active': view === 'activity', 'data-dsh-bots-activity': true, onClick: onActivity },
-            h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.activity(16)),
-            h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('activity')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('activityHint', { n: messageCount ?? 0 }))),
-          ),
-          onUsage
-            ? h(
-                'button',
-                { type: 'button', className: 'dshb-row', 'data-active': view === 'usage', 'data-dsh-bots-usage-entry': true, onClick: onUsage },
-                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.chart(16)),
-                h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('usage')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('usageHint', { tokens: fmtNum(bots.reduce((n, b) => n + (Number(b.usageToday) || 0), 0)) }))),
-              )
-            : null,
-          onMemory
-            ? h(
-                'button',
-                { type: 'button', className: 'dshb-row', 'data-active': view === 'memory', 'data-dsh-bots-memory-entry': true, onClick: onMemory },
-                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.brain(16)),
-                h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('teamMemoryTitle')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('teamMemoryHint', { n: teamNotes ?? 0 }))),
-              )
-            : null,
-          h(
-            'button',
-            { type: 'button', className: 'dshb-row', 'data-active': view === 'teams', 'data-dsh-bots-teams-entry': true, onClick: onTeams },
-            h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.team(16)),
-            h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('teamTemplates')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('teamTemplatesHint'))),
-          ),
+          h(NavTile, { icon: Icon.activity(15), label: t('activity'), hint: t('activityHint', { n: messageCount ?? 0 }), active: view === 'activity', attr: 'data-dsh-bots-activity', onClick: onActivity }),
+          onUsage ? h(NavTile, { icon: Icon.chart(15), label: t('usage'), hint: t('usageHint', { tokens: fmtNum(bots.reduce((n, b) => n + (Number(b.usageToday) || 0), 0)) }), active: view === 'usage', attr: 'data-dsh-bots-usage-entry', onClick: onUsage }) : null,
+          onMemory ? h(NavTile, { icon: Icon.brain(15), label: t('navMemory'), hint: `${t('teamMemoryTitle')} · ${t('teamMemoryHint', { n: teamNotes ?? 0 })}`, active: view === 'memory', attr: 'data-dsh-bots-memory-entry', onClick: onMemory }) : null,
+          h(NavTile, { icon: Icon.team(15), label: t('navTemplates'), hint: `${t('teamTemplates')} · ${t('teamTemplatesHint')}`, active: view === 'teams', attr: 'data-dsh-bots-teams-entry', onClick: onTeams }),
         ),
       );
     }
@@ -1752,7 +1800,15 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
               ),
           quote ? h(QuoteLine, { t, q: quote, onOpen: onQuote ? () => onQuote(m) : null }) : null,
-          h('div', { className: 'dshb-reply', 'data-dsh-bots-reply-text': true }, h(Clamp, { t, text: m.text, lines: 24, variant: 'body' })),
+          // A turn the model could not finish: the Host's notice, in the error colour.
+          m.error
+            ? h(
+                'div',
+                { 'data-dsh-bots-turn-failed': m.id ?? true, style: { display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: SMALL, color: C.error, lineHeight: 1.55 } },
+                h('span', { style: { display: 'inline-flex', paddingTop: 3, flex: 'none' } }, Icon.alert(12)),
+                h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, str(m.text)),
+              )
+            : h('div', { className: 'dshb-reply', 'data-dsh-bots-reply-text': true }, h(Clamp, { t, text: m.text, lines: 24, variant: 'body' })),
           choices.length
             ? h(
                 'div',
@@ -3068,6 +3124,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                         messageNotice(m) ? h(StageChip, { t, stage: messageNotice(m) }) : null,
                         messageTicket(m) ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-event-task': messageTicket(m), onClick: () => openTicket(messageTicket(m)), style: { fontSize: TINY } }, t('openTask')) : null,
                         m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via, t)} · ${str(m.who)}` : isChatThread(m.thread) ? threadName(t, m.thread, names) : channelName(m.via, t)) : null,
+                        str(m.error) ? h(Badge, { color: C.error, 'data-dsh-bots-turn-failed': true, title: str(m.error) }, t('turnFailed')) : null,
                         m.notSent === true ? h(Badge, { color: C.warn, 'data-dsh-bots-not-sent': true, title: (Array.isArray(m.choices) ? m.choices.filter(isChatThread) : []).map((k) => threadName(t, k, names)).join(t('listSep')) }, t('notSent')) : null,
                         h('span', { style: { marginLeft: 'auto', color: C.faint, fontSize: TINY }, title: fmtDate(toMs(m.at)) }, fmtAgo(t, m.at)),
                       ),
@@ -9243,6 +9300,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         blankBot: "Blank bot",
         fromTeam: "From a team template",
         teamTemplates: "Team templates",
+        navMemory: 'Memory',
+        navTemplates: 'Hire a team',
         teamTemplatesHint: "Hire a ready-made team",
         teamTemplatesSub: "Each team comes with personas, Harness skills, apps and scheduled tasks. Anything this Harness lacks is skipped.",
         teamsHeroTitle: "Build your bot team",
@@ -9434,6 +9493,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         threadTopic: 'topic',
         notSent: 'Not sent',
         notSentChats: 'Not sent to any chat: this turn involved several ({chats}).',
+        turnFailed: 'Failed',
         // tasks
         tasks: 'Tasks',
         tasksHint: 'Work handed to your bots',
@@ -9448,6 +9508,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askSubmit: 'Submit',
         askFailed: 'The answer could not be sent.',
         askingBadge: '{n} waiting for your answer',
+        groupFold: 'Fold this team',
+        groupUnfold: 'Show this team',
+        groupBusy: '{n} at work',
         askingChip: 'Asks you',
         tasksInProgress: '{n} in progress',
         // requests (needs, Bots 0.11)
@@ -10275,6 +10338,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         blankBot: "空白 Bot",
         fromTeam: "从团队模板",
         teamTemplates: "团队模板",
+        navMemory: '团队记忆',
+        navTemplates: '团队模板',
         teamTemplatesHint: "雇用一支现成的团队",
         teamTemplatesSub: "每个团队都配好了人设、Harness 技能、应用和定时任务。当前 Harness 没有的会自动跳过。",
         teamsHeroTitle: "组建你的 Bot 团队",
@@ -10466,6 +10531,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         threadTopic: '话题',
         notSent: '未发出',
         notSentChats: '没有发到任何聊天：这一轮涉及多个聊天（{chats}）。',
+        turnFailed: '失败',
         // tasks
         tasks: '任务',
         tasksHint: '交给 Bot 们的工作',
@@ -10480,6 +10546,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askSubmit: '提交',
         askFailed: '回答没有发出去。',
         askingBadge: '{n} 个问题等你回答',
+        groupFold: '收起这个团队',
+        groupUnfold: '展开这个团队',
+        groupBusy: '{n} 个在忙',
         askingChip: '在问你',
         tasksInProgress: '{n} 个进行中',
         // requests (needs, Bots 0.11)
