@@ -197,10 +197,11 @@ const CATALOG = {
 };
 const TEAMS = [
   {
-    id: 'opc', name: { en: 'One-person company', zh: '一人公司' }, tagline: { en: 'A chief of staff plus four.', zh: '一个幕僚长加四个角色。' }, description: { en: 'For founders.', zh: '给创始人。' }, color: '#7c5cff', kickoff: { en: 'Hi team, introduce yourselves.', zh: '大家好，介绍一下自己。' },
+    id: 'opc', name: { en: 'One-person company', zh: '一人公司' }, tagline: { en: 'Four people.', zh: '四个角色。' }, description: { en: 'For founders.', zh: '给创始人。' }, color: '#7c5cff', kickoff: { en: 'Hi, introduce the team.', zh: '你好，介绍一下团队。' },
+    desk: [{ when: 'weekly 1,2,3,4,5 09:00', title: { en: 'Morning brief', zh: '早间简报' } }, { when: 'weekly 5 17:30', title: { en: 'Weekly review', zh: '周复盘' } }],
     bots: [
-      { key: 'chief', handle: 'atlas', name: { en: 'Atlas', zh: 'Atlas 幕僚长' }, color: '#7c5cff', bio: { en: 'Chief of staff: plans.', zh: '幕僚长：排计划。' }, role: 'primary', skills: [{ name: 'deep-research', source: 'dsh', available: true }, { name: 'morning', source: 'dsh', available: false }], apps: [], tasks: [{ when: 'weekly 1,2,3,4,5 09:00', title: { en: 'Morning brief', zh: '早间简报' } }, { when: 'weekly 5 17:30', title: { en: 'Weekly review', zh: '周复盘' } }] },
-      { key: 'builder', handle: 'forge', name: { en: 'Forge', zh: 'Forge 工程师' }, color: '#0f766e', bio: { en: 'Product engineer: builds.', zh: '产品工程师：开发。' }, role: 'bot', skills: [{ name: 'webapp-testing', source: 'import', repo: 'anthropics/skills', available: true }], apps: [{ id: 'tavily', available: true }], tasks: [] },
+      { key: 'growth', handle: 'echo', name: { en: 'Echo', zh: 'Echo 增长' }, color: '#db2777', bio: { en: 'Growth & content: posts.', zh: '增长与内容：发帖。' }, skills: [{ name: 'deep-research', source: 'dsh', available: true }, { name: 'morning', source: 'dsh', available: false }], apps: [], tasks: [] },
+      { key: 'builder', handle: 'forge', name: { en: 'Forge', zh: 'Forge 工程师' }, color: '#0f766e', bio: { en: 'Product engineer: builds.', zh: '产品工程师：开发。' }, skills: [{ name: 'webapp-testing', source: 'import', repo: 'anthropics/skills', available: true }], apps: [{ id: 'tavily', available: true }], tasks: [] },
     ],
   },
   { id: 'dev', name: { en: 'Software squad', zh: '研发小队' }, tagline: { en: 'Plan, build.', zh: '规划、开发。' }, description: { en: 'Ship.', zh: '交付。' }, color: '#0f766e', kickoff: { en: 'Lead: ask me.', zh: '负责人：问我。' }, bots: [] },
@@ -334,7 +335,7 @@ function mockFetch(posts = []) {
       const body = JSON.parse(init.body);
       posts.push({ path, body });
       if (path.endsWith('/open')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-a' }) };
-      if (path.endsWith('/teams/hire')) return { ok: true, json: async () => ({ ok: true, team: body.id, bots: [BOTS[0], BOTS[1]], leadId: 'bot-a', kickoff: 'Hi team, introduce yourselves.', skipped: [{ bot: 'atlas', kind: 'skill', name: 'morning' }] }) };
+      if (path.endsWith('/teams/hire')) return { ok: true, json: async () => ({ ok: true, team: body.id, bots: [BOTS[1]], dispatcherId: 'bot-a', kickoff: 'Hi, introduce the team.', skipped: [{ bot: 'echo', kind: 'skill', name: 'morning' }] }) };
       if (path.endsWith('/skills/github')) return { ok: true, json: async () => GITHUB };
       if (path.endsWith('/skills/local')) return { ok: true, json: async () => LOCAL };
       if (path.endsWith('/skills/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.items.map((i) => (i.path ?? i.local).split('/').pop()), updated: [], skipped: [], failed: [] }) };
@@ -881,11 +882,16 @@ test('teams: an (almost) empty roster shows the hero with team cards; details sh
     assert.match(text, /Build your bot team/);
     assert.match(text, /One-person company/);
     assert.match(text, /2 bots · 3 skills · 2 scheduled tasks/);
-    assert.match(text, /Chief of staff/);
+    assert.match(text, /Growth & content/);
+    // A team has no lead: no member wears the crown.
+    assert.equal(findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-team'] === 'opc')[0], (n) => n.props.title === 'Dispatcher').length, 0);
     findAll(v.tree, (n) => n.props['data-dsh-bots-team-detail'] === 'opc')[0].props.onClick();
     await v.rerender(1);
     text = collect(v.tree).join(' ');
     assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-team-modal'] === 'opc').length === 1);
+    // The dispatcher you have hands out the work and takes the routine.
+    const desk = findAll(v.tree, (n) => n.props['data-dsh-bots-team-desk'] === 'bot-a')[0];
+    assert.match(collect(desk).join(' '), /Ada .*Your dispatcher hands out this team's work.*Morning brief/);
     assert.match(text, /Weekdays 09:00/);
     assert.match(text, /Every Fri 17:30/);
     const morning = findAll(v.tree, (n) => n.props['data-dsh-bots-team-skill'] === 'morning')[0];
@@ -897,46 +903,47 @@ test('teams: an (almost) empty roster shows the hero with team cards; details sh
   });
 });
 
-test('teams: hiring posts {id, lang, primary}, shows the result, and the kickoff goes to the lead', async () => {
+test('teams: hiring posts {id, lang}, shows the result, and the kickoff goes to the dispatcher', async () => {
   await withRoster([{ ...BOTS[0], skills: [] }], async () => {
     const v = await mountPanel();
     findAll(v.tree, (n) => n.props['data-dsh-bots-hire'] === 'opc')[0].props.onClick();
     await v.rerender(3);
-    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/hire')).body, { id: 'opc', lang: 'en', primary: true });
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/hire')).body, { id: 'opc', lang: 'en' });
     const text = collect(v.tree).join(' ');
     assert.match(text, /One-person company is ready/);
-    assert.match(text, /Hi team, introduce yourselves\./);
+    assert.match(text, /Hi, introduce the team\./);
     assert.match(text, /Tavily Search/); // Bob's app needs a key
     assert.match(text, /Skipped 1 items/);
     const kick = findAll(v.tree, (n) => n.props['data-dsh-bots-kickoff'] === 'bot-a')[0];
     assert.match(collect(kick).join(' '), /Send the kickoff to Ada/);
     kick.props.onClick();
     await v.rerender(2);
-    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/send')).body, { to: 'bot-a', text: 'Hi team, introduce yourselves.' });
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/send')).body, { to: 'bot-a', text: 'Hi, introduce the team.' });
     assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-detail'] === 'bot-a').length === 1);
     assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-tab'] === 'chat' && n.props['data-active'] === true).length === 1);
     v.hooks.runCleanups();
   });
 });
 
-test('teams: with a roster, the template list asks first and the dispatcher tick is sent', async () => {
+test('teams: with a roster, the template list asks nothing about the dispatcher: the team joins the one you have', async () => {
   const v = await mountPanel();
   findAll(v.tree, (n) => n.props['data-dsh-bots-teams-entry'])[0].props.onClick();
   await v.rerender(1);
   assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-teams'] === 'list').length === 1);
-  findAll(v.tree, (n) => n.props['data-dsh-bots-team-detail'] === 'opc')[0].props.onClick();
+  findAll(v.tree, (n) => n.props['data-dsh-bots-hire'] === 'opc')[0].props.onClick();
   await v.rerender(1);
-  findAll(v.tree, (n) => n.props['data-dsh-bots-hire-primary'])[0].props.onChange({ target: { checked: false } });
-  await v.rerender(1);
-  findAll(v.tree, (n) => n.props['data-dsh-bots-hire-modal'] === 'opc')[0].props.onClick();
+  assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-hire-go']).length === 1, 'a roster confirms first');
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-hire-primary']).length, 0);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-hire-go'])[0].props.onClick();
   await v.rerender(3);
-  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/hire')).body, { id: 'opc', lang: 'en', primary: false });
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/hire')).body, { id: 'opc', lang: 'en' });
   // Rail groups by team once a bot has one.
   v.hooks.runCleanups();
   await withRoster([{ ...BOTS[0], team: 'opc' }, { ...BOTS[1], team: 'opc' }, BOTS[2]], async () => {
     const w = await mountPanel();
     const groups = findAll(w.tree, (n) => n.props['data-dsh-bots-group']).map((n) => n.props['data-dsh-bots-group']);
-    assert.deepEqual(groups, ['opc', 'other']);
+    // The dispatcher sits on its own on top, even when it was hired with a team.
+    assert.deepEqual(groups, ['desk', 'opc', 'other']);
     assert.match(collect(w.tree).join(' '), /One-person company/);
     w.hooks.runCleanups();
   });
@@ -2038,6 +2045,29 @@ test('the router notice shows once, opens the dispatcher, and is dismissed throu
   v.hooks.runCleanups();
 });
 
+test('the old-leads notice names the leads, and Remove deletes them before it is dismissed', async () => {
+  await withTaskState({ state: { oldLeads: [{ id: 'bot-b', name: 'Bob', handle: 'bob', team: 'opc' }] } }, async () => {
+    const { exports, hooks } = await loadClient();
+    const { ctx, seen } = fakeContext();
+    exports.apply(ctx);
+    const posts = mockFetch();
+    const panel = seen.slots.find((s) => s.options.name === 'main').component;
+    let tree = await renderSettled(panel, {}, hooks);
+    const [notice] = findAll(tree, (n) => n.props['data-dsh-bots-old-leads']);
+    assert.match(collect(notice).join(' '), /Ada hands out the work of every team, so Bob \(@bob\), hired as a team lead/);
+    click(tree, 'data-dsh-bots-old-leads-remove');
+    await flush();
+    await flush();
+    hooks.rewind();
+    tree = panel({});
+    const sent = posts.map((p) => p.path);
+    assert.ok(sent.indexOf('/__dsh_bots/delete') >= 0 && sent.indexOf('/__dsh_bots/delete') < sent.indexOf('/__dsh_bots/lead-notice/dismiss'));
+    assert.deepEqual(posts.find((p) => p.path === '/__dsh_bots/delete').body, { id: 'bot-b' });
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-old-leads']).length, 0);
+    hooks.runCleanups();
+  });
+});
+
 test('usage: a by-task table, and the old task counts read as runs', async () => {
   USAGE.tickets = [{ id: 'tquestion', title: 'Which logo do you prefer?', bot: 'bot-b', stage: 'question', runs: 2, tokens: 15_000, cost: { USD: 0.025 } }];
   USAGE.tasks[1].ticket = 'tworking1';
@@ -2834,9 +2864,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.11\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.11\.1\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.11.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.11.1' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();

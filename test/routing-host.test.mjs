@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -238,6 +238,73 @@ async function twoChats({ topic, relay = false } = {}) {
   const [b] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes for 2.4.', ...back } }] });
   return { ...env, tg, sid, router, ta: api.tickets.get(a.ticket.id), tb: api.tickets.get(b.ticket.id) };
 }
+
+test('hiring a team with no dispatcher makes one first: the team never brings its own (0.11.1)', async () => {
+  // A home that was seeded once and emptied since: no Atlas is made at start.
+  const home = mkdtempSync(join(tmpdir(), 'bots-routing-'));
+  mkdirSync(join(home, 'cache', 'bots'), { recursive: true });
+  writeFileSync(join(home, 'cache', 'bots', 'seeded'), '1');
+  const env = boot({ home });
+  try {
+    assert.equal(env.api.store.list().length, 0);
+    const r = await env.api.routes['teams/hire'].post({ id: 'research', lang: 'en' });
+    const desk = env.api.store.primary();
+    assert.equal(desk.name, 'Atlas');
+    assert.equal(r.dispatcherId, desk.id);
+    assert.equal(r.bots[0].id, desk.id, 'the dispatcher it made is listed first');
+    assert.deepEqual(r.bots.slice(1).map((b) => [b.handle, b.role]), [['memo', 'bot'], ['analyst', 'bot'], ['market', 'bot'], ['skeptic', 'bot']]);
+    assert.equal(desk.team, undefined);
+  } finally {
+    env.dispose();
+  }
+});
+
+test('a team hired from the 0.11.0 templates is brought to the current ones at start, once', async () => {
+  const { TEAMS_0_11 } = await import('../lib/teams-0.11.mjs');
+  const { TEAMS } = await import('../lib/teams.mjs');
+  const entries = [];
+  const scheduleService = {
+    async create(req) {
+      const e = { id: `sch-${entries.length + 1}`, title: req.title, prompt: req.prompt, kind: req.timing.kind, time: req.timing.weekly?.time, timeZone: req.timing.weekly?.time_zone, weekdays: req.timing.weekly?.weekdays, status: 'active', target: req.target };
+      entries.push(e);
+      return e;
+    },
+    async catalog() {
+      return entries;
+    },
+    async edit({ id, action, patch }) {
+      const e = entries.find((x) => x.id === id);
+      if (!e) return { id, code: 'schedule_not_found' };
+      if (action === 'delete') return entries.splice(entries.indexOf(e), 1) && { id, deleted: true };
+      Object.assign(e, patch);
+      return e;
+    },
+  };
+  const env = boot({ services: { schedule: scheduleService } });
+  try {
+    const { api } = env;
+    const old = TEAMS_0_11.opc;
+    // As 0.11.0 hired it in Chinese: the seeded Atlas turned chief of staff, Echo with its market pulse.
+    const atlas = api.store.save({ id: api.store.find('atlas').id, team: 'opc', name: 'Atlas 幕僚长', persona: old.atlas.persona.zh, bio: old.atlas.bio.zh, skills: [{ name: 'deep-research', source: 'dsh', description: '', enabled: true }] });
+    const echo = api.store.save({ name: 'Echo 增长', handle: 'echo', team: 'opc', persona: old.echo.persona.zh, bio: old.echo.bio.zh, sessionId: 'sess-echo' });
+    const weekly = (days, time) => ({ kind: 'weekly', time: `${time}:00`, timeZone: 'Asia/Shanghai', weekdays: days });
+    entries.push({ id: 'pulse', title: old.echo.tasks[0].title.zh, prompt: old.echo.tasks[0].prompt.zh, status: 'active', target: { kind: 'session', sessionId: 'sess-echo' }, ...weekly([1], '10:00') });
+    const first = await api.migrateTeams();
+    assert.equal(first.bots.length, 2);
+    const desk = api.store.get(atlas.id);
+    assert.equal(desk.name, 'Atlas 幕僚长', 'the name is the person\'s');
+    assert.match(desk.persona, /^你沉稳、有条理/);
+    assert.deepEqual(desk.skills, []);
+    assert.equal(api.store.get(echo.id).persona, TEAMS[0].bots.find((b) => b.handle === 'echo').persona.zh);
+    // The market pulse is the dispatcher's now, at the time it had.
+    assert.deepEqual(entries.map((e) => [e.title, e.target.sessionId === desk.sessionId, e.weekdays, e.time]), [['市场脉搏', true, [1], '10:00:00']]);
+    assert.match(entries[0].prompt, /^市场脉搏：让 Echo/);
+    // Nothing is left to do at the next start.
+    assert.deepEqual(await api.migrateTeams(), { bots: [], edits: [], moves: [], drops: [] });
+  } finally {
+    env.dispose();
+  }
+});
 
 test('two chats each delegate a task; each worker answers in its own chat itself, signed, and the Router takes no turn for it (0.9)', async () => {
   const s = await twoChats();

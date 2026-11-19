@@ -115,15 +115,19 @@ AppField = { key, label: {en, zh}, kind: 'secret'|'text'|'path', required?, plac
 
 ### Teams (start here)
 | GET | `teams` | – | `TeamView[]` |
-| POST | `teams/hire` | `{ id, lang: 'zh'|'en', primary?: boolean }` | `{ ok, team, bots: Bot[], leadId, kickoff: string, skipped: {bot, kind:'skill'|'app'|'schedule', name, reason?}[] }` (can take 10–30 s: imports skills from GitHub) |
+| POST | `teams/hire` | `{ id, lang: 'zh'|'en' }` | `{ ok, team, bots: Bot[], dispatcherId, kickoff: string, skipped: {bot, kind:'skill'|'app'|'schedule', name, reason?}[] }` (can take 10–30 s: imports skills from GitHub). `bots`: the members, after the dispatcher when the hire made one (there was none) |
 
 ```ts
 TeamView = { id, name:{en,zh}, tagline:{en,zh}, description:{en,zh}, color, kickoff:{en,zh},
-  bots: { key, handle, name:{en,zh}, color, bio:{en,zh}, role:'primary'|'bot',
+  desk: {when, title:{en,zh}}[],   // scheduled tasks the hire gives the dispatcher
+  bots: { key, handle, name:{en,zh}, color, bio:{en,zh},
           skills: {name, source:'dsh'|'import', repo?, available}[], apps: {id, available}[], tasks: {when, title:{en,zh}}[] }[] }
 ```
 Teams: `opc` 一人公司, `dev` 研发小队, `content` 内容工作室, `research` 研究台. `bot.team` holds the team id.
-After hiring, the client should offer to send `kickoff` to the lead (POST send {to: leadId, text: kickoff}).
+A team has no lead (0.11.1): its members join the one dispatcher, made (Atlas) when there is none, which gets the
+team's `desk` tasks unless it has one by that title. After hiring, the client should offer to send `kickoff` to the
+dispatcher (POST send {to: dispatcherId, text: kickoff}). `state.oldLeads` (`{id, name, handle, team}[]`) lists leads
+hired before 0.11.1 that are not the dispatcher, until `lead-notice/dismiss`.
 
 ### Skills
 `Skill = { id, name, source: 'own'|'dsh'|'import', description, content, enabled, dir?, origin? }`
@@ -355,6 +359,7 @@ roster has at least two bots. A stored `dispatcher: 'hands-on'` reads as `'route
 | Method | Path | Body | Answer |
 |---|---|---|---|
 | POST | `router-notice/dismiss` | `{}` | `{ ok: true, routerNoticePending: false }` |
+| POST | `lead-notice/dismiss` | `{}` | `{ ok: true, oldLeads: [] }` (the panel removes the leads with `delete` first, or keeps them) |
 
 ### Bots and catalog
 `Bot.tools = { deny: string[], routerAllow?: string[] }` — `routerAllow`: tools a router dispatcher keeps although

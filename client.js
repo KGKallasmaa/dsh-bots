@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.11.0';
+    const BOTS_VERSION = '0.11.1';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -1152,22 +1152,27 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
 
     // --- the panel: left rail ----------------------------------------------------------
 
-    /** Bots grouped by `team` (team order = first appearance, the dispatcher's first); null when no bot has a team. */
+    /**
+     * Bots grouped by `team` (team order = first appearance), with the dispatcher on its own on top:
+     * it belongs to no team, it hands out the work of all of them. Null when no bot has a team.
+     */
     function groupByTeam(t, lang, bots) {
       if (!bots.some((b) => b.team)) return null;
       const groups = [];
       for (const b of bots) {
-        const id = b.team || '';
+        const id = b.role === 'primary' ? 'desk' : b.team || '';
         let g = groups.find((x) => x.id === id);
         if (!g) groups.push((g = { id, bots: [] }));
         g.bots.push(b);
       }
       const label = (id) => {
+        if (id === 'desk') return t('dispatcher');
         if (!id) return t('otherBots');
         const team = teamsOf().find((x) => x.id === id);
         return team ? pick(team.name, lang) : id;
       };
-      return groups.sort((a, b) => (a.id === '' ? 1 : b.id === '' ? -1 : 0)).map((g) => ({ ...g, label: label(g.id) }));
+      const rank = (g) => (g.id === 'desk' ? 0 : g.id === '' ? 2 : 1);
+      return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, label: label(g.id) }));
     }
 
     /** A red count of what needs you (tasks, or a bot's questions). */
@@ -3975,6 +3980,48 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           ),
         ),
         h(Btn, { kind: 'ghost', size: 'sm', icon: Icon.close(13), title: t('close'), onClick: onDismiss }),
+      );
+    }
+
+    /**
+     * The one-time notice (0.11.1) that team templates have no lead any more: the leads of teams
+     * hired before that are not the dispatcher only pass its messages on. Remove them, or keep them.
+     */
+    function OldLeadsBanner({ t, leads, desk, onDone, toast }) {
+      const [busy, setBusy] = useState(false);
+      const names = leads.map((b) => `${b.name} (@${b.handle})`).join(t('listSep'));
+      const finish = () => Promise.resolve(postJson('lead-notice/dismiss', {})).finally(onDone);
+      const remove = async () => {
+        setBusy(true);
+        const failed = [];
+        for (const b of leads) {
+          const r = await postJson('delete', { id: b.id }).catch(() => null);
+          if (!r?.ok) failed.push(b.name);
+        }
+        if (failed.length) {
+          setBusy(false);
+          toast(t('oldLeadsFailed', { names: failed.join(t('listSep')) }), 'error');
+          onDone();
+          return;
+        }
+        await finish();
+      };
+      return h(
+        'div',
+        { role: 'region', 'aria-label': t('oldLeadsTitle'), 'data-dsh-bots-old-leads': leads.length, className: 'dshb-fade', style: { display: 'flex', alignItems: 'flex-start', gap: 12, margin: '12px 24px 0', padding: '12px 14px', borderRadius: 12, border: `1px solid ${tint(C.label, 35)}`, background: tint(C.label, 8) } },
+        h('span', { style: { color: C.label, display: 'inline-flex', paddingTop: 2 } }, Icon.team(16)),
+        h(
+          'div',
+          { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 } },
+          h('div', { style: { fontWeight: 700, fontSize: SMALL } }, t('oldLeadsTitle')),
+          h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('oldLeadsBody', { names, desk: desk?.name ?? t('dispatcher') })),
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+            h(Btn, { size: 'sm', kind: 'primary', disabled: busy, onClick: () => void remove(), 'data-dsh-bots-old-leads-remove': true }, t('oldLeadsRemove')),
+            h(Btn, { size: 'sm', disabled: busy, onClick: () => void finish(), 'data-dsh-bots-old-leads-keep': true }, t('oldLeadsKeep')),
+          ),
+        ),
       );
     }
 
@@ -7254,7 +7301,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     const memberName = (m, lang) => pick(m.name, 'en') || pick(m.name, lang);
     const teamCounts = (team) => ({
       skills: (team.bots ?? []).reduce((n, b) => n + (b.skills ?? []).length, 0),
-      tasks: (team.bots ?? []).reduce((n, b) => n + (b.tasks ?? []).length, 0),
+      tasks: (team.bots ?? []).reduce((n, b) => n + (b.tasks ?? []).length, (team.desk ?? []).length),
     });
 
     function TeamCard({ t, lang, team, onHire, onDetail, busy }) {
@@ -7289,7 +7336,6 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: m.color, flex: 'none' } }),
                 h('span', { style: { fontWeight: 600, flex: 'none' } }, memberName(m, lang)),
                 h('span', { style: { color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, roleOf(m, lang)),
-                m.role === 'primary' ? h('span', { title: t('dispatcher'), style: { color: '#f5b301', display: 'inline-flex', flex: 'none' } }, Icon.crown(11)) : null,
               ),
             ),
           ),
@@ -7383,7 +7429,40 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         h('span', { style: { fontSize: TINY, color: C.faint, width: 36, flex: 'none', lineHeight: '22px' } }, label),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap', flex: 1, minWidth: 0 } }, chips),
       );
-    function TeamDetailModal({ t, lang, team, onClose, onHire, askPrimary, primary, setPrimary, entries }) {
+    /** A routine chip: a scheduled task's title and when it runs. */
+    const routineChip = (t, lang, task, i) =>
+      h(
+        'span',
+        { key: i, 'data-dsh-bots-team-task': true, style: { display: 'inline-flex', alignItems: 'center', gap: 5, height: 22, padding: '0 8px', borderRadius: 6, fontSize: TINY, background: tint(C.label, 8), color: C.primary } },
+        Icon.clock(10),
+        h('span', { style: { fontWeight: 600 } }, pick(task.title, lang)),
+        h('span', { style: { color: C.muted } }, teamWhen(t, task.when)),
+      );
+    /**
+     * Who hands out a team's work: the dispatcher you have (`desk`), or the Atlas hiring makes when
+     * there is none, with the routine the team gives it.
+     */
+    function TeamDeskRow({ t, lang, team, desk }) {
+      const routine = Array.isArray(team.desk) ? team.desk : [];
+      return h(
+        'div',
+        { className: 'dshb-card', 'data-dsh-bots-team-desk': desk?.id ?? 'new', style: { display: 'flex', gap: 12, alignItems: 'flex-start', background: tint(C.label, 6) } },
+        h(Avatar, { avatar: desk?.avatar ?? { kind: 'initials', text: 'AT', color: '#7c5cff' }, name: desk?.name ?? 'Atlas', size: 40, ring: true }),
+        h(
+          'div',
+          { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 7 } },
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            h('span', { style: { fontWeight: 700 } }, desk?.name ?? 'Atlas'),
+            h(Badge, { color: '#d99a00' }, Icon.crown(10), t('dispatcher')),
+          ),
+          h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.55 } }, desk ? t('teamDesk') : t('teamDeskNew')),
+          routine.length ? chipRow(t('teamTasks'), routine.map((task, i) => routineChip(t, lang, task, i))) : null,
+        ),
+      );
+    }
+    function TeamDetailModal({ t, lang, team, desk, onClose, onHire, entries }) {
       const members = Array.isArray(team.bots) ? team.bots : [];
       const appName = (id) => {
         const e = (entries ?? []).find((x) => x.id === id);
@@ -7397,7 +7476,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           width: 760,
           onClose,
           footer: [
-            askPrimary ? h(PrimaryTick, { key: 'p', t, primary, setPrimary }) : h('span', { key: 'p', style: { flex: 1 } }),
+            h('span', { key: 'p', style: { flex: 1 } }),
             h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
             h(Btn, { key: 'h', kind: 'primary', icon: Icon.team(14), onClick: () => onHire(team), 'data-dsh-bots-hire-modal': team.id }, t('hireTeam')),
           ],
@@ -7406,11 +7485,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         h(
           'div',
           { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+          h(TeamDeskRow, { t, lang, team, desk }),
           members.map((m) =>
             h(
               'div',
               { key: m.key, className: 'dshb-card', 'data-dsh-bots-member': m.key, style: { display: 'flex', gap: 12, alignItems: 'flex-start' } },
-              h(Avatar, { avatar: memberAvatar(m), name: memberName(m, lang), size: 40, ring: m.role === 'primary' }),
+              h(Avatar, { avatar: memberAvatar(m), name: memberName(m, lang), size: 40 }),
               h(
                 'div',
                 { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 7 } },
@@ -7419,7 +7499,6 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
                   h('span', { style: { fontWeight: 700 } }, pick(m.name, lang)),
                   h('span', { className: 'dshb-mono', style: { fontSize: TINY, color: C.faint } }, `@${m.handle}`),
-                  m.role === 'primary' ? h(Badge, { color: '#d99a00' }, Icon.crown(10), t('dispatcher')) : null,
                 ),
                 h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.55 } }, pick(m.bio, lang)),
                 (m.skills ?? []).length ? chipRow(t('tab_skills'), m.skills.map((s) => h(SkillChip, { key: `${s.source}:${s.name}`, t, skill: s }))) : null,
@@ -7437,20 +7516,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                       h('span', { key: 'later', style: { fontSize: TINY, color: C.faint } }, t('appKeyLater')),
                     )
                   : null,
-                (m.tasks ?? []).length
-                  ? chipRow(
-                      t('teamTasks'),
-                      m.tasks.map((task, i) =>
-                        h(
-                          'span',
-                          { key: i, 'data-dsh-bots-team-task': true, style: { display: 'inline-flex', alignItems: 'center', gap: 5, height: 22, padding: '0 8px', borderRadius: 6, fontSize: TINY, background: tint(C.label, 8), color: C.primary } },
-                          Icon.clock(10),
-                          h('span', { style: { fontWeight: 600 } }, pick(task.title, lang)),
-                          h('span', { style: { color: C.muted } }, teamWhen(t, task.when)),
-                        ),
-                      ),
-                    )
-                  : null,
+                (m.tasks ?? []).length ? chipRow(t('teamTasks'), m.tasks.map((task, i) => routineChip(t, lang, task, i))) : null,
               ),
             ),
           ),
@@ -7464,26 +7530,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         ),
       );
     }
-    function PrimaryTick({ t, primary, setPrimary }) {
-      return h(
-        'label',
-        { style: { flex: 1, display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: SMALL, color: C.muted, cursor: 'pointer' } },
-        h('input', { type: 'checkbox', checked: primary, onChange: (e) => setPrimary(e.target.checked), 'data-dsh-bots-hire-primary': true, style: { accentColor: 'var(--dsw-alias-brand-primary)' } }),
-        t('leadAsDispatcher'),
-      );
-    }
-
     /**
      * Hiring a team: confirm (only when a roster exists), then a progress state,
      * then what was created, skipped and still needs keys, with the kickoff.
      */
     function HireModal({ t, lang, hire, setHire, onDone, onOpenBot, toast, catalog }) {
-      const { team, phase, result, primary } = hire;
+      const { team, phase, result } = hire;
       const [sending, setSending] = useState(false);
       const close = () => setHire(null);
       const go = () => {
         setHire({ ...hire, phase: 'busy' });
-        postJson('teams/hire', { id: team.id, lang, primary })
+        postJson('teams/hire', { id: team.id, lang })
           .then((r) => {
             if (r?.ok) {
               setHire({ ...hire, phase: 'done', result: r });
@@ -7506,7 +7563,6 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             footer: [h(Btn, { key: 'c', onClick: close }, t('cancel')), h(Btn, { key: 'h', kind: 'primary', icon: Icon.team(14), onClick: go, 'data-dsh-bots-hire-go': true }, t('hireTeam'))],
           },
           h('div', { style: { fontSize: FONT, color: C.muted, lineHeight: 1.6 } }, t('hireConfirmBody', { n: (team.bots ?? []).length })),
-          h(PrimaryTick, { t, primary, setPrimary: (v) => setHire({ ...hire, primary: v }) }),
         );
       if (phase === 'busy' || phase === 'start')
         return h(
@@ -7529,7 +7585,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       // done
       const r = result ?? {};
       const made = (Array.isArray(r.bots) ? r.bots : []).map((b) => botById(b.id) ?? b);
-      const lead = made.find((b) => b.id === r.leadId) ?? null;
+      // The kickoff goes to the dispatcher: the one you had, or the one this hire made.
+      const lead = botById(r.dispatcherId) ?? made.find((b) => b.id === r.dispatcherId) ?? null;
       const skipped = Array.isArray(r.skipped) ? r.skipped : [];
       const entries = Array.isArray(catalog?.templates) ? catalog.templates : [];
       const needKeys = [];
@@ -7582,7 +7639,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 { key: b.id, className: 'dshb-chip', style: { height: 32, paddingLeft: 4, cursor: 'default', color: C.primary } },
                 h(Avatar, { avatar: b.avatar, name: b.name, size: 24 }),
                 h('span', { style: { fontWeight: 600 } }, b.name),
-                b.id === r.leadId ? h('span', { style: { color: '#f5b301', display: 'inline-flex' } }, Icon.crown(10)) : null,
+                b.id === r.dispatcherId ? h('span', { style: { color: '#f5b301', display: 'inline-flex' } }, Icon.crown(10)) : null,
               ),
             ),
           ),
@@ -7655,12 +7712,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [creating, setCreating] = useState(false);
       const [detail, setDetail] = useState(null); // a team shown in the detail modal
       const [hire, setHire] = useState(null); // {team, phase: confirm|start|busy|done|error, primary, result?}
-      const [primaryTick, setPrimaryTick] = useState(true);
       const [settings, setSettings] = useState(false);
       const [ticketId, setTicketId] = useState(null); // the task shown in the Tasks view
       const [needId, setNeedId] = useState(null); // the request shown in the Requests view
       const [tasksBot, setTasksBot] = useState(''); // the Tasks view's bot filter when another view asked for it
       const [noticeGone, setNoticeGone] = useState(false);
+      const [leadsGone, setLeadsGone] = useState(false);
       const [toast, showToast] = useToast();
       const seenNav = useRef(0);
       const bots = Array.isArray(s.state?.bots) ? s.state.bots : [];
@@ -7684,13 +7741,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       }, [s.nav.tick]);
       const current = bots.find((b) => b.id === selected) ?? bots.find((b) => b.id === primaryId) ?? bots[0] ?? null;
       const shownView = view ?? (s.state && bots.length <= 1 && !bots.some((b) => b.team) ? 'hero' : 'bot');
-      const hasPrimary = Boolean(primaryId);
-      /** Start hiring: straight away on an empty roster, else confirm (and ask about the dispatcher). */
+      /** Start hiring: straight away on an empty roster or from the details, else confirm. */
       const startHire = (team, fromDetail = false) => {
         setDetail(null);
         const real = bots.filter((b) => !(b.role === 'primary' && bots.length === 1 && !b.team && (b.skills ?? []).length === 0));
-        const primary = fromDetail ? primaryTick : true;
-        setHire({ team, primary, phase: real.length === 0 || fromDetail ? 'start' : 'confirm' });
+        setHire({ team, phase: real.length === 0 || fromDetail ? 'start' : 'confirm' });
       };
       const openBotTab = (id, tabId) => {
         setSelected(id);
@@ -7723,7 +7778,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       } else if (shownView === 'memory') {
         main = h(TeamMemoryView, { t, toast: showToast, onSettings: () => setSettings(true) });
       } else if (shownView === 'hero' || shownView === 'teams' || !current) {
-        main = h(TeamsGallery, { t, lang, teams, hero: shownView !== 'teams', onHire: (team) => startHire(team), onDetail: (team) => (setPrimaryTick(true), setDetail(team)), onBlank: () => setCreating(true), busy: Boolean(hire) });
+        main = h(TeamsGallery, { t, lang, teams, hero: shownView !== 'teams', onHire: (team) => startHire(team), onDetail: (team) => setDetail(team), onBlank: () => setCreating(true), busy: Boolean(hire) });
       } else {
         main = h(BotDetail, { t, bot: current, primaryId, env: env2, toast: showToast, catalog, tab, setTab, onDeleted: () => setSelected(null), onSettings: () => setSettings(true) });
       }
@@ -7776,6 +7831,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 },
               })
             : null,
+          !leadsGone && (s.state?.oldLeads ?? []).length
+            ? h(OldLeadsBanner, {
+                t,
+                leads: s.state.oldLeads,
+                desk: bots.find((b) => b.id === primaryId) ?? null,
+                onDone: () => {
+                  setLeadsGone(true);
+                  void refreshState();
+                },
+                toast: showToast,
+              })
+            : null,
           main,
         ),
         creating
@@ -7791,7 +7858,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             })
           : null,
         detail
-          ? h(TeamDetailModal, { t, lang, team: detail, entries: catalog?.templates, onClose: () => setDetail(null), onHire: (team) => startHire(team, true), askPrimary: hasPrimary && bots.length > 1, primary: primaryTick, setPrimary: setPrimaryTick })
+          ? h(TeamDetailModal, { t, lang, team: detail, desk: bots.find((b) => b.id === primaryId) ?? null, entries: catalog?.templates, onClose: () => setDetail(null), onHire: (team) => startHire(team, true) })
           : null,
         hire ? h(HireModal, { t, lang, hire, setHire, toast: showToast, catalog, onDone: openBotTab, onOpenBot: openBotTab }) : null,
         settings ? h(SettingsModal, { t, catalog, toast: showToast, onClose: () => setSettings(false) }) : null,
@@ -8494,7 +8561,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         teamTemplatesHint: "Hire a ready-made team",
         teamTemplatesSub: "Each team comes with personas, Harness skills, apps and scheduled tasks. Anything this Harness lacks is skipped.",
         teamsHeroTitle: "Build your bot team",
-        teamsHeroBody: "Hire a ready-made team for a one-person company or a job that needs several roles. Each bot arrives with its persona, the skills already in your Harness, apps and a routine, and a lead that hands out the work.",
+        teamsHeroBody: "Hire a ready-made team for a one-person company or a job that needs several roles. Each bot arrives with its persona, the skills already in your Harness, apps and a routine; your dispatcher hands out the work of every team you hire.",
         noTeams: "No team templates.",
         orBlank: "Prefer to start from scratch?",
         teamDaily: "Daily {time}",
@@ -8512,7 +8579,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         legendHarness: "Harness skill",
         legendGithub: "imported from GitHub",
         legendMissing: "not installed, skipped",
-        leadAsDispatcher: "Make the team lead the dispatcher",
+        teamDesk: "Your dispatcher hands out this team's work, as it does for every team, and takes on its routine.",
+        teamDeskNew: "You have no dispatcher yet: hiring adds Atlas to hand out the work. Rename it on its profile.",
+        oldLeadsTitle: "Teams no longer have a lead",
+        oldLeadsBody: "{desk} hands out the work of every team, so {names}, hired as a team lead, would only pass its messages on. Remove them? Their tasks stop and their scheduled tasks go; their teammates stay.",
+        oldLeadsRemove: "Remove",
+        oldLeadsKeep: "Keep them",
+        oldLeadsFailed: "Could not remove {names}.",
         hireFailed: "Could not hire the team.",
         hireTitle: "Hire {name}",
         hireConfirmBody: "This adds {n} bots next to the ones you have. Their skills, apps and scheduled tasks are set up for you.",
@@ -9418,7 +9491,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         teamTemplatesHint: "雇用一支现成的团队",
         teamTemplatesSub: "每个团队都配好了人设、Harness 技能、应用和定时任务。当前 Harness 没有的会自动跳过。",
         teamsHeroTitle: "组建你的 Bot 团队",
-        teamsHeroBody: "为一人公司或需要多人协作的工作，直接雇用一支现成的团队。每个 Bot 都带着人设、你 Harness 里已有的技能、应用和日常任务上岗，由负责人统一分派工作。",
+        teamsHeroBody: "为一人公司或需要多人协作的工作，直接雇用一支现成的团队。每个 Bot 都带着人设、你 Harness 里已有的技能、应用和日常任务上岗；雇几个团队，都由你的调度员统一分派工作。",
         noTeams: "没有团队模板。",
         orBlank: "想从零开始？",
         teamDaily: "每天 {time}",
@@ -9436,7 +9509,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         legendHarness: "Harness 技能",
         legendGithub: "从 GitHub 导入",
         legendMissing: "未安装，将跳过",
-        leadAsDispatcher: "让负责人成为调度员",
+        teamDesk: "这个团队的工作和其他团队一样，由你的调度员统一分派，团队的日常任务也交给它。",
+        teamDeskNew: "你还没有调度员：雇用时会新建一个 Atlas 来分派工作，可以在它的资料页改名。",
+        oldLeadsTitle: "团队不再有负责人",
+        oldLeadsBody: "{desk} 统一分派所有团队的工作，以负责人身份雇来的 {names} 只会替它传话。要删除吗？它们手上的任务会停止，定时任务一并删除；团队其他成员保留。",
+        oldLeadsRemove: "删除",
+        oldLeadsKeep: "保留",
+        oldLeadsFailed: "没能删除 {names}。",
         hireFailed: "没能雇用这个团队。",
         hireTitle: "雇用{name}",
         hireConfirmBody: "将在现有 Bot 之外新增 {n} 个 Bot，并自动配好它们的技能、应用和定时任务。",

@@ -324,17 +324,25 @@ test('a bot manages avatars: drawn by AI from a description, taken from an image
   await assert.rejects(call('bot_update', { bot: '@researcher', avatar_file: 'portrait.png' }), /absolute path/);
 });
 
-test('teams: every bot is bilingual, timings parse, apps exist in the catalog', async () => {
-  const { TEAMS, teamTiming } = await import('../lib/teams.mjs');
+test('teams: every bot is bilingual, timings parse, apps exist in the catalog; no team has a lead', async () => {
+  const { OLD_LEADS, TEAMS, teamTiming } = await import('../lib/teams.mjs');
   const ids = new Set(templates().map((t) => t.id));
   assert.ok(TEAMS.length >= 4);
+  // Several teams hired side by side never clash on a handle.
+  const handles = TEAMS.flatMap((team) => team.bots.map((b) => b.handle));
+  assert.equal(new Set(handles).size, handles.length);
   for (const team of TEAMS) {
-    assert.equal(team.bots.filter((b) => b.role === 'primary').length, 1, team.id);
+    // The one dispatcher hands out every team's work: a team brings none, and never a bot the lead notice would flag.
+    assert.ok(team.bots.every((b) => !b.role && b.handle !== OLD_LEADS[team.id]), team.id);
+    for (const k of ['name', 'tagline', 'description', 'kickoff']) assert.ok(team[k].en && team[k].zh, `${team.id}.${k}`);
+    for (const t of team.desk ?? []) assert.ok(teamTiming(t.when, 'UTC').kind && t.title.zh && t.prompt.zh);
     for (const b of team.bots) {
       for (const k of ['name', 'bio', 'persona']) assert.ok(b[k].en && b[k].zh, `${team.id}/${b.key}.${k}`);
       for (const a of b.apps ?? []) assert.ok(ids.has(a), `${team.id}/${b.key} app ${a}`);
       for (const t of b.tasks ?? []) assert.ok(teamTiming(t.when, 'UTC').kind);
     }
+    // The dispatcher is whatever bot you made it, under any name: no text names one.
+    assert.doesNotMatch(JSON.stringify(team), /Atlas/, team.id);
   }
   assert.deepEqual(teamTiming('weekly 1,2 09:00', 'Asia/Shanghai'), { kind: 'weekly', weekly: { time: '09:00:00', time_zone: 'Asia/Shanghai', weekdays: [1, 2] } });
 });
@@ -351,17 +359,22 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
   h.ctx.get = ((get) => (name) => (name === 'skills' ? { list: async () => [{ name: 'deep-research', description: 'Research.', source: 'user-agents' }, { name: 'xlsx', description: 'Sheets.', source: 'user-agents' }] } : get(name)))(h.ctx.get);
   try {
     const before = api.store.list().length;
-    const seededAtlas = api.store.find('atlas').id;
+    const atlas = api.store.find('atlas');
     const r = await api.routes['teams/hire'].post({ id: 'opc', lang: 'zh' });
     assert.equal(r.ok, true);
-    // The seeded dispatcher @atlas becomes the team's chief of staff instead of a duplicate.
+    // The team joins the dispatcher you have: four members, the dispatcher left as it was.
     assert.equal(api.store.list().length, before + 4);
-    assert.equal(r.leadId, seededAtlas);
-    const lead = api.store.get(r.leadId);
-    assert.equal(lead.role, 'primary');
-    assert.match(lead.name, /幕僚长/);
-    assert.ok(lead.skills.some((s) => s.source === 'dsh' && s.name === 'deep-research' && s.description === 'Research.'), 'Harness skills keep their description');
-    assert.ok(r.skipped.some((x) => x.name === 'morning'), 'missing Harness skills are reported');
+    assert.equal(r.dispatcherId, atlas.id);
+    assert.ok(!r.bots.some((b) => b.id === atlas.id), 'only what was made is listed');
+    assert.deepEqual(['name', 'persona', 'skills', 'apps', 'team'].map((k) => api.store.get(atlas.id)[k]), ['name', 'persona', 'skills', 'apps', 'team'].map((k) => atlas[k]));
+    assert.ok(r.bots.every((b) => b.role === 'bot' && b.team === 'opc'));
+    // The team's routine is the dispatcher's: it hands the work out.
+    const atlasSession = api.store.get(atlas.id).sessionId;
+    assert.deepEqual(h.tasks.filter((t) => t.target.sessionId === atlasSession).map((t) => t.title).sort(), ['周复盘', '市场脉搏', '收件箱巡检', '早间简报', '每周数据'].sort());
+    assert.match(r.kickoff, /^我刚雇了一人公司团队/);
+    const echo = r.bots.find((b) => /Echo/.test(b.name));
+    assert.ok(echo.skills.some((s) => s.source === 'dsh' && s.name === 'deep-research' && s.description === 'Research.'), 'Harness skills keep their description');
+    assert.ok(r.skipped.some((x) => x.bot === 'echo' && x.name === 'last30days'), 'missing Harness skills are reported');
     const forge = r.bots.find((b) => b.team === 'opc' && /Forge/.test(b.name));
     assert.ok(forge.skills.some((s) => s.source === 'import' && s.dir));
     assert.ok(forge.apps.some((a) => a.template === 'github'));
@@ -374,6 +387,25 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
     assert.equal(api.store.get(ledger.id).skills.find((s) => s.name === 'xlsx').description, '');
     assert.equal(api.state().bots.find((b) => b.id === ledger.id).skills.find((s) => s.name === 'xlsx').description, 'Sheets.');
     assert.equal((await api.routes.state.get()).bots.find((b) => b.id === ledger.id).skills.find((s) => s.name === 'xlsx').description, 'Sheets.');
+    // Hired again: its members are updated, and the dispatcher gets no second morning brief.
+    const again = await api.routes['teams/hire'].post({ id: 'opc', lang: 'zh' });
+    assert.equal(api.store.list().length, before + 4);
+    assert.deepEqual(again.bots.map((b) => b.id).sort(), r.bots.map((b) => b.id).sort());
+    assert.equal(h.tasks.filter((t) => t.title === '早间简报').length, 1);
+    // A second team joins the same dispatcher, and the bots read the roster by team.
+    const research = await api.routes['teams/hire'].post({ id: 'research', lang: 'en' });
+    assert.equal(research.dispatcherId, atlas.id);
+    assert.equal(api.store.primary().id, atlas.id);
+    const roster = personaText(api.store.get(atlas.id), api.store.list(), { teamNames: { opc: 'One-person company', research: 'Research desk' } });
+    assert.match(roster, /\n- One-person company:\n {2}- @forge — [^\n]+\n {2}- @echo/);
+    assert.match(roster, /\n- Research desk:\n {2}- @memo — Memo:/);
+    // A lead hired before 0.11.1 that is not the dispatcher is offered once for removal.
+    assert.deepEqual(api.state().oldLeads, []);
+    const desk = api.store.save({ name: 'Desk', handle: 'desk', team: 'research' });
+    assert.deepEqual(api.state().oldLeads.map((b) => b.id), [desk.id]);
+    assert.deepEqual(await api.routes['lead-notice/dismiss'].post({}), { ok: true, oldLeads: [] });
+    assert.deepEqual(api.state().oldLeads, []);
+    await api.routes.delete.post({ id: desk.id });
   } finally {
     globalThis.fetch = realFetch;
   }

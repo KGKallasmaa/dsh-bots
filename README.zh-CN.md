@@ -19,12 +19,17 @@ bot 在它的**讨论串**里回答，只看得到这条消息和它之前的内
 
 打开 Bots 面板（左侧栏或 `/bots`），挑一个团队模板，点「雇用这个团队」：
 
-| 团队 | 成员 | 自带的定时任务 |
+| 团队 | 成员 | 交给调度员的定时任务 |
 | --- | --- | --- |
-| **一人公司** | Atlas 幕僚长（调度员）、Forge 工程师、Echo 增长、Harbor 客户、Ledger 财务 | 工作日 09:00 早间简报、周五 17:30 周复盘、周一市场脉搏、工作日收件箱巡检、周一财务数据 |
-| **研发小队** | Lead 技术负责人、Builder 开发、Tester 测试、Review 审查 | — |
-| **内容工作室** | Editor 主编、Scout 研究员、Quill 写手、Pixel 设计 | 周一选题会 |
-| **研究台** | Desk 研究负责人、Analyst 分析师、Market 市场、Skeptic 怀疑者 | — |
+| **一人公司** | Forge 工程师、Echo 增长、Harbor 客户、Ledger 财务 | 工作日 08:30 收件箱巡检、工作日 09:00 早间简报、周一财务数据和市场脉搏、周五 17:30 周复盘 |
+| **研发小队** | Builder 开发、Tester 测试、Review 审查 | — |
+| **内容工作室** | Scout 研究员、Quill 写手、Pixel 设计 | 周一选题会 |
+| **研究台** | Memo 撰稿人、Analyst 分析师、Market 市场、Skeptic 怀疑者 | — |
+
+团队不带负责人：调度员只有一个，是总前台，你雇的每个团队都由它分派工作。再雇一个团队，也是接到同一个调度员后面；
+它看到的名单按团队分组，分得清谁和谁是一伙的。团队内部，交付某类工作的 bot 自己找队友要各自那一份：Builder 请 Tester
+测试、Review 审查，Quill 请 Scout 调研、Pixel 配图，Memo 请 Analyst 和 Market 调研、Skeptic 核查草稿。
+调度员是个普通 bot：可以在它的 **资料** 页改名字、换头像和人设，也可以在别的 bot 的资料页把它设为调度员。
 
 雇用时会：
 
@@ -32,8 +37,8 @@ bot 在它的**讨论串**里回答，只看得到这条消息和它之前的内
 - 给每个成员挂上**你这台 Harness 里已有的技能**（如 deep-research、last30days、xlsx、high-signal-review），没装的跳过并告诉你；
 - 从 [anthropics/skills](https://github.com/anthropics/skills) 导入岗位需要的技能（如 webapp-testing、frontend-design、brand-guidelines），连同脚本一起下载；
 - 加上岗位需要的应用（GitHub、Stripe、HubSpot 等），Key 之后在「应用」页补；
-- 建好定时任务，让负责人成为调度员；
-- 最后可以一键把「开场任务」发给负责人，团队就开始干活了。
+- 把团队的定时任务交给你的调度员（它已有同名任务的不重复添加），还没有调度员时新建一个 Atlas；
+- 最后可以一键把「开场任务」发给调度员，团队就开始干活了。
 
 ![聊天](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/chat.png)
 
@@ -472,6 +477,17 @@ https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 想用还没发布的最新代码，改用 Git spec `git+https://github.com/kadaliao/dsh-bots.git#main`。
 
 安装后刷新一次页面。想要 AI 头像，再装上[图片插件](https://github.com/kadaliao/dsh-images)。
+
+## 从 0.11.0 升级
+
+- 团队模板不再带负责人，已经雇的团队在第一次启动时自动跟上。只改仍和雇用时一字不差的内容；你改过的人设、简介或定时任务原样保留：
+  - 当调度员的负责人（Atlas、Lead、Editor 或 Desk）名字不变，变成总前台：人设和简介换成调度员的，负责人岗位带的技能去掉，
+    岗位带的应用（Lead 的 GitHub）关掉，Key 保留；
+  - 成员换成现在的人设和简介（Forge 自己问你、Builder 找 Tester 和 Review 检查、Quill 维护发布日历……）；
+  - 团队的日常任务（早间简报、周复盘、收件箱巡检、每周数据、市场脉搏、本周选题）交给调度员，时间不变；调度员已有同名任务的不重复添加。
+- 不是调度员的负责人只会替它传话：面板会列出一次，问你要不要删除（团队其他成员保留，日常任务已经交给调度员）。
+- 新成员和新技能（研究台的 Memo、Builder 的 GitHub、Echo 的 deep-research）要再雇一次这个团队才会加上，已有成员会一并更新（人设也会换成模板的）。
+- 雇用时不再问要不要让负责人当调度员：团队直接接到你现有的调度员后面。
 
 ## 从 0.10 升级
 

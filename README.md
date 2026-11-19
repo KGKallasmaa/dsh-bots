@@ -23,12 +23,19 @@ It is built for two situations:
 
 Open the Bots panel (sidebar, or `/bots`), pick a team template and click **Hire this team**:
 
-| Team | Members | Scheduled tasks it comes with |
+| Team | Members | Scheduled tasks it gives your dispatcher |
 | --- | --- | --- |
-| **One-person company** | Atlas (chief of staff, dispatcher), Forge (engineer), Echo (growth), Harbor (customers), Ledger (finance) | Weekday 09:00 morning brief, Friday 17:30 weekly review, Monday market pulse, weekday inbox sweep, Monday numbers |
-| **Software squad** | Lead, Builder, Tester, Review | — |
-| **Content studio** | Editor, Scout (research), Quill (writer), Pixel (design) | Monday topic planning |
-| **Research desk** | Desk (lead), Analyst, Market, Skeptic | — |
+| **One-person company** | Forge (engineer), Echo (growth), Harbor (customers), Ledger (finance) | Weekday 08:30 inbox sweep, weekday 09:00 morning brief, Monday numbers and market pulse, Friday 17:30 weekly review |
+| **Software squad** | Builder, Tester, Review | — |
+| **Content studio** | Scout (research), Quill (writer), Pixel (design) | Monday topic planning |
+| **Research desk** | Memo (writer), Analyst, Market, Skeptic | — |
+
+A team has no lead: there is one dispatcher, the front desk, and it hands out the work of every team you hire. Hire
+a second team and it joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who
+belongs together. Within a team, the bot that delivers a kind of work asks its teammates for their parts: Builder has
+Tester and Review check a change, Quill asks Scout for research and Pixel for visuals, Memo has Analyst and Market dig
+and Skeptic check the draft. The dispatcher is an ordinary bot: rename it, give it another avatar or persona on its
+**Profile**, or make another bot the dispatcher from its own Profile.
 
 Hiring:
 
@@ -38,8 +45,9 @@ Hiring:
 - imports role skills from [anthropics/skills](https://github.com/anthropics/skills) (webapp-testing,
   frontend-design, brand-guidelines, …) with their scripts;
 - adds the apps the role needs (GitHub, Stripe, HubSpot, …), whose keys you fill in later;
-- adds the team's scheduled tasks and makes its lead the dispatcher;
-- offers to send the lead a kickoff message, so the team starts working right away.
+- gives your dispatcher the team's scheduled tasks (one it already has by that name is not added twice), and makes
+  one, Atlas, when you have none;
+- offers to send the dispatcher a kickoff message, so the team starts working right away.
 
 ![Chat](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-chat.png)
 
@@ -598,6 +606,23 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.11.0
+
+- Team templates have no lead any more, and teams you hired are brought along at the first start. Only what still reads
+  exactly as it was hired changes; a persona, bio or scheduled task you edited stays as it is:
+  - a lead that is your dispatcher (Atlas, Lead, Editor or Desk) keeps its name and becomes the front desk: its persona
+    and bio are the dispatcher's, the skills of its lead role go, and an app of that role (Lead's GitHub) is turned
+    off, its keys kept;
+  - members get their current persona and bio (Forge asks you itself, Builder has Tester and Review check its change,
+    Quill keeps the calendar…);
+  - the team's routine (morning brief, weekly review, inbox sweep, numbers, market pulse, topic planning) is the
+    dispatcher's, at the times it had; one the dispatcher already has by that name is not added twice.
+- A lead that is not your dispatcher would only pass its messages on: the panel names it once and offers to remove it
+  (its teammates stay, its routine is already the dispatcher's).
+- New members and skills (the research desk's Memo, Builder's GitHub, Echo's deep-research) come when you hire the
+  team again, which updates the members you have, their personas included.
+- Hiring no longer asks whether the team's lead becomes the dispatcher: the team joins the one you have.
 
 ## Upgrading from 0.10
 

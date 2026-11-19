@@ -40,7 +40,8 @@ import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SK
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
 import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
-import { TEAMS, teamTiming, teamView } from './lib/teams.mjs';
+import { OLD_LEADS, TEAMS, teamTiming, teamView } from './lib/teams.mjs';
+import { planTeamMigration } from './lib/team-migration.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
@@ -59,6 +60,9 @@ import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, l
 import { createTopics, rotationReason } from './lib/topics.mjs';
 import { chatMessageRef, createDiscussions, forkPoint, messageRef, seqByTime } from './lib/discussions.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
+
+/** Team id → English name, for the roster bots read. */
+const TEAM_NAMES = Object.freeze(Object.fromEntries(TEAMS.map((t) => [t.id, t.name.en])));
 
 /**
  * Import one Harness package: by bare name when this directory resolves it,
@@ -265,18 +269,23 @@ export function apply(ctx, config, deps = {}) {
   const hadBots = store.list().length > 0;
   const seededFile = join(dir, 'seeded');
   const zh = /^zh/i.test(String(cfg.language ?? '') || Intl.DateTimeFormat().resolvedOptions().locale || process.env.LANG || '');
+  /**
+   * The front desk Bots starts with, and the one hiring a team makes when there is no dispatcher:
+   * an ordinary bot, renamed and re-described in its profile like any other.
+   */
+  const deskBot = (zh) => ({
+    name: 'Atlas',
+    handle: '', // from the name: @atlas, or @atlas-2 when that is taken
+    role: 'primary',
+    avatar: { kind: 'initials', color: '#7c5cff' },
+    bio: zh ? '调度员：拆解需求，分派给合适的 bot，并安排定时任务。 / Dispatcher: plans, delegates, schedules.' : 'Dispatcher: plans the work, hands it to the right bot, and keeps the schedule. / 调度员：拆解、分派、排期。',
+    persona: zh
+      ? '你沉稳、有条理、说话简洁。你把模糊的需求变成清楚的计划，交给合适的专家 bot，跟进进度，最后用简短的总结向用户汇报。默认用用户使用的语言回答。'
+      : 'Calm, organised and brief. You turn vague requests into clear plans, delegate to specialists, follow up, and report back with a short summary. Answer in the language the user writes in.',
+  });
   if (store.list().length === 0 && !existsSync(seededFile)) {
     try {
-      store.save({
-        name: 'Atlas',
-        handle: 'atlas',
-        role: 'primary',
-        avatar: { kind: 'initials', color: '#7c5cff' },
-        bio: zh ? '调度员：拆解需求，分派给合适的 bot，并安排定时任务。 / Dispatcher: plans, delegates, schedules.' : 'Dispatcher: plans the work, hands it to the right bot, and keeps the schedule. / 调度员：拆解、分派、排期。',
-        persona: zh
-          ? '你沉稳、有条理、说话简洁。你把模糊的需求变成清楚的计划，交给合适的专家 bot，跟进进度，最后用简短的总结向用户汇报。默认用用户使用的语言回答。'
-          : 'Calm, organised and brief. You turn vague requests into clear plans, delegate to specialists, follow up, and report back with a short summary. Answer in the language the user writes in.',
-      });
+      store.save(deskBot(zh));
       mkdirSync(dir, { recursive: true });
       writeFileSync(seededFile, String(Date.now()));
     } catch (error) {
@@ -494,7 +503,7 @@ export function apply(ctx, config, deps = {}) {
               const roster = store.list();
               const ticket = ticketId ? tickets.get(ticketId) : undefined;
               return now
-                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, ...(ticket ? { ticket } : {}) })
+                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, teamNames: TEAM_NAMES, ...(ticket ? { ticket } : {}) })
                 : '';
             },
           }),
@@ -2607,6 +2616,8 @@ export function apply(ctx, config, deps = {}) {
   let startupDone = null;
   const startup = () => (startupDone ??= recoverTickets()
     .catch((error) => ctx.logger?.warn?.(`bots: task recovery: ${error?.message ?? error}`))
+    .then(() => migrateTeams())
+    .catch((error) => ctx.logger?.warn?.(`bots: team migration: ${error?.message ?? error}`))
     .then(() => pump())
     .catch(() => {}));
   ctx.effect(() => {
@@ -4640,6 +4651,8 @@ export function apply(ctx, config, deps = {}) {
       // The person's requests (Bots 0.11): how many wait for them, and how many are being worked on.
       needs: needCounts(),
       routerNoticePending: s.routerNotice === 'pending',
+      // Leads of teams hired before 0.11.1 that only pass messages on now: offered once for removal.
+      oldLeads: s.leadNotice === 'dismissed' ? [] : oldLeads().map((b) => ({ id: b.id, name: b.name, handle: b.handle, team: b.team })),
       // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
       attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
       asks: waiting.sort((a, b) => a.at - b.at).map(askView),
@@ -4712,6 +4725,45 @@ export function apply(ctx, config, deps = {}) {
   }
 
   // --- teams -------------------------------------------------------------------------
+  /**
+   * Teams hired from the 0.3–0.11.0 templates, brought to the current ones (lib/team-migration.mjs):
+   * personas and bios still as hired, the dispatcher's lead skills and apps, and the team routine,
+   * which moves to the dispatcher. At every start; nothing left to do after the first. Runs one at
+   * a time, so two calls never move a task twice.
+   */
+  let migrating = Promise.resolve();
+  function migrateTeams() {
+    const run = migrating.then(migrateTeamsNow, migrateTeamsNow);
+    migrating = run.catch(() => {});
+    return run;
+  }
+  async function migrateTeamsNow() {
+    const desk = store.primary() ?? null;
+    let entries = [];
+    let scheduled = true;
+    try {
+      entries = await schedulesOf(null);
+    } catch {
+      scheduled = false; // No schedule service: the bots still change, their tasks wait for a start that has one.
+    }
+    const plan = planTeamMigration({ bots: store.list(), entries, deskId: desk?.id ?? null, deskText: (lang) => deskBot(lang === 'zh') });
+    for (const { id, patch } of plan.bots) store.save({ id, ...patch });
+    if (scheduled) {
+      for (const { id, prompt } of plan.edits) await scheduleSave(null, { id, prompt });
+      for (const m of plan.moves) {
+        // Made on the dispatcher first: a failure leaves the task where it was, not gone.
+        await scheduleSave(store.get(desk.id), { title: m.title, prompt: m.prompt, timing: m.timing });
+        await schedule().edit({ id: m.id, action: 'delete' });
+      }
+      for (const id of plan.drops) await schedule().edit({ id, action: 'delete' });
+    }
+    const done = plan.bots.length + (scheduled ? plan.edits.length + plan.moves.length + plan.drops.length : 0);
+    if (done) ctx.logger?.info?.(`bots: brought ${plan.bots.length} team bot(s) and ${done - plan.bots.length} scheduled task(s) to the 0.11.1 templates`);
+    return plan;
+  }
+
+  /** Bots hired as a team's lead before 0.11.1 that are not the dispatcher: they only pass messages on. */
+  const oldLeads = () => store.list().filter((b) => b.role !== 'primary' && b.team && OLD_LEADS[b.team] === b.handle);
   async function teamsView() {
     const names = new Set((await dshSkills()).map((x) => x.name));
     const appIds = new Set(templates().map((t) => t.id));
@@ -4720,14 +4772,19 @@ export function apply(ctx, config, deps = {}) {
 
   /**
    * Hire a team: create its bots (handles made unique), attach the Harness skills it has,
-   * import the GitHub skills it names, add its apps (left for the user to fill keys),
-   * schedule its tasks, and make its lead the dispatcher. Returns what was skipped.
+   * import the GitHub skills it names, add its apps (left for the user to fill keys), and
+   * schedule its tasks. A team has no lead (0.11.1): its work goes through the one dispatcher,
+   * made first when there is none, which gets the team's `desk` tasks (one it already has by
+   * that title is not added twice). Returns what was made and what was skipped.
    */
-  async function hireTeam(teamId, lang, { primary = true } = {}) {
+  async function hireTeam(teamId, lang) {
     const team = TEAMS.find((t) => t.id === teamId);
     if (!team) throw new Error(`no team "${teamId}"`);
     const zh = lang === 'zh';
     const pick = (v) => (zh ? v.zh : v.en);
+    // Before any member: on an empty roster the first bot saved would become the dispatcher.
+    const hadDesk = store.primary();
+    const desk = hadDesk ?? store.save(deskBot(zh), { createdBy: 'user' });
     const have = new Map((await dshSkills()).map((x) => [x.name, x.description]));
     const tpl = templates();
     const created = [];
@@ -4761,8 +4818,8 @@ export function apply(ctx, config, deps = {}) {
       const deny = [];
       // Team bots never need to reconfigure Harness itself; plugin management starts off.
       for (const off of [...new Set([...(b.off ?? []), 'plugins'])]) for (const t of ABILITIES.find((a) => a.id === off)?.tools ?? []) deny.push(t);
-      // The seeded dispatcher (or any bot with this handle that is not in another team) becomes this member.
-      const existing = store.list().find((x) => x.handle === b.handle && (!x.team || x.team === team.id));
+      // Hiring a team again updates its members; a bot of yours with the same handle is left alone.
+      const existing = store.list().find((x) => x.handle === b.handle && x.team === team.id);
       const bot = store.save(
         {
           ...(existing ? { id: existing.id, skills: [...existing.skills.filter((x) => !skills.some((y) => y.name === x.name)), ...skills], apps: [...existing.apps.filter((x) => !apps.some((y) => y.serverName === x.serverName)), ...apps] } : {}),
@@ -4772,7 +4829,7 @@ export function apply(ctx, config, deps = {}) {
           persona: pick(b.persona),
           // Same letters in both languages: from the English name ("Atlas" → AT), not "Atlas 幕僚长".
           avatar: { kind: 'initials', text: initialsOf(b.name.en), color: b.color },
-          role: b.role === 'primary' && primary ? 'primary' : existing?.role === 'primary' ? 'primary' : 'bot',
+          role: existing?.role === 'primary' ? 'primary' : 'bot',
           ...(existing ? {} : { skills, apps }),
           tools: { deny },
           team: team.id,
@@ -4782,17 +4839,24 @@ export function apply(ctx, config, deps = {}) {
       created.push({ bot, spec: b });
     }
     // Scheduled tasks need each bot's conversation; create them after all bots exist.
-    for (const { bot, spec } of created) {
-      for (const task of spec.tasks ?? []) {
-        try {
-          await scheduleSave(bot, { title: pick(task.title), prompt: pick(task.prompt), timing: teamTiming(task.when, zone) });
-        } catch (error) {
-          skipped.push({ bot: bot.handle, kind: 'schedule', name: pick(task.title), reason: error?.message ?? String(error) });
-        }
+    const deskTitles = new Set();
+    if (hadDesk && team.desk?.length) {
+      try {
+        for (const e of await schedulesOf(desk)) deskTitles.add(e.title);
+      } catch {
+        // No schedule service: saving says so below.
       }
     }
-    const lead = created.find((c) => c.spec.role === 'primary')?.bot;
-    return { team: team.id, bots: created.map((c) => store.get(c.bot.id)), leadId: lead?.id ?? null, kickoff: pick(team.kickoff), skipped };
+    const jobs = [...created.flatMap(({ bot, spec }) => (spec.tasks ?? []).map((task) => ({ bot, task }))), ...(team.desk ?? []).filter((task) => !deskTitles.has(pick(task.title))).map((task) => ({ bot: desk, task }))];
+    for (const { bot, task } of jobs) {
+      try {
+        await scheduleSave(store.get(bot.id) ?? bot, { title: pick(task.title), prompt: pick(task.prompt), timing: teamTiming(task.when, zone) });
+      } catch (error) {
+        skipped.push({ bot: bot.handle, kind: 'schedule', name: pick(task.title), reason: error?.message ?? String(error) });
+      }
+    }
+    const bots = [...(hadDesk ? [] : [desk]), ...created.map((c) => c.bot)].map((b) => store.get(b.id));
+    return { team: team.id, bots, dispatcherId: desk.id, kickoff: pick(team.kickoff), skipped };
   }
 
   const unfurlLink = createUnfurler();
@@ -4800,7 +4864,7 @@ export function apply(ctx, config, deps = {}) {
     teams: { get: () => teamsView() },
     'teams/hire': {
       post: async (body) => {
-        const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en', { primary: body.primary !== false });
+        const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en');
         return { ok: true, ...r, bots: r.bots.map(publicBot) };
       },
     },
@@ -5031,6 +5095,7 @@ export function apply(ctx, config, deps = {}) {
     },
     // The one-time notice that an upgraded team's dispatcher now routes: dismissed for good.
     'router-notice/dismiss': { post: () => (settings.save({ routerNotice: 'dismissed' }), { ok: true, routerNoticePending: false }) },
+    'lead-notice/dismiss': { post: () => (settings.save({ leadNotice: 'dismissed' }), { ok: true, oldLeads: [] }) },
     // Tasks (tickets), PLAN-0.8 §6.3. `tickets/:id…` and `threads/:key` are under `paramRoutes`.
     tickets: { get: (url) => ticketList(url) },
     // The person's requests (Bots 0.11). `needs/:id…` is under `paramRoutes`.
@@ -5323,7 +5388,7 @@ export function apply(ctx, config, deps = {}) {
 
   /** For tests: which per-Session records this process still keeps for `sessionId`. */
   const tracked = (sessionId) => ({ trigger: trigger.has(sessionId), answered: answered.has(sessionId), turn: turnState.has(sessionId), delivered: deliveredIds.has(sessionId), history: historyRead.has(sessionId) });
-  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend: async (...a) => (await userSend(...a)).sessionId, panelSend: userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets, tracked };
+  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend: async (...a) => (await userSend(...a)).sessionId, panelSend: userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets, tracked, migrateTeams };
 }
 
 function serveAvatar(dir, req, res) {
