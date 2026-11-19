@@ -2876,9 +2876,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.13\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.14\.0\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.13.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.14.0' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();
@@ -3021,9 +3021,11 @@ test('board: projects are added, changed and removed from the board', async () =
   await v.rerender(1);
   field('data-dsh-bots-project-brief').props.onChange({ target: { value: 'Astro, deployed on push.' } });
   await v.rerender(1);
+  field('data-dsh-bots-project-repo').props.onChange({ target: { value: 'acme/site' } });
+  await v.rerender(1);
   click(v.tree, 'data-dsh-bots-project-save');
   await v.rerender();
-  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/projects/save')).body, { project: { name: 'Website', key: '', dir: '~/code/site', brief: 'Astro, deployed on push.' } });
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/projects/save')).body, { project: { name: 'Website', key: '', dir: '~/code/site', repo: 'acme/site', brief: 'Astro, deployed on push.' } });
   // Changed: the id goes along.
   click(v.tree, 'data-dsh-bots-project-edit', 'pjopc00001');
   await v.rerender(1);
@@ -3117,4 +3119,25 @@ test('waiting cards: a card in To do says what it waits for; its page adds and r
   await v.rerender();
   assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/ntodo0001/save')).at(-1).body, { after: ['nworking1'], startWith: 'bot-b' });
   v.hooks.runCleanups();
+});
+
+test('channels: GitHub Issues pairs nobody: it shows the repositories it watches, the label, and who may start work', async () => {
+  const GH_ENTRY = { ...TG_ENTRY, id: 'github-issues', channel: 'github', name: { en: 'GitHub Issues', zh: 'GitHub Issues' }, fields: [] };
+  await withFixtures(() => {
+    CATALOG.templates.push(GH_ENTRY);
+    BOTS[0].apps = [{ id: 'gh1', template: 'github-issues', name: 'GitHub Issues', serverName: 'github-issues', enabled: true, values: { token: '••••••••', repos: 'acme/site' }, config: {} }];
+    BOTS[0].channels = { gh1: { kind: 'github', state: 'connected', account: { username: 'acme-bots', name: '' }, paired: [], code: null, link: null, invite: null, scheduleReplies: true, ignored: { count: 3, lastName: 'drive-by' }, vouched: true, watching: { repos: ['acme/site'], label: 'bots' } } };
+  }, async () => {
+    const v = await openTab('apps', 'bot-a');
+    const [panel] = findAll(v.tree, (n) => n.props['data-dsh-bots-channel'] === 'gh1');
+    const text = collect(panel).join(' ');
+    assert.match(text, /Connected as @acme-bots/);
+    assert.match(text, /Watching .*acme\/site/);
+    assert.match(text, /gets the label bots becomes a card on the board/);
+    assert.match(text, /Ignored 3 issues or comments from people who are not the repository's owner, members or collaborators \(last: drive-by\)/);
+    assert.match(text, /Only the repository's owner, members and collaborators start work/);
+    assert.doesNotMatch(text, /Paired people|Pair yourself|Nobody yet/);
+    assert.equal(findAll(panel, (n) => n.props['data-dsh-bots-github-repo'] === 'acme/site')[0].props.href, 'https://github.com/acme/site/issues?q=is%3Aissue+is%3Aopen+label%3Abots');
+    v.hooks.runCleanups();
+  });
 });

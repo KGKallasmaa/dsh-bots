@@ -239,7 +239,7 @@ Bot 在普通的 Harness 会话里工作，所以 Harness 能做的它都能做�
 | 分类 | 应用（🔑 = 需要 Key） |
 | --- | --- |
 | 销售与收款 | Stripe 收款 🔑、HubSpot 客户管理 🔑 |
-| 团队与办公 | 飞书 🔑、Telegram 🔑、Slack 🔑、Discord 🔑（聊天应用，见下文）、飞书开放平台 🔑、Notion 🔑、Slack 工作区 🔑、长期记忆 |
+| 团队与办公 | 飞书 🔑、Telegram 🔑、Slack 🔑、Discord 🔑（聊天应用，见下文）、GitHub Issues 🔑（[见下文](#从-github-issue-派活)）、飞书开放平台 🔑、Notion 🔑、Slack 工作区 🔑、长期记忆 |
 | 研发与交付 | GitHub 🔑、Git 仓库、Supabase 🔑、Sentry 🔑、Context7 文档 |
 | 调研与内容 | Exa、Tavily 🔑、Brave 🔑、Firecrawl 🔑 |
 | 电脑与浏览器 | Open Computer Use（操控 macOS 应用）、Playwright 浏览器 |
@@ -429,6 +429,21 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - Token 和其他应用的 Key 一样保存在 bot 里，面板里不会再显示出来，也不会出现在日志和错误信息里。
   Harness 运行时 Bot 才会回复；Telegram 最多替你保存 24 小时内的消息，重启后同一条消息不会被执行两次。
 
+## 从 GitHub issue 派活
+
+在调度员的应用里添加 **GitHub Issues**（应用 → 团队与办公），填一个细粒度令牌（只授权你填的那些仓库，权限 Issues：读写）
+和要关注的仓库。给打开的 issue 打上标签（默认 `bots`），团队就会接手：
+
+- **issue 变成看板上的一张卡**：标题、正文（作为描述）、指向 issue 的链接；有项目填了这个仓库（项目里的 **GitHub 仓库**）时，
+  归到那个项目下并在那里编号。调度员在这个 issue 的讨论串里收到它，像处理其他卡片一样分派。
+- **回复是 issue 下的评论**，和聊天应用一样署名 `【Forge】`，能看到仓库的人都能看到。之后 issue 下的新评论，有任务在做时直接交给那个任务，
+  否则交给调度员。
+- **只有仓库的 owner、成员和协作者能让团队开工**：issue 要是他们写的或者是他们打的标签（issue 表单可能替任何人打标签），
+  评论要是他们写的。其他人的一律忽略、不做回复，面板上会计数。bot 会读 issue 的内容，这样陌生人写的东西进不了它们的提示词。
+- **不需要公网地址**：Harness 每分钟向 GitHub 查一次带标签的 issue 和新评论（带 ETag，内容没变时不占用额度）。Harness 关着的时候打的标签，
+  启动后会补上。第一次启动只看此后的变化：更早的 issue 要重新打一次标签才会交出去。
+- 评论用的是令牌所属的账号，最好用一个专门的机器人账号。它自己的评论（以及带 `<!-- dsh-bots -->` 标记的内容）不会被当成新消息读回来。
+
 ## 原理
 
 - 每个 bot 有一个自己的普通 Harness 会话，位于 **Bots** 工作区（默认 `~/.dsh/bots/workspace`，可用 `workdir` 改）；
@@ -455,6 +470,7 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 聊天应用不是 MCP 服务：Host 为每个聊天应用保持一个连接（Telegram 用长轮询，Discord 用 Gateway，Slack 用 Socket Mode，飞书用长连接），
   随你添加、修改、关闭或删除应用而启动和停止，并把配对者的消息作为用户提示交给 bot，开头标着 `[Telegram · 名字] (thread <key>)`；
   讨论串里的跟进则交给那个讨论串的任务或它自己的会话（见[聊天与讨论串](#聊天与讨论串)）。`bot_reply` 用的就是这个 key。
+  GitHub Issues 改用轮询：每个仓库是一个聊天，每个 issue 是一个讨论串，查到哪里的游标存在 `channels.json` 里。
 
 ## Open Computer Use
 
@@ -473,7 +489,8 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 自定义端点和借用的 Codex 登录写在 Harness 自己的模型设置（`llm-pi-ai`）和凭据库里。使用 Codex 登录时，
   Harness 刷新得到的令牌会写回 `~/.codex/auth.json`。
 - 除了 bot 自身会话（你配置的模型）、记忆整理（把回合或任务的过程和 bot 的笔记发给 bot 的模型或记忆模型）、LiteLLM 价格表（每周从 GitHub 下载一次）、你连接的应用、生成头像时的图片模型、导入技能时访问 GitHub，
-  以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），不向外发送任何内容。
+  以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），
+  和使用 GitHub Issues 时访问 GitHub API（读取所关注仓库里带标签的 issue 和评论，把 bot 的回复发成评论），不向外发送任何内容。
 
 ## 安装
 
@@ -495,6 +512,10 @@ https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 想用还没发布的最新代码，改用 Git spec `git+https://github.com/kadaliao/dsh-bots.git#main`。
 
 安装后刷新一次页面。想要 AI 头像，再装上[图片插件](https://github.com/kadaliao/dsh-images)。
+
+## 从 0.13 升级
+
+- 不需要迁移。新增 GitHub Issues 应用；项目多了一个 **GitHub 仓库** 字段。
 
 ## 从 0.12 升级
 

@@ -1054,3 +1054,47 @@ Starting it by hand starts it at once.
 
 `bot_need` adds `action: 'after'` with `after` (references or ids, comma-separated; empty for none) and `start_with`
 (`@handle`). A router persona with projects reads what `Cards named:` means and when to use it.
+
+## v0.14 — GitHub issues
+
+A chat channel of kind `github` (catalog app `github-issues`; fields `token` (secret), `repos` (`owner/repo`, comma
+separated), `label` (default `bots`)). `lib/channels/github.mjs` polls; there is no webhook and no public address.
+
+### Transport
+- Every 60 s, per repository: `GET repos/{repo}/issues?labels=…&state=open&sort=updated&direction=asc&since=…` and
+  `GET repos/{repo}/issues/comments?sort=updated&direction=asc&since=…`, each with `If-None-Match` (a 304 costs no rate
+  limit), up to 5 pages. Pull requests are left out. A 401 stops it (`GitHub rejected the token: …`); a 403 or 429
+  waits for the reset (≤ 15 min).
+- An issue is passed on once (`messageId` `i<id>`, `threadId` its number, `text` `#N title` and its body, cut at 8000
+  characters with its address, `issue:
+  {repo, number, title, body, url, author, labeledBy?}`); afterwards only comments on issues passed on (`c<id>`;
+  comment ids only grow, so an edited one is not new), never the token's own account's or a body holding
+  `<!-- dsh-bots -->`.
+- `trusted`: an issue whose author's `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`, or whose latest
+  `labeled` event (for the label) has an actor that `GET repos/{repo}/collaborators/{login}` answers 204 for (cached 10
+  min); a comment by such an author.
+- Cursors (`memo`, in `channels.json` under the channel's record): `{ repos: { [repo]: { since, comments, lastComment,
+  issues: number[] (≤ 1000) } } }`. A first start sets them to now.
+- `send(repo, text, { threadId })` posts `text` + `\n\n<!-- dsh-bots -->` as a comment on that issue (`{ ids: [id] }`);
+  without an issue it throws. `typing` does nothing. Exports `VOUCHED = true`, `MARKDOWN = true`, `TEXT_LIMIT = 60000`.
+
+### The hub
+- A module with `VOUCHED` pairs nobody: no pairing code, no welcome or greeting answers. A message with `trusted: true`
+  counts as a person's (not stored); any other is ignored without an answer and counted (`view.ignored`).
+- Its Threads are reachable for replies and reports though nobody is paired (`lookupThread`).
+- `view` adds `vouched: true, watching: { repos, label }`.
+- A message with `issue` calls `deps.fileIssue(owner, issue, { threadKey, who, via })` before it is routed; a need id
+  back is passed on as `meta.issueCard`.
+
+### Cards from issues
+`fileIssue` files a card unless one already links that issue: `{ title, description: body, origin: { threadKey, via:
+'github', who }, asks: [title + body], links: [{ kind: 'github', ref: 'owner/repo#N', url }], todo: true }`, under the
+project whose `repo` is that repository (with its next number). `deliver` gives the bot, before the source line, the
+card's header — `[Card WEB-1] @kada asked for this in GitHub issue acme/site#12; it is on the board as need n… ("…") in
+project WEB (…). Answers in this thread are comments on the issue, which everyone who can see the repository reads. …`
+— logs the message with `need`, and starts the card once the bot has it (`botId` = that bot). In the dispatcher's
+turn, its new work counts toward the card as for a board card (0.12).
+
+`Need += { links?: { kind: 'github', ref, url? }[] }` (≤ 10), on `NeedRow`. `Project += { repo: string }` (`owner/repo`,
+from a github.com address too; unique: `acme/site belongs to project WEB already`), on `ProjectView` when set and in
+`projects/save`.

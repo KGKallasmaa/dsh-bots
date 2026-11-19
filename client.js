@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.13.0';
+    const BOTS_VERSION = '0.14.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -3434,6 +3434,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** Cards another card may wait for: not itself, not dropped, not already waited for. */
     const waitable = (rows, self, taken = []) => rows.filter((r) => r.id !== self && r.status !== 'stopped' && !taken.includes(r.id));
     const cardLabel = (r) => `${r.ref ? `${r.ref} · ` : ''}${str(r.title)}`;
+    /** Where a card lives outside Bots (Bots 0.14): its GitHub issue, as a link. */
+    const issueLinks = (row) => (Array.isArray(row?.links) ? row.links : []).filter((l) => l && l.kind === 'github' && typeof l.ref === 'string');
+    const IssueLink = ({ link }) =>
+      link.url
+        ? h(ExtLink, { href: link.url, 'data-dsh-bots-need-issue': link.ref, style: { fontSize: TINY } }, link.ref)
+        : h('span', { 'data-dsh-bots-need-issue': link.ref, className: 'dshb-mono', style: { fontSize: TINY, color: C.muted } }, link.ref);
     /** What dropping a card on a column does: start one in To do (or a dropped one), or mark one done; '' when it cannot go there. */
     const dropAction = (row, column) => {
       if (!row) return '';
@@ -3475,8 +3481,15 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           },
           style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', cursor: 'pointer', minWidth: 0 },
         },
-        row.ref || chip
-          ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' } }, h(CardRef, { text: row.ref, 'data-dsh-bots-need-ref': row.ref }), chip ? h(NeedChip, { t, row }) : null)
+        row.ref || chip || issueLinks(row).length
+          ? h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' } },
+              h(CardRef, { text: row.ref, 'data-dsh-bots-need-ref': row.ref }),
+              chip ? h(NeedChip, { t, row }) : null,
+              // A click on the issue opens GitHub, not the card.
+              issueLinks(row).map((l) => h('span', { key: l.ref, onClick: (e) => e.stopPropagation?.(), style: { marginLeft: 'auto' } }, h(IssueLink, { link: l }))),
+            )
           : null,
         h('div', { style: { fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere' } }, str(row.title).trim() || t('untitledTask')),
         latest
@@ -3659,13 +3672,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** The projects cards are filed under (Bots 0.12): list, add, change and remove them. */
     function ProjectsModal({ t, projects, toast, onClose, onChanged }) {
       const [editing, setEditing] = useState(null);
-      const [form, setForm] = useState({ name: '', key: '', dir: '', brief: '' });
+      const [form, setForm] = useState({ name: '', key: '', dir: '', repo: '', brief: '' });
       const [error, setError] = useState('');
       const [busy, setBusy] = useState(false);
       const [removing, setRemoving] = useState(null);
       const edit = (p) => {
         setEditing(p ?? {});
-        setForm({ name: p?.name ?? '', key: p?.key ?? '', dir: p?.dir ?? '', brief: p?.brief ?? '' });
+        setForm({ name: p?.name ?? '', key: p?.key ?? '', dir: p?.dir ?? '', repo: p?.repo ?? '', brief: p?.brief ?? '' });
         setError('');
       };
       const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -3701,6 +3714,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             ),
             h('div', { style: { fontSize: TINY, color: C.faint, marginTop: -8 } }, t('projectKeyHint')),
             h(Field, { label: t('projectDir'), hint: t('projectDirHint') }, h(Input, { value: form.dir, mono: true, placeholder: '~/code/app', 'data-dsh-bots-project-dir': true, onChange: set('dir') })),
+            h(Field, { label: t('projectRepo'), hint: t('projectRepoHint') }, h(Input, { value: form.repo, mono: true, placeholder: 'owner/repo', 'data-dsh-bots-project-repo': true, onChange: set('repo') })),
             h(Field, { label: t('projectBrief'), hint: t('projectBriefHint') }, h(TextArea, { value: form.brief, rows: 6, maxLength: 4000, placeholder: t('projectBriefPlaceholder'), 'data-dsh-bots-project-brief': true, onChange: set('brief') })),
             error ? h('div', { 'data-dsh-bots-project-error': true, style: { fontSize: SMALL, color: C.error } }, error) : null,
           )
@@ -3719,7 +3733,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                       'div',
                       { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
                       h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
-                      h('span', { className: p.dir ? 'dshb-mono' : '', style: { fontSize: TINY, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.dir || t('projectNoDir')),
+                      h('span', { className: p.dir ? 'dshb-mono' : '', style: { fontSize: TINY, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, [p.dir || t('projectNoDir'), p.repo ? `GitHub ${p.repo}` : ''].filter(Boolean).join(' · ')),
                     ),
                     h(Btn, { size: 'sm', icon: Icon.edit(12), onClick: () => edit(p), 'data-dsh-bots-project-edit': p.id }, t('edit')),
                     h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.trash(12), title: t('projectRemove'), onClick: () => setRemoving(p), 'data-dsh-bots-project-remove': p.id }),
@@ -3994,6 +4008,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     )
                   : null,
                 h('span', { title: fmtDate(toMs(v.createdAt)) }, t(v.via === 'board' ? 'cardFiledWhen' : 'needAsked', { when: fmtAgo(t, v.createdAt) })),
+                issueLinks(v).map((l) => h(IssueLink, { key: l.ref, link: l })),
                 viaBadge(t, v.via, v.who),
                 v.status === 'done' && v.endedAt ? dotSep() : null,
                 v.status === 'done' && v.endedAt ? h('span', { title: fmtDate(toMs(v.endedAt)) }, t('needDelivered', { when: fmtAgo(t, v.endedAt) })) : null,
@@ -5984,8 +5999,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     }
     // --- chat channels (Telegram, Discord, Feishu, Slack): apps people message the team from --
 
-    const CHANNEL_NAMES = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', feishu: 'Feishu' };
-    const CHANNEL_COLORS = { telegram: '#229ED9', discord: '#5865F2', slack: '#4a154b', feishu: '#3370ff' };
+    const CHANNEL_NAMES = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', feishu: 'Feishu', github: 'GitHub' };
+    const CHANNEL_COLORS = { telegram: '#229ED9', discord: '#5865F2', slack: '#4a154b', feishu: '#3370ff', github: '#57606a' };
     const channelName = (kind, t) => (kind === 'feishu' && langOf(t) === 'zh' ? '飞书' : CHANNEL_NAMES[kind] ?? str(kind));
     const isChannelEntry = (entry) => entry?.kind === 'channel';
     /** Hint codes that read differently per chat app. */
@@ -6039,7 +6054,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             : null,
         ),
         state === 'error' && hintText && v.detail ? h('div', { style: { fontSize: TINY, color: C.faint, marginTop: -6 } }, str(v.detail)) : null,
-        live
+        // GitHub (Bots 0.14): nobody is paired; it watches repositories for a label.
+        live && v.vouched
+          ? h(
+              'div',
+              { 'data-dsh-bots-channel-watching': app.id, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h('div', { style: { fontSize: TINY, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.02em' } }, t('githubWatching')),
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+                (Array.isArray(v.watching?.repos) ? v.watching.repos : []).map((r) => h(ExtLink, { key: r, href: `https://github.com/${r}/issues?q=is%3Aissue+is%3Aopen+label%3A${encodeURIComponent(str(v.watching?.label) || 'bots')}`, 'data-dsh-bots-github-repo': r }, r)),
+              ),
+              h('div', { style: { color: C.muted, lineHeight: 1.5 } }, t('githubHow', { label: str(v.watching?.label) || 'bots' })),
+            )
+          : null,
+        live && !v.vouched
           ? h(
               'div',
               { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
@@ -6076,7 +6105,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h(Btn, { size: 'sm', disabled: Boolean(working), onClick: () => void call('channels/code', {}), 'data-dsh-bots-new-code': app.id }, t('newCode')),
               ),
             )
-          : live
+          : live && !v.vouched
             ? h(
                 'div',
                 { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
@@ -6093,8 +6122,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               h('span', { style: { color: C.muted } }, t('channelSchedules', { name: str(paired[0].name), app: appName })),
             )
           : null,
-        live && v.ignored?.count ? h('div', { 'data-dsh-bots-ignored': v.ignored.count, style: { fontSize: TINY, color: C.faint } }, t('channelIgnored', { n: v.ignored.count, name: str(v.ignored.lastName) })) : null,
-        h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, t('channelPrivate', { app: appName })),
+        live && v.ignored?.count ? h('div', { 'data-dsh-bots-ignored': v.ignored.count, style: { fontSize: TINY, color: C.faint } }, t(v.vouched ? 'githubIgnored' : 'channelIgnored', { n: v.ignored.count, name: str(v.ignored.lastName) })) : null,
+        h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, t(v.vouched ? 'githubPrivate' : 'channelPrivate', { app: appName })),
       );
     }
 
@@ -6527,7 +6556,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             h('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap' } }, h(ExtLink, { href: entry.homepage }, t('docs')), h(ExtLink, { href: entry.keyUrl }, channel ? t('createChatBot') : t('getKey'))),
           ),
         ),
-        channel ? h('div', { 'data-dsh-bots-channel-how': entry.id, style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6, padding: '9px 11px', borderRadius: 9, background: tint(entry.color || C.label, 8) } }, t('channelHow', { app: pick(entry.name, lang) })) : null,
+        channel ? h('div', { 'data-dsh-bots-channel-how': entry.id, style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6, padding: '9px 11px', borderRadius: 9, background: tint(entry.color || C.label, 8) } }, t(entry.channel === 'github' ? 'channelHowGithub' : 'channelHow', { app: pick(entry.name, lang) })) : null,
         fields.length === 0 ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('noSettings')) : null,
         fields.map((f) => {
           const v = str(value.values[f.key]);
@@ -9317,6 +9346,14 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         cardFromBoard: 'Card from the board',
         cardFromBoardRef: 'Card {ref}',
         taskForRequest: 'Its request',
+        // GitHub Issues (Bots 0.14)
+        githubWatching: 'Watching',
+        githubHow: 'An open issue that gets the label {label} becomes a card on the board, filed under the project with that repository; the dispatcher picks it up, and the answers come back as comments.',
+        githubPrivate: 'Only the repository\'s owner, members and collaborators start work: an issue counts when one of them wrote it or put the label on it, a comment when one of them wrote it. Everyone else is ignored, without an answer.',
+        githubIgnored: 'Ignored {n} issues or comments from people who are not the repository\'s owner, members or collaborators (last: {name}).',
+        channelHowGithub: 'Add it to your dispatcher with a token and the repositories to watch. Nothing to pair: put the label on an issue to hand it to the team.',
+        projectRepo: 'GitHub repository',
+        projectRepoHint: 'Issues from it (GitHub Issues app) are filed under this project. owner/repo; leave it empty for none.',
         // cards that wait for others (Bots 0.13)
         cardAfter: 'Starts after',
         cardAfterNone: 'Nothing: now, or when I start it',
@@ -10318,6 +10355,14 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         cardFromBoard: '来自看板的卡片',
         cardFromBoardRef: '卡片 {ref}',
         taskForRequest: '所属需求',
+        // GitHub Issues（Bots 0.14）
+        githubWatching: '关注中',
+        githubHow: '打开的 issue 一打上标签 {label}，就会变成看板上的一张卡，归到填了这个仓库的项目下；调度员接手后，回复以评论的形式回到 issue。',
+        githubPrivate: '只有仓库的 owner、成员和协作者能让团队开工：issue 要是他们写的或者是他们打的标签，评论要是他们写的。其他人的一律忽略，不做回复。',
+        githubIgnored: '已忽略 {n} 条不是仓库 owner、成员或协作者的 issue 或评论（最近一位：{name}）。',
+        channelHowGithub: '把它加给调度员，填上令牌和要关注的仓库。不用配对：给 issue 打上标签就是交给团队。',
+        projectRepo: 'GitHub 仓库',
+        projectRepoHint: '这个仓库的 issue（GitHub Issues 应用）会归到这个项目下。写 owner/repo；不需要就留空。',
         // 等别的卡做完再开始（Bots 0.13）
         cardAfter: '在这之后开始',
         cardAfterNone: '无：现在开始，或等我手动开始',

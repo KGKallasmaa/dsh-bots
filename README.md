@@ -320,7 +320,7 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 | Category | Apps (🔑 = needs a key) |
 | --- | --- |
 | Sales & payments | Stripe 🔑, HubSpot CRM 🔑 |
-| Team & office | Feishu / Lark 🔑, Telegram 🔑, Slack 🔑 and Discord 🔑 (chat apps, below), Feishu / Lark Open Platform 🔑, Notion 🔑, Slack workspace 🔑, Memory |
+| Team & office | Feishu / Lark 🔑, Telegram 🔑, Slack 🔑 and Discord 🔑 (chat apps, below), GitHub Issues 🔑 ([below](#hand-work-out-from-github-issues)), Feishu / Lark Open Platform 🔑, Notion 🔑, Slack workspace 🔑, Memory |
 | Build & ship | GitHub 🔑, Git, Supabase 🔑, Sentry 🔑, Context7 Docs |
 | Research & content | Exa, Tavily 🔑, Brave 🔑, Firecrawl 🔑 |
 | Computer & browser | Open Computer Use (operate macOS apps), Playwright |
@@ -544,6 +544,27 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   logs and error messages. Harness must be running for the bot to answer; Telegram holds messages for up
   to 24 hours, and a message is never run twice after a restart.
 
+## Hand work out from GitHub issues
+
+Add **GitHub Issues** to your dispatcher (Apps → Team & office) with a fine-grained token limited to the
+repositories you name, with Issues: read and write. Put the label (`bots`, unless you set another) on an open issue,
+and the team takes it:
+
+- **The issue becomes a card** on the board: its title, its body as the description, a link to it, and, when a
+  project has that repository (**GitHub repository** in the project), filed under that project and numbered there.
+  The dispatcher gets it in that issue's thread, and hands the work out as for any card.
+- **Answers are comments** on the issue, signed `【Forge】` like in a chat app, so everyone who can see the repository
+  reads them. A comment on the issue later goes to its task when one is working on it, else to the dispatcher.
+- **Only the repository's owner, members and collaborators start work**: an issue counts when one of them wrote it or
+  put the label on it (an issue form can add a label for anyone), a comment when one of them wrote it. Everyone else is
+  ignored without an answer; the panel counts them. Issues are read by the bots, so this keeps strangers' text out of
+  their prompts.
+- **No public address**: Harness asks GitHub every minute for labelled issues and new comments (with an ETag, so an
+  unchanged answer costs no rate limit). Issues labelled while Harness was closed are caught up when it starts. On its
+  first start it looks from then on: label an older issue again to hand it out.
+- The token's account is the one that comments; a bot account of its own reads best. Its own comments (and anything
+  marked `<!-- dsh-bots -->`) are never read back as messages.
+
 ## How it works
 
 - Each bot owns one ordinary Harness conversation of its own, in the **Bots** workspace
@@ -585,7 +606,8 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   the gateway for Discord, Socket Mode for Slack, the long connection for Feishu), starts and stops it as you add, change, switch off or remove the
   app, and hands paired people's messages to the bot as user prompts headed
   `[Telegram · Name] (thread <key>)`, or to the tasks or the own conversation of that thread (see
-  [Chats and threads](#chats-and-threads)). The thread key is what `bot_reply` names.
+  [Chats and threads](#chats-and-threads)). The thread key is what `bot_reply` names. GitHub Issues polls instead:
+  each repository is a chat, each issue a thread, and its cursors are kept in `channels.json`.
 
 ## Open Computer Use
 
@@ -614,7 +636,8 @@ permission and restart it.
   memory passes (a run's or a task's transcript and the bot's notes, to the bot's model or the memory model), the
   LiteLLM price list (downloaded from GitHub weekly), the apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
   Feishu / Lark, Telegram, Slack or Discord API when you connect a chat app (the bots' replies to paired
-  people, typing indicators, and the one-line note to strangers).
+  people, typing indicators, and the one-line note to strangers), and the GitHub API with GitHub Issues (reading the
+  watched repositories' labelled issues and comments, and posting the bots' answers as comments).
 
 ## Install
 
@@ -636,6 +659,10 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.13
+
+- Nothing to migrate. GitHub Issues is a new app; projects have a new **GitHub repository** field.
 
 ## Upgrading from 0.12
 

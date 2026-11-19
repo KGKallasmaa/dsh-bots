@@ -1540,6 +1540,33 @@ export function apply(ctx, config, deps = {}) {
     return pending ? { ...rest, pending: true } : rest;
   }
 
+  /** Delivery id of a GitHub issue's message → the card it was filed as (Bots 0.14), until its turn takes it. */
+  const issueDeliveries = new Map();
+  /**
+   * A new GitHub issue with the channel's label, filed on the board as a card (Bots 0.14): its title,
+   * body and link, under the project of its repository, in To do until the bot takes the message
+   * (then it is under way). An issue already on the board files nothing. Returns the need id, or null.
+   */
+  function fileIssue(owner, issue, { threadKey, who, via = 'github' } = {}) {
+    const ref = `${issue?.repo}#${issue?.number}`;
+    if (!issue?.repo || !issue?.number) return null;
+    if (needs.list().some((n) => n.links?.some((l) => l.ref.toLowerCase() === ref.toLowerCase()))) return null;
+    const p = projects.list().find((x) => x.repo && x.repo.toLowerCase() === String(issue.repo).toLowerCase());
+    const title = clampNeedTitle(issue.title) || ref;
+    const text = [title, String(issue.body ?? '').trim()].filter(Boolean).join('\n\n');
+    const n = needs.create({
+      title,
+      botId: owner?.id ?? '',
+      origin: { ...(threadKey ? { threadKey } : {}), via, ...(who ? { who } : {}) },
+      asks: [{ at: nowMs(), text: clip(text, 2000).text, via, ...(who ? { who } : {}) }],
+      description: String(issue.body ?? '').slice(0, MAX_DESCRIPTION),
+      links: [{ kind: 'github', ref, ...(issue.url ? { url: issue.url } : {}) }],
+      ...(p ? { projectId: p.id, number: projects.take(p.id) } : {}),
+      todo: true,
+    });
+    return n.id;
+  }
+
   /**
    * The person's message about a card, straight to its one live task (Bots 0.13): from the panel (no
    * `chat`) it is logged in the dispatcher's chat; from a chat app (`chat`: its kind, who and Thread)
@@ -1587,9 +1614,12 @@ export function apply(ctx, config, deps = {}) {
     const p = projectOfNeed(n);
     const where = p ? ` in project ${p.key} (${p.name})` : '';
     // A card that waited for others starts by itself once they are done (Bots 0.13).
+    // A GitHub issue is filed on the board by the plugin (Bots 0.14): who opened it, and where answers go.
+    const issue = n.origin?.via === 'github' ? n.links?.find((l) => l.kind === 'github') : undefined;
+    const filed = issue ? `${n.origin?.who ? `@${n.origin.who}` : 'Someone'} asked for this in GitHub issue ${issue.ref}; it is on the board` : 'The user filed this on the board';
     const head = after.length
-      ? `[Card${ref ? ` ${ref}` : ''}] The user filed this on the board as need ${n.id} ("${n.title}")${where}, to start once other cards were done; it starts now.`
-      : `[Card${ref ? ` ${ref}` : ''}] The user filed this on the board as need ${n.id} ("${n.title}")${where} and handed it to you.`;
+      ? `[Card${ref ? ` ${ref}` : ''}] ${filed} as need ${n.id} ("${n.title}")${where}, to start once other cards were done; it starts now.`
+      : `[Card${ref ? ` ${ref}` : ''}] ${filed} as need ${n.id} ("${n.title}")${where}${issue ? '. Answers in this thread are comments on the issue, which everyone who can see the repository reads' : ' and handed it to you'}.`;
     const how = router
       ? `${head} The tasks you open for it count toward it (pass need ${n.id}${p ? `; they work in the project's folder` : ''}). When you answer it yourself without handing anything out, mark it done with bot_need (action done).`
       : `${head}${p?.dir ? ` The project's folder is ${p.dir}.` : ''} When it is done, mark it done with bot_need (need ${n.id}, action done).`;
@@ -2022,7 +2052,7 @@ export function apply(ctx, config, deps = {}) {
       const st = needStatusOf(n).status;
       counts[st === 'failed' ? 'waiting' : st] = (counts[st === 'failed' ? 'waiting' : st] ?? 0) + 1;
     }
-    return { id: p.id, key: p.key, name: p.name, brief: p.brief, dir: p.dir, next: p.last + 1, counts, createdAt: p.createdAt, updatedAt: p.updatedAt };
+    return { id: p.id, key: p.key, name: p.name, brief: p.brief, dir: p.dir, ...(p.repo ? { repo: p.repo } : {}), next: p.last + 1, counts, createdAt: p.createdAt, updatedAt: p.updatedAt };
   }
   /** The line a task's first message names its card with (cards.mjs `cardOf`), or ''. */
   const cardLineOf = (t) => {
@@ -2192,6 +2222,7 @@ export function apply(ctx, config, deps = {}) {
       ...(n.auto ? { auto: true } : {}),
       ...(ref ? { ref, projectId: n.projectId, number: n.number } : {}),
       ...(n.after?.length && n.todo ? afterRow(n) : {}),
+      ...(n.links?.length ? { links: n.links } : {}),
       status: s.status,
       done: s.done,
       total: s.total,
@@ -3171,9 +3202,13 @@ export function apply(ctx, config, deps = {}) {
       }
       await autoTopic(store.get(target.id) ?? target, 'user');
       const agent = await agentOf(store.get(target.id) ?? target);
+      // A GitHub issue filed as a card (Bots 0.14): it says so first, and the work of this turn counts toward it.
+      const card = meta.issueCard ? needs.get(meta.issueCard) : undefined;
+      if (card && meta.key) issueDeliveries.set(`${MESSAGE_PREFIX}${meta.key}`, card.id);
       const sent = await sendTo(agent, {
         content: [
           ...needsNoteFor(target, agent.session.id, body),
+          ...(card ? [{ type: 'text', text: cardHeaderText(card, isRouterHome(store.get(target.id) ?? target, agent.session.id)) }] : []),
           { type: 'text', text: `${header}${threadNote(meta.threadKey)}` },
           { type: 'text', text: body },
         ],
@@ -3181,8 +3216,12 @@ export function apply(ctx, config, deps = {}) {
         mode: homeMode(target),
         ...(meta.key ? { key: meta.key } : {}),
       });
+      // Handed out: no longer in To do; its dispatcher is the bot that took it.
+      if (card) needs.start(card.id, { botId: target.id });
       return { sessionId: agent.session.id, messageId: sent.message.id, ...(sent.skipped ? { skipped: true } : {}) };
     },
+    // A new GitHub issue with the label, filed on the board (Bots 0.14).
+    fileIssue: (owner, issue, at) => fileIssue(owner, issue, at),
     toTickets: (list, msg, meta) => (meta?.card ? cardFollowUp(meta.owner, msg.body, meta.card, { key: meta.threadKey, chat: { kind: meta.origin?.kind, who: meta.origin?.who, threadKey: meta.threadKey, header: `${msg.header}${threadNote(meta.threadKey)}` }, messageKey: meta.key ?? '' }).then((r) => (r ? [r.sessionId] : Promise.reject(new Error('the task did not take it')))) : followUp(list, msg, meta)),
     // A chat message to the dispatcher that starts with a card's reference: that card's one live task (Bots 0.13).
     cardRoute: (owner, text) => (isRouter(store.get(owner?.id)) ? leadingCard(text) : null),
@@ -3362,7 +3401,10 @@ export function apply(ctx, config, deps = {}) {
             asked(typed);
           } else if (kind === 'user') {
             const topic = !via && isPanelThread(thread) ? panelTopicOf(thread) : '';
-            const logged = store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}), ...(topic ? { topic } : {}) });
+            // A GitHub issue filed as a card (Bots 0.14): the chat links the card, and the dispatcher's work counts toward it.
+            const issueCard = issueDeliveries.get(id);
+            issueDeliveries.delete(id);
+            const logged = store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}), ...(issueCard ? { need: issueCard } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}), ...(topic ? { topic } : {}) });
             asked(logged);
             if (home) {
               const refs = [messageRef(logged.id)];
@@ -5378,7 +5420,7 @@ export function apply(ctx, config, deps = {}) {
     'projects/save': {
       post: (body) => {
         const input = body?.project && typeof body.project === 'object' ? body.project : {};
-        const fields = Object.fromEntries(['name', 'key', 'brief', 'dir'].filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
+        const fields = Object.fromEntries(['name', 'key', 'brief', 'dir', 'repo'].filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
         // Prompts read the projects as they are assembled: the dispatcher and the project's tasks see the change at their next step.
         const p = input.id ? projects.update(input.id, fields) : projects.create(fields);
         return { ok: true, project: projectView(p) };
