@@ -310,10 +310,14 @@ const TICKET_AFTER = { stop: 'stopped', retry: 'working', close: 'done' };
 // The person's requests (Bots 0.11), as GET /needs lists them.
 const NEEDS = [
   { id: 'nwaiting1', title: 'A logo for the launch', status: 'waiting', done: 0, total: 1, waiting: ['tquestion'], bots: ['bot-b'], via: 'telegram', who: 'Kada', asked: 'Make us a logo', latest: { status: 'question', at: Date.now() - 2 * MIN, botId: 'bot-b', ticket: 'tquestion', preview: 'Blue or green?' }, createdAt: Date.now() - 50 * MIN, updatedAt: Date.now() - 2 * MIN },
-  { id: 'nworking1', title: 'Q3 competitor pricing table', status: 'working', done: 1, total: 3, failed: 1, bots: ['bot-b', 'bot-c'], via: 'panel', asked: 'Compare Q3 pricing', latest: { status: 'progress', at: Date.now() - 5 * MIN, botId: 'bot-c', ticket: 'tworking1', preview: 'Europe half done' }, createdAt: Date.now() - 90 * MIN, updatedAt: Date.now() - 5 * MIN },
+  { id: 'nworking1', title: 'Q3 competitor pricing table', ref: 'OPC-1', projectId: 'pjopc00001', number: 1, status: 'working', done: 1, total: 3, failed: 1, bots: ['bot-b', 'bot-c'], via: 'panel', asked: 'Compare Q3 pricing', latest: { status: 'progress', at: Date.now() - 5 * MIN, botId: 'bot-c', ticket: 'tworking1', preview: 'Europe half done' }, createdAt: Date.now() - 90 * MIN, updatedAt: Date.now() - 5 * MIN },
   { id: 'ndone0001', title: 'Weekly numbers', status: 'done', done: 1, total: 1, bots: ['bot-b'], via: 'panel', createdAt: Date.now() - 200 * MIN, updatedAt: Date.now() - 60 * MIN, endedAt: Date.now() - 60 * MIN, latest: { status: 'done', at: Date.now() - 60 * MIN, botId: 'bot-b', ticket: 'tdone0001', preview: 'Revenue up 12%' } },
   { id: 'nstopped1', title: 'Old idea', status: 'stopped', done: 0, total: 1, bots: ['bot-c'], createdAt: Date.now() - 400 * MIN, updatedAt: Date.now() - 300 * MIN, closed: { at: Date.now() - 300 * MIN, by: 'user' } },
+  // A card filed on the board for later (Bots 0.12), older than a week.
+  { id: 'ntodo0001', title: 'Pricing page', ref: 'OPC-2', projectId: 'pjopc00001', number: 2, status: 'todo', done: 0, total: 0, bots: [], via: 'board', asked: 'Pricing page', createdAt: Date.now() - 9 * 24 * 60 * MIN, updatedAt: Date.now() - 9 * 24 * 60 * MIN },
 ];
+// The projects cards are filed under (Bots 0.12), as GET /projects lists them.
+const PROJECTS = [{ id: 'pjopc00001', key: 'OPC', name: 'One-person company', brief: 'Ship weekly.', dir: '/Users/me/opc', next: 3, counts: { todo: 1, working: 1, waiting: 0, done: 0, stopped: 0 } }];
 const NEED_DETAIL = {
   nwaiting1: {
     auto: true,
@@ -322,6 +326,7 @@ const NEED_DETAIL = {
     tickets: [TICKETS[1]],
   },
   ndone0001: { asks: [{ at: Date.now() - 200 * MIN, text: 'How did we do this week?' }], results: [{ at: Date.now() - 60 * MIN, botId: 'bot-b', ticket: 'tdone0001', text: 'Revenue up **12%**.' }], tickets: [TICKETS[5]] },
+  ntodo0001: { description: 'Three tiers, yearly toggle.', asks: [{ at: Date.now() - 9 * 24 * 60 * MIN, text: 'Pricing page\n\nThree tiers, yearly toggle.', via: 'board' }], results: [], tickets: [] },
 };
 const needView = (id) => {
   const row = NEEDS.find((r) => r.id === id);
@@ -341,11 +346,15 @@ function mockFetch(posts = []) {
       if (path.endsWith('/skills/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.items.map((i) => (i.path ?? i.local).split('/').pop()), updated: [], skipped: [], failed: [] }) };
       if (path.endsWith('/skills/write')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-b' }) };
       if (path.endsWith('/apps/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.names }) };
-      if (path.endsWith('/save')) return { ok: true, json: async () => ({ ok: true, bot: { ...BOTS[0], ...body.bot, id: body.bot.id ?? 'bot-new' } }) };
-      const needAct = /^\/__dsh_bots\/needs\/([^/]+)\/(rename|drop)$/.exec(path);
+      if (path.endsWith('/projects/save')) return { ok: true, json: async () => ({ ok: true, project: { ...PROJECTS[0], ...body.project, id: body.project.id ?? 'pjnew00001' } }) };
+      if (path === '/__dsh_bots/save') return { ok: true, json: async () => ({ ok: true, bot: { ...BOTS[0], ...body.bot, id: body.bot.id ?? 'bot-new' } }) };
+      if (path.endsWith('/needs/create')) return { ok: true, json: async () => ({ ok: true, ...needView('ntodo0001'), id: 'nnew00001', title: body.title, status: body.start ? 'working' : 'todo' }) };
+      if (path.endsWith('/projects/delete')) return { ok: true, json: async () => ({ ok: true, cards: 2 }) };
+      const needAct = /^\/__dsh_bots\/needs\/([^/]+)\/(rename|drop|start|done|save)$/.exec(path);
       if (needAct) {
         const view = needView(decodeURIComponent(needAct[1]));
-        return { ok: true, json: async () => ({ ok: true, ...view, ...(needAct[2] === 'drop' ? { status: 'stopped' } : { title: body.title }) }) };
+        const after = { drop: { status: 'stopped' }, rename: { title: body.title }, start: { status: 'working' }, done: { status: 'done' }, save: body };
+        return { ok: true, json: async () => ({ ok: true, ...view, ...after[needAct[2]] }) };
       }
       const act = /^\/__dsh_bots\/tickets\/([^/]+)\/(stop|retry|close|message)$/.exec(path);
       if (act) {
@@ -360,6 +369,7 @@ function mockFetch(posts = []) {
       return view ? { ok: true, json: async () => view } : { ok: false, status: 404, json: async () => null };
     }
     if (path.startsWith('/__dsh_bots/needs')) return { ok: true, json: async () => ({ items: NEEDS, next_offset: null }) };
+    if (path.startsWith('/__dsh_bots/projects')) return { ok: true, json: async () => ({ items: PROJECTS }) };
     if (path.startsWith('/__dsh_bots/tickets/')) {
       const view = ticketView(decodeURIComponent(path.slice('/__dsh_bots/tickets/'.length).split('?')[0]));
       return view ? { ok: true, json: async () => view } : { ok: false, status: 404, json: async () => null };
@@ -1816,8 +1826,9 @@ test('requests: the rail counts what waits for you; the board groups the person\
     assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-needs']).length === 1, 'the board is shown');
     const groups = findAll(v.tree, (n) => n.props['data-dsh-bots-need-group']).map((n) => [n.props['data-dsh-bots-need-group'], findAll(n, (x) => x.props['data-dsh-bots-need']).map((x) => x.props['data-dsh-bots-need'])]);
     assert.deepEqual(groups, [
-      ['needs', ['nwaiting1']],
+      ['todo', ['ntodo0001']],
       ['working', ['nworking1']],
+      ['needs', ['nwaiting1']],
       ['done', ['ndone0001']],
       ['stopped', []],
     ]);
@@ -1830,7 +1841,8 @@ test('requests: the rail counts what waits for you; the board groups the person\
     assert.match(waiting, /Blue or green\?/);
     const working = collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nworking1')[0]).join(' ');
     assert.match(working, /1\/3 done/);
-    assert.match(working, /Bob、Cy|Bob、/);
+    assert.match(working, /^OPC-1 1\/3 done Q3 competitor pricing table/, 'a card leads with its reference');
+    assert.match(findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nworking1')[0], (n) => n.props['data-dsh-bots-need-bots'] === 2)[0].props.title, /^Bob、/);
     assert.match(working, /1 of its tasks did not get done/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-need-stalled'] !== undefined).length, 0, 'nothing stuck here');
     assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'ndone0001')[0]).join(' '), /delivered 1 h ago/);
@@ -2864,9 +2876,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.11\.1\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.12\.0\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.11.1' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.12.0' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();
@@ -2939,4 +2951,135 @@ test('threads: every new word has English and Chinese', async () => {
   // "New topic" keeps meaning a fresh conversation; nothing about threads says 话题 any more.
   assert.equal(zh.newTopic, '新话题');
   for (const k of keys) assert.doesNotMatch(zh[k], /话题/, k);
+});
+
+test('board: cards filter by project; a new card posts what the person filled in, now or for later; dragging starts one or marks it done', async () => {
+  const v = await openView('data-dsh-bots-needs-entry');
+  // Filters: every card, a project's, those under none.
+  const filters = findAll(v.tree, (n) => n.props['data-dsh-bots-board-filter']).map((n) => [n.props['data-dsh-bots-board-filter'], collect(n).join(' ')]);
+  assert.deepEqual(filters, [['all', 'All 5'], ['pjopc00001', 'OPC One-person company 2'], ['none', 'No project 3']]);
+  click(v.tree, 'data-dsh-bots-board-filter', 'pjopc00001');
+  await v.rerender(1);
+  const shown = () => findAll(v.tree, (n) => n.props['data-dsh-bots-need']).map((n) => n.props['data-dsh-bots-need']);
+  assert.deepEqual(shown(), ['ntodo0001', 'nworking1']);
+  // A new card, filed under the project in view, to Bob directly.
+  click(v.tree, 'data-dsh-bots-board-new');
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-card-title'])[0].props.onChange({ target: { value: 'Hero image for 2.4' } });
+  findAll(v.tree, (n) => n.props['data-dsh-bots-card-description'])[0].props.onChange({ target: { value: 'Calm, blue.' } });
+  await v.rerender(1);
+  const assignee = findAll(v.tree, (n) => n.props['data-dsh-bots-card-assignee'])[0];
+  assert.deepEqual(findAll(assignee, (n) => n.type === 'option').map((o) => collect(o).join('')), ['Ada (the dispatcher decides)', 'Bob (@bob)', '研究员 (@yj)']);
+  assignee.props.onChange({ target: { value: 'bot-b' } });
+  await v.rerender(1);
+  assert.match(collect(v.tree).join(' '), /It goes straight to that bot as a task/);
+  click(v.tree, 'data-dsh-bots-card-start');
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/needs/create')).body, { title: 'Hero image for 2.4', description: 'Calm, blue.', projectId: 'pjopc00001', assignee: 'bot-b', start: true });
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-card-title']).length, 0, 'the form closed');
+  // For later: no one takes it yet.
+  click(v.tree, 'data-dsh-bots-board-new');
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-card-title'])[0].props.onChange({ target: { value: 'FAQ page' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-card-later');
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/create')).at(-1).body, { title: 'FAQ page', description: '', projectId: 'pjopc00001', assignee: '', start: false });
+  // Dragging a card in To do lights In progress (start) and Done, not Waiting for you.
+  const card = findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'ntodo0001')[0];
+  card.props.onDragStart({ dataTransfer: { setData() {} } });
+  await v.rerender(1);
+  const drops = Object.fromEntries(findAll(v.tree, (n) => n.props['data-dsh-bots-need-group'] && n.props['data-dsh-bots-need-group'] !== 'stopped').map((n) => [n.props['data-dsh-bots-need-group'], n.props['data-drop'] ?? '']));
+  assert.deepEqual(drops, { todo: '', working: 'start', needs: '', done: 'done' });
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-group'] === 'working')[0].props.onDrop({ preventDefault() {} });
+  await v.rerender();
+  assert.ok(v.posts.some((p) => p.path.endsWith('/needs/ntodo0001/start')));
+  // A card under way dropped on Done: asked first, since its tasks stop.
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'nworking1')[0].props.onDragStart({});
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-group'] === 'done')[0].props.onDrop({ preventDefault() {} });
+  await v.rerender(1);
+  assert.match(collect(v.tree).join(' '), /Mark “Q3 competitor pricing table” done\?/);
+  confirmButton(v.tree).props.onClick();
+  await v.rerender();
+  assert.ok(v.posts.some((p) => p.path.endsWith('/needs/nworking1/done')));
+  v.hooks.runCleanups();
+});
+
+test('board: projects are added, changed and removed from the board', async () => {
+  const v = await openView('data-dsh-bots-needs-entry');
+  click(v.tree, 'data-dsh-bots-board-projects');
+  await v.rerender(1);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-project'] === 'pjopc00001').length, 1);
+  assert.match(collect(v.tree).join(' '), /One-person company \/Users\/me\/opc/);
+  click(v.tree, 'data-dsh-bots-project-new');
+  await v.rerender(1);
+  const field = (attr) => findAll(v.tree, (n) => n.props[attr])[0];
+  field('data-dsh-bots-project-name').props.onChange({ target: { value: 'Website' } });
+  await v.rerender(1);
+  field('data-dsh-bots-project-dir').props.onChange({ target: { value: '~/code/site' } });
+  await v.rerender(1);
+  field('data-dsh-bots-project-brief').props.onChange({ target: { value: 'Astro, deployed on push.' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-project-save');
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/projects/save')).body, { project: { name: 'Website', key: '', dir: '~/code/site', brief: 'Astro, deployed on push.' } });
+  // Changed: the id goes along.
+  click(v.tree, 'data-dsh-bots-project-edit', 'pjopc00001');
+  await v.rerender(1);
+  assert.equal(field('data-dsh-bots-project-key').props.value, 'OPC');
+  click(v.tree, 'data-dsh-bots-project-save');
+  await v.rerender();
+  assert.equal(v.posts.filter((p) => p.path.endsWith('/projects/save')).at(-1).body.project.id, 'pjopc00001');
+  // Removed, after asking.
+  click(v.tree, 'data-dsh-bots-project-remove', 'pjopc00001');
+  await v.rerender(1);
+  assert.match(collect(v.tree).join(' '), /Remove “One-person company”\?/);
+  confirmButton(v.tree).props.onClick();
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/projects/delete')).body, { id: 'pjopc00001' });
+  v.hooks.runCleanups();
+});
+
+test('board: a card in To do shows its reference and description, starts with whoever is chosen, moves between projects and is marked done', async () => {
+  const v = await openView('data-dsh-bots-needs-entry');
+  click(v.tree, 'data-dsh-bots-need', 'ntodo0001');
+  await v.rerender();
+  const detail = () => findAll(v.tree, (n) => n.props['data-dsh-bots-need-detail'] === 'ntodo0001')[0];
+  const text = collect(detail()).join(' ');
+  assert.match(text, /OPC-2 Pricing page To do/);
+  assert.match(text, /Description .*Three tiers, yearly toggle\./);
+  assert.doesNotMatch(text, /What you said/, 'the card itself is not repeated as the person\'s words');
+  assert.match(text, /Board/);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-assignee'] === 'ntodo0001')[0].props.onChange({ target: { value: 'bot-c' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-need-start', 'ntodo0001');
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/needs/ntodo0001/start')).body, { assignee: 'bot-c' });
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-project'] === 'ntodo0001')[0].props.onChange({ target: { value: '' } });
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/needs/ntodo0001/save')).body, { projectId: '' });
+  click(v.tree, 'data-dsh-bots-need-describe', 'ntodo0001');
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-description-input'])[0].props.onChange({ target: { value: 'Two tiers.' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-need-description-save');
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/ntodo0001/save')).at(-1).body, { description: 'Two tiers.' });
+  // Nothing under way: marked done at once.
+  click(v.tree, 'data-dsh-bots-need-done', 'ntodo0001');
+  await v.rerender();
+  assert.ok(v.posts.some((p) => p.path.endsWith('/needs/ntodo0001/done')));
+  v.hooks.runCleanups();
+});
+
+test('board: a card started from the board shows in the chat with its reference, which opens the card', async () => {
+  const card = { id: 'pcard0001', from: 'user', to: 'bot-b', chat: 'bot-a', kind: 'user', text: 'Pricing page\n\nThree tiers.', at: T0 + 10 * MIN, thread: 'panel:sess-a', ticket: 'tworking1', need: 'ntodo0001', card: { id: 'ntodo0001', title: 'Pricing page', ref: 'OPC-2' } };
+  const v = await threadsChat({ items: [...mainItems(), card] });
+  const [msg] = findAll(mainOf(v.tree), (n) => n.props['data-dsh-bots-msg-id'] === 'pcard0001');
+  assert.match(collect(msg).join(' '), /^Card OPC-2 to Bob · .* Open task /);
+  click(msg, 'data-dsh-bots-msg-card', 'ntodo0001');
+  await v.rerender();
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-need-detail'] === 'ntodo0001').length, 1);
+  v.hooks.runCleanups();
 });

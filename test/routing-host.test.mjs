@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1760,5 +1760,273 @@ test('needs: dropping one stops its open tasks; merging moves tasks and words; t
   assert.equal(v.closed.by, 'user');
   assert.deepEqual(api.state().needs, { waiting: 0, working: 0 });
   await assert.rejects(api.request('GET', '/needs/nzzzzzzzz'), /no such need/);
+  env.dispose();
+});
+
+// --- the board: cards and projects (Bots 0.12) ------------------------------------------------------
+
+/** A workspace registry that gives each folder a workspace of its own, and a session controller that records where Sessions are made. */
+function boardBoot() {
+  const made = [];
+  const archived = [];
+  const env = boot({
+    services: {
+      workspaceRegistry: {
+        async create(path) {
+          return { id: `ws:${path}` };
+        },
+        get archivedSessionIds() {
+          return archived;
+        },
+        async archiveSession(id) {
+          archived.push(id);
+        },
+      },
+    },
+  });
+  const create = env.h.services.sessionController.create;
+  env.h.services.sessionController.create = async (req) => {
+    made.push(req);
+    return create(req);
+  };
+  env.api.store.save({ name: 'Forge', bio: 'Engineer' });
+  env.api.store.save({ name: 'Scout', bio: 'Researcher' });
+  const folder = mkdtempSync(join(tmpdir(), 'bots-project-'));
+  return { ...env, made, folder, atlas: env.api.store.find('atlas') };
+}
+const promptOf = (agent) => [...agent.sections.values()].map((s) => s.text?.()).join('\n');
+
+test('board: projects are kept through their routes; a card filed for the dispatcher counts its tasks, which work in the project folder', async () => {
+  const env = boardBoot();
+  const { h, api, folder, made } = env;
+  const { project } = await api.request('POST', '/projects/save', { project: { name: 'One-person company', brief: 'Ship small, weekly.\nNever deploy on Fridays.', dir: folder } });
+  assert.deepEqual([project.key, project.dir, project.next], ['OPC', folder, 1]);
+  await assert.rejects(api.request('POST', '/projects/save', { project: { name: 'Again', key: 'opc' } }), /the key OPC is taken/);
+  await assert.rejects(api.request('POST', '/projects/save', { project: { name: 'Nowhere', dir: join(folder, 'missing') } }), /there is no folder/);
+  // Filed and handed to the dispatcher at once: the dispatcher reads it as the person's message, marked as the card.
+  const card = await api.request('POST', '/needs/create', { title: 'Landing page for 2.4', description: 'Hero, pricing and FAQ.', projectId: project.id });
+  assert.deepEqual([card.ref, card.status, card.description, card.asked], ['OPC-1', 'working', 'Hero, pricing and FAQ.', 'Landing page for 2.4\n\nHero, pricing and FAQ.']);
+  const sid = api.store.find('atlas').sessionId;
+  const router = h.agentsById.get(sid);
+  const said = textOfMsg(router.deliveries.at(-1).message);
+  assert.match(said, new RegExp(`\\[Card OPC-1\\] The user filed this on the board as need ${card.id} \\("Landing page for 2\\.4"\\) in project OPC \\(One-person company\\) and handed it to you\\.`));
+  assert.match(said, /Landing page for 2\.4\n\nHero, pricing and FAQ\.$/);
+  const logged = api.store.messages({ bot: env.atlas.id }).at(-1);
+  assert.deepEqual([logged.kind, logged.need], ['user', card.id]);
+  const { items } = await api.request('GET', `/messages?bot=${env.atlas.id}`);
+  assert.deepEqual(items.at(-1).card, { id: card.id, title: 'Landing page for 2.4', ref: 'OPC-1' });
+  // The dispatcher knows the projects, and hands the card out without naming it: its task counts toward the card.
+  assert.match(promptOf(router), /## Projects\n[^]*- OPC — One-person company: Ship small, weekly\.\n/);
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Build the 2.4 landing page: hero, pricing, FAQ.' } }] });
+  assert.equal(r.need.id, card.id);
+  assert.match(r.text, /It counts toward need n[a-z0-9]{8} \(card OPC-1\) \("Landing page for 2\.4"\)\.$/);
+  const t = api.tickets.get(r.ticket.id);
+  assert.equal(t.projectId, project.id);
+  // Its conversation was made in the project's folder, and its first message and prompt say which card and project.
+  assert.deepEqual(made.find((m) => m.sessionId === t.sessionId), { sessionId: t.sessionId, workspaceId: `ws:${folder}` });
+  const worker = h.agentsById.get(t.sessionId);
+  assert.match(textOfMsg(worker.deliveries[0].message), /It is for card OPC-1 \("Landing page for 2\.4"\) of project OPC \(One-person company\)\./);
+  assert.match(promptOf(worker), new RegExp(`## The project\nThis task is part of project OPC \\(One-person company\\)\\. This conversation works in the project's folder, ${folder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\n\nShip small, weekly\\.\nNever deploy on Fridays\\.`));
+  // A sub-task works in the same project.
+  const sub = await env.call('bot_send_message', { to: '@scout', text: 'Find three landing pages we like.' }, t.sessionId);
+  assert.equal(api.tickets.get(sub.ticket.id).projectId, project.id);
+  // The board's columns per project, and the list filtered by project.
+  assert.deepEqual((await api.request('GET', '/projects')).items[0].counts, { todo: 0, working: 1, waiting: 0, done: 0, stopped: 0 });
+  assert.deepEqual((await api.request('GET', `/needs?project=${project.id}`)).items.map((x) => x.ref), ['OPC-1']);
+  assert.deepEqual((await api.request('GET', '/needs?project=none')).items, []);
+  assert.equal((await api.request('GET', '/needs/opc-1')).id, card.id, 'a card is found by its reference');
+  env.dispose();
+});
+
+test('board: a card handed to one bot is a task opened for the dispatcher, shown in its chat; replies reach the task; done shows on the card', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  const card = await api.request('POST', '/needs/create', { title: 'Fix the Safari login', assignee: '@forge' });
+  assert.equal(card.ref, undefined, 'filed under no project: no number');
+  const [row] = card.tickets;
+  const t = api.tickets.get(row.id);
+  const sid = api.store.find('atlas').sessionId;
+  assert.deepEqual([t.botId, t.board, t.requester.botId, t.requester.sessionId, t.origin.threadKey], [api.store.find('forge').id, true, env.atlas.id, sid, `panel:${sid}`]);
+  assert.match(textOfMsg(h.agentsById.get(t.sessionId).deliveries[0].message), /^New task t[a-z0-9]{8} from the user, from the board: Fix the Safari login/);
+  // The dispatcher hears of it without waking.
+  const note = h.agentsById.get(sid).deliveries.find((d) => d.message.id === `bots:board:${t.id}`);
+  assert.equal(note.mode, 'inject');
+  assert.match(textOfMsg(note.message), /^\[Board\] The user handed card "Fix the Safari login" \(need n[a-z0-9]{8}\) to @forge themselves: task t/);
+  // The task's page links the card it serves.
+  assert.deepEqual((await api.request('GET', `/tickets/${t.id}`)).need, { id: card.id, title: 'Fix the Safari login' });
+  // The card shows in the dispatcher's chat as the person's message, and Forge's answer under it.
+  const msg = api.store.messages({ bot: env.atlas.id }).find((m) => m.need === card.id);
+  assert.deepEqual([msg.from, msg.to, msg.kind, msg.ticket], ['user', api.store.find('forge').id, 'user', t.id]);
+  await call('bot_send_message', { status: 'question', text: 'Which Safari versions?' }, t.sessionId);
+  assert.equal((await api.request('GET', `/needs/${card.id}`)).status, 'waiting');
+  const shown = api.store.messages({ bot: env.atlas.id }).at(-1);
+  assert.deepEqual([shown.kind, shown.from, shown.ticket, shown.status], ['reply', api.store.find('forge').id, t.id, 'question']);
+  // A reply to the card's message goes to its task.
+  await api.panelSend(env.atlas, '16 and 17', { replyTo: msg.id });
+  assert.equal(textOfMsg(h.agentsById.get(t.sessionId).deliveries.at(-1).message), '16 and 17');
+  await call('bot_send_message', { status: 'done', text: 'Fixed for 16 and 17.' }, t.sessionId);
+  const done = await api.request('GET', `/needs/${card.id}`);
+  assert.deepEqual([done.status, done.results.map((x) => x.text)], ['done', ['Fixed for 16 and 17.']]);
+  // The dispatcher takes no card as a task; an unknown bot is refused, and the card stays in To do.
+  const todo = await api.request('POST', '/needs/create', { title: 'Later', start: false });
+  assert.equal(todo.status, 'todo');
+  await assert.rejects(api.request('POST', `/needs/${todo.id}/start`, { assignee: '@nobody' }), /no bot "@nobody"/);
+  assert.equal((await api.request('GET', `/needs/${todo.id}`)).status, 'todo');
+  // Filed and handed to nobody that exists: the card is kept in To do, and the answer says why it did not start.
+  const kept = await api.request('POST', '/needs/create', { title: 'Kept', assignee: '@nobody' });
+  assert.deepEqual([kept.ok, kept.status, kept.startError], [true, 'todo', 'no bot "@nobody". Known bots: @atlas, @forge, @scout']);
+  env.dispose();
+});
+
+test('board: To do waits for the person; start, done, save and moving between projects; the dispatcher files and finishes cards', async () => {
+  const env = boardBoot();
+  const { h, api, call, folder } = env;
+  const { project: opc } = await api.request('POST', '/projects/save', { project: { name: 'One-person company', key: 'OPC' } });
+  const { project: web } = await api.request('POST', '/projects/save', { project: { name: 'Website', dir: folder } });
+  const later = await api.request('POST', '/needs/create', { title: 'Pricing page', projectId: 'opc', start: false });
+  assert.deepEqual([later.ref, later.status], ['OPC-1', 'todo']);
+  assert.equal(api.store.find('atlas').sessionId, null, 'nothing reached the dispatcher');
+  // Not among the open needs the dispatcher reads.
+  const sid = await api.userSend(env.atlas, 'hello');
+  assert.doesNotMatch(textOfMsg(h.agentsById.get(sid).deliveries.at(-1).message), /Pricing page/);
+  await h.step(sid, { answer: 'Hi!' });
+  // Moved to another project: a number there; a description written later.
+  // A change that is refused changes nothing.
+  await assert.rejects(api.request('POST', `/needs/${later.id}/save`, { title: 'Pricing', projectId: 'NOPE' }), /no project "NOPE"/);
+  assert.equal((await api.request('GET', `/needs/${later.id}`)).title, 'Pricing page');
+  let v = await api.request('POST', `/needs/${later.id}/save`, { projectId: web.id, description: 'Three tiers.' });
+  assert.deepEqual([v.ref, v.description], ['WEB-1', 'Three tiers.']);
+  // Started: the dispatcher gets it; a card under way cannot be started again.
+  v = await api.request('POST', `/needs/${later.id}/start`, {});
+  assert.equal(v.status, 'working');
+  assert.match(textOfMsg(h.agentsById.get(sid).deliveries.at(-1).message), /\[Card WEB-1\]/);
+  await assert.rejects(api.request('POST', `/needs/${later.id}/start`, {}), /under way already/);
+  // The dispatcher restates it anyway: still that card, since it is all the person said in that turn.
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Build the pricing page.', need: 'A pricing page' } }] });
+  assert.equal(r.need.id, later.id);
+  assert.equal(api.tickets.get(r.ticket.id).projectId, web.id);
+  // Marked done on the board: its open task is closed as done.
+  v = await api.request('POST', `/needs/${later.id}/done`, {});
+  assert.deepEqual([v.status, v.tickets.map((x) => x.stage)], ['done', ['done']]);
+  // The dispatcher files a new request under a project by key; an unknown key opens nothing.
+  await api.userSend(env.atlas, 'Write the 2.4 changelog');
+  const before = api.tickets.list().length;
+  await assert.rejects(call('bot_send_message', { to: '@scout', text: 'x', project: 'NOPE' }, sid), /no project "NOPE"; projects: OPC \(One-person company\), WEB \(Website\)/);
+  assert.equal(api.tickets.list().length, before);
+  const [log] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the 2.4 changelog.', need: '2.4 changelog', project: 'opc' } }] });
+  assert.equal((await api.request('GET', `/needs/${log.need.id}`)).ref, 'OPC-2');
+  assert.equal(api.tickets.get(log.ticket.id).projectId, opc.id);
+  // bot_need: file it elsewhere, then mark it done (it answered without a task).
+  const filed = await call('bot_need', { need: 'OPC-2', action: 'file', project: 'WEB' }, sid);
+  assert.match(filed.text, /is card WEB-2 of project WEB \(Website\)/);
+  const finished = await call('bot_need', { need: 'WEB-2', action: 'done' }, sid);
+  assert.equal(finished.need.status, 'done');
+  // A project removed: its cards stay, under no project.
+  const gone = await api.request('POST', '/projects/delete', { id: web.id });
+  assert.equal(gone.cards, 2);
+  assert.equal((await api.request('GET', `/needs/${later.id}`)).ref, undefined);
+  env.dispose();
+});
+
+test('board: in a turn a card came in, a message added to a task of another request leaves that task where it is', async () => {
+  const env = boardBoot();
+  const { h, api } = env;
+  const sid = await api.userSend(env.atlas, 'Fix the login bug');
+  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', need: 'Login fixed' } }] });
+  const card = await api.request('POST', '/needs/create', { title: 'Release notes for 2.4' });
+  await api.userSend(env.atlas, 'Also check Safari');
+  const [more, notes] = await h.step(sid, {
+    calls: [
+      { name: 'bot_send_message', args: { ticket: a.ticket.id, text: 'Check Safari too.' } },
+      { name: 'bot_send_message', args: { to: '@scout', text: 'Write the 2.4 release notes.', need: card.id } },
+    ],
+  });
+  assert.equal(more.need.id, a.need.id, 'the login task stays with its request');
+  assert.equal(notes.need.id, card.id, 'the new work counts toward the card');
+  assert.deepEqual((await api.request('GET', `/needs/${a.need.id}`)).asks.map((x) => x.text), ['Fix the login bug', 'Also check Safari']);
+  env.dispose();
+});
+
+test('board: the dispatcher names a card by its reference; a card in To do is the person\'s to start; a turn with cards and other words must say which', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  await api.request('POST', '/projects/save', { project: { name: 'One-person company', key: 'OPC' } });
+  const later = await api.request('POST', '/needs/create', { title: 'FAQ page', projectId: 'OPC', start: false });
+  const sid = await api.userSend(env.atlas, 'Fix the login bug');
+  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', need: 'Login fixed', project: 'OPC' } }] });
+  assert.equal((await api.request('GET', `/needs/${a.need.id}`)).ref, 'OPC-2');
+  // More work for a card, by its reference.
+  await api.userSend(env.atlas, 'Have Scout test it on Safari too');
+  const [b] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Test the login fix on Safari.', need: 'opc-2' } }] });
+  assert.equal(b.need.id, a.need.id);
+  await assert.rejects(call('bot_send_message', { to: '@scout', text: 'x', need: 'OPC-99' }, sid), /no card OPC-99 on the board/);
+  // A card the person keeps in To do is not started by the dispatcher.
+  const before = api.tickets.list().length;
+  await assert.rejects(call('bot_send_message', { to: '@scout', text: 'Write the FAQ.', need: later.id }, sid), /is a card the person keeps in To do/);
+  assert.equal(api.tickets.list().length, before);
+  // A card and another message in one turn: the dispatcher says which each task is for.
+  const card = await api.request('POST', '/needs/create', { title: 'Release notes for 2.4' });
+  await api.userSend(env.atlas, 'And book the venue');
+  await assert.rejects(h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes.' } }] }), /this turn has card n[a-z0-9]{8} "Release notes for 2\.4" and other messages from the person: pass `need`/);
+  const [notes, venue] = await h.step(sid, {
+    claim: [],
+    calls: [
+      { name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes.', need: card.id } },
+      { name: 'bot_send_message', args: { to: '@forge', text: 'Book the venue.', need: 'Venue booked' } },
+    ],
+  });
+  assert.equal(notes.need.id, card.id);
+  assert.notEqual(venue.need.id, card.id);
+  assert.deepEqual((await api.request('GET', `/needs/${card.id}`)).asks.map((x) => x.text), ['Release notes for 2.4'], 'the other message is not the card\'s');
+  // Two cards in one turn: the dispatcher names the one.
+  const c1 = await api.request('POST', '/needs/create', { title: 'Logo' });
+  const c2 = await api.request('POST', '/needs/create', { title: 'Banner' });
+  await assert.rejects(h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Draw it.' } }] }), /this turn has several cards from the board: pass `need` with the id of the one this task is for/);
+  const [logo] = await h.step(sid, { claim: [], calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Draw the logo.', need: c1.id } }] });
+  assert.equal(logo.need.id, c1.id);
+  assert.equal((await api.request('GET', `/needs/${c2.id}`)).total, 0);
+  env.dispose();
+});
+
+test('board: a card that fails to start again is left as it was; a removed project\'s tasks not started yet lose it', async () => {
+  const env = boardBoot();
+  const { h, api, folder } = env;
+  const card = await api.request('POST', '/needs/create', { title: 'Logo' });
+  const sid = api.store.find('atlas').sessionId;
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Draw the logo.' } }] });
+  assert.equal(r.need.id, card.id);
+  const dropped = await api.request('POST', `/needs/${card.id}/drop`, {});
+  assert.equal(dropped.status, 'stopped');
+  // The dispatcher cannot take it just now: the card stays dropped, with its marker.
+  const router = h.agentsById.get(sid);
+  const steer = router.steer;
+  router.steer = () => {
+    throw new Error('the conversation is gone');
+  };
+  await assert.rejects(api.request('POST', `/needs/${card.id}/start`, {}), /the conversation is gone/);
+  router.steer = steer;
+  const v = await api.request('GET', `/needs/${card.id}`);
+  assert.deepEqual([v.status, v.closed?.by], ['stopped', 'user']);
+  // A project removed while one of its tasks waits for a slot: that task works without it.
+  const { project } = await api.request('POST', '/projects/save', { project: { name: 'Website', dir: folder } });
+  // Every worker slot taken.
+  api.slots.setMax(1);
+  api.slots.acquire('tbusy0000');
+  const queued = await api.request('POST', '/needs/create', { title: 'Hero image', projectId: project.id, assignee: '@scout' });
+  const t = api.tickets.get(queued.tickets[0].id);
+  assert.deepEqual([t.projectId, t.sessionId], [project.id, null]);
+  await api.request('POST', '/projects/delete', { id: project.id });
+  assert.equal(api.tickets.get(t.id).projectId, undefined);
+  env.dispose();
+});
+
+test('board: a task whose project folder is gone fails to start and says why', async () => {
+  const env = boardBoot();
+  const { api, folder } = env;
+  const { project } = await api.request('POST', '/projects/save', { project: { name: 'Website', dir: folder } });
+  rmSync(folder, { recursive: true });
+  const card = await api.request('POST', '/needs/create', { title: 'Hero image', projectId: project.id, assignee: '@forge' });
+  assert.equal(card.status, 'failed');
+  assert.match(api.tickets.get(card.tickets[0].id).error, /did not start: the folder of project WEB, .*, is gone; set another one on the board/);
   env.dispose();
 });

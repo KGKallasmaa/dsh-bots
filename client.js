@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.11.1';
+    const BOTS_VERSION = '0.12.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -690,6 +690,10 @@ select.dshb-input{padding-right:6px}
 .dshb-tab[data-active=true]{color:${C.primary}}
 .dshb-tab[data-active=true]::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:${C.label}}
 .dshb-card{border:1px solid ${C.border1};border-radius:12px;background:${C.layer1};padding:12px 14px}
+.dshb-board-card{background:${C.base};transition:border-color .12s,box-shadow .12s}
+.dshb-board-card:hover{border-color:${tint(C.label, 45)}}
+.dshb-board-card:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
+.dshb-board-card[draggable=true]:active{cursor:grabbing}
 .dshb-chip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:999px;border:1px solid ${C.border};background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};cursor:pointer;white-space:nowrap;transition:all .12s}
 .dshb-chip:hover{color:${C.primary};background:${C.hover}}
 .dshb-chip[data-active=true]{color:${C.label};border-color:${C.label};background:${tint(C.label, 10)}}
@@ -1665,15 +1669,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       if (between || m.kind === 'system') return h(BotTraffic, { t, items: [m], level: botMessagesLevel() });
       if (mine) {
         const state = m.pending || m.failed ? h(SendState, { t, m, onRetry }) : null;
+        // A card started from the board (Bots 0.12): its reference opens it there.
+        const card = m.card && typeof m.card === 'object' && typeof m.card.id === 'string' ? m.card : null;
         return h(
           'div',
           { 'data-dsh-bots-msg': 'user', 'data-dsh-bots-msg-id': m.id, 'data-local': m.local ? 'true' : undefined, className: 'dshb-msg dshb-fade', style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, marginTop: grouped ? 0 : 6 } },
-          grouped && !moved
+          grouped && !moved && !card
             ? null
             : h(
                 'span',
                 { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' } },
                 moved ? h(Badge, { color: C.muted, 'data-dsh-bots-moved-in': m.id }, Icon.layers(10), t('movedIn')) : null,
+                card ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-msg-card': card.id, title: str(card.title), onClick: () => navigate(null, 'needs', card.id), style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4 } }, Icon.target(10), card.ref ? t('cardFromBoardRef', { ref: card.ref }) : t('cardFromBoard')) : null,
                 m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via, t), who: str(m.who) || t('you') })) : null,
                 m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time,
                 // A message from a chat that went straight to the task it follows up on.
@@ -3099,7 +3106,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     function viaBadge(t, via, who) {
       if (!via || typeof via !== 'string') return null;
       if (via === 'schedule') return h(Badge, { color: C.warn, 'data-dsh-bots-task-via': via }, t('trigger_schedule'));
-      const label = via === 'panel' ? t('viaPanel') : channelName(via, t);
+      const label = via === 'panel' ? t('viaPanel') : via === 'board' ? t('viaBoard') : channelName(via, t);
       return h(Badge, { color: CHANNEL_COLORS[via] ?? C.muted, 'data-dsh-bots-task-via': via }, who ? `${label} · ${str(who)}` : label);
     }
     const BotFace = ({ id, size }) => {
@@ -3401,86 +3408,385 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
 
     // --- needs: what the person asked for, one level above the tasks (Bots 0.11) ------------------
 
-    const NEED_COLOR = { waiting: C.warn, working: C.ok, failed: C.error, done: C.label, stopped: C.muted };
-    /** The board's group of a need: what needs you (a question, or it did not get done), what moves, what finished, what was dropped. */
-    const needGroupOf = (r) => (r?.status === 'waiting' || r?.status === 'failed' ? 'needs' : r?.status === 'done' ? 'done' : r?.status === 'stopped' ? 'stopped' : 'working');
-    const needIcon = (status) => (status === 'waiting' ? Icon.question(14) : status === 'failed' ? Icon.alert(14) : status === 'done' ? Icon.check(14) : status === 'stopped' ? Icon.stop(12) : Icon.target(14));
+    const NEED_COLOR = { waiting: C.warn, working: C.ok, failed: C.error, done: C.label, stopped: C.muted, todo: C.muted };
+    /** The board's column of a card (Bots 0.12): To do, In progress, what waits for you (a question, or it did not get done), Done; dropped ones fold away. */
+    const needGroupOf = (r) => (r?.status === 'todo' ? 'todo' : r?.status === 'waiting' || r?.status === 'failed' ? 'needs' : r?.status === 'done' ? 'done' : r?.status === 'stopped' ? 'stopped' : 'working');
+    const needIcon = (status) => (status === 'waiting' ? Icon.question(14) : status === 'failed' ? Icon.alert(14) : status === 'done' ? Icon.check(14) : status === 'stopped' ? Icon.stop(12) : status === 'todo' ? Icon.clock(14) : Icon.target(14));
     const needRows = (data) => (Array.isArray(data?.items) ? data.items : []).filter((r) => r && typeof r.id === 'string' && typeof r.status === 'string');
+    const projectRows = (data) => (Array.isArray(data?.items) ? data.items : []).filter((p) => p && typeof p.id === 'string' && typeof p.key === 'string');
     /** A need's status as a badge; one in progress with several tasks says how many are done. */
     function NeedChip({ t, row }) {
       const color = NEED_COLOR[row?.status] ?? C.muted;
       const label = row?.status === 'working' && Number(row.total) > 1 ? t('needWorkingOf', { done: Number(row.done) || 0, total: Number(row.total) }) : t(`need_${row?.status ?? 'working'}`);
       return h(Badge, { color, 'data-dsh-bots-need-status': row?.status }, row?.status === 'working' ? h(StatusDot, { status: 'running', size: 6 }) : null, label);
     }
-    /** One need on the board: what you asked for, how far it got, who works on it, and the latest word. */
-    function NeedRow({ t, row, onOpen }) {
+    /** A card's reference on the board (`OPC-12`), as a small chip. */
+    const CardRef = ({ text, ...rest }) =>
+      text ? h('span', { className: 'dshb-mono', ...rest, style: { fontSize: TINY, color: C.muted, padding: '0 5px', borderRadius: 5, border: `1px solid ${C.border1}`, background: C.layer2, flex: 'none', lineHeight: '17px', whiteSpace: 'nowrap' } }, text) : null;
+    /** What dropping a card on a column does: start one in To do (or a dropped one), or mark one done; '' when it cannot go there. */
+    const dropAction = (row, column) => {
+      if (!row) return '';
+      if (column === 'working' && (row.status === 'todo' || row.status === 'stopped')) return 'start';
+      if (column === 'done' && row.status !== 'done' && row.status !== 'stopped') return 'done';
+      return '';
+    };
+    /** One card on the board: its reference and title, how far it got, who works on it, the latest word. It can be dragged to another column. */
+    function BoardCard({ t, row, onOpen, onDrag }) {
       const latest = row.latest && typeof row.latest === 'object' && str(row.latest.preview).trim() ? row.latest : null;
       const bots = (Array.isArray(row.bots) ? row.bots : []).filter((b) => typeof b === 'string').slice(0, 4);
       const when = row.status === 'done' && row.endedAt ? t('needDelivered', { when: fmtAgo(t, row.endedAt) }) : fmtAgo(t, row.updatedAt);
+      const chip = row.status === 'waiting' || row.status === 'failed' || (row.status === 'working' && Number(row.total) > 1);
       return h(
-        'button',
-        { type: 'button', className: 'dshb-row', 'data-dsh-bots-need': row.id, 'data-status': row.status, onClick: () => onOpen(row.id), style: { alignItems: 'flex-start', padding: '10px 10px' } },
-        h('span', { style: { width: 30, height: 30, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none', background: tint(NEED_COLOR[row.status] ?? C.muted, 14), color: NEED_COLOR[row.status] ?? C.muted } }, needIcon(row.status)),
+        'div',
+        {
+          role: 'button',
+          tabIndex: 0,
+          className: 'dshb-card dshb-board-card',
+          'data-dsh-bots-need': row.id,
+          'data-status': row.status,
+          draggable: Boolean(onDrag),
+          onDragStart: (e) => {
+            try {
+              e.dataTransfer?.setData('text/plain', row.id);
+              if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+            } catch {
+              // The column knows the card from the state.
+            }
+            onDrag?.(row);
+          },
+          onDragEnd: () => onDrag?.(null),
+          onClick: () => onOpen(row.id),
+          onKeyDown: (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault?.();
+              onOpen(row.id);
+            }
+          },
+          style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', cursor: 'pointer', minWidth: 0 },
+        },
+        row.ref || chip
+          ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' } }, h(CardRef, { text: row.ref, 'data-dsh-bots-need-ref': row.ref }), chip ? h(NeedChip, { t, row }) : null)
+          : null,
+        h('div', { style: { fontWeight: 600, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere' } }, str(row.title).trim() || t('untitledTask')),
+        latest
+          ? h(
+              'div',
+              { 'data-dsh-bots-need-latest': latest.status, style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
+              // A delivered card says "done" by its column.
+              row.status === 'done' ? null : h(ReportChip, { t, status: latest.status }),
+              h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, str(latest.preview)),
+            )
+          : null,
+        Number(row.failed) > 0 && row.status !== 'failed' ? h('span', { 'data-dsh-bots-need-failed': row.failed, style: { fontSize: TINY, color: C.error } }, t('needSomeFailed', { n: Number(row.failed) })) : null,
+        Number(row.stalled) > 0 && row.status === 'working' ? h('span', { 'data-dsh-bots-need-stalled': row.stalled, style: { fontSize: TINY, color: C.warn } }, t('needSomeStalled', { n: Number(row.stalled) })) : null,
         h(
-          'span',
-          { style: { display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 } },
-          h(
-            'span',
-            { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } },
-            h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 } }, str(row.title).trim() || t('untitledTask')),
-            h(NeedChip, { t, row }),
-          ),
-          h(
-            'span',
-            { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0, flexWrap: 'wrap' } },
-            bots.length ? h('span', { 'data-dsh-bots-need-bots': bots.length, style: { display: 'inline-flex', alignItems: 'center', gap: 2 } }, bots.map((b) => h(BotFace, { key: b, id: b, size: 16 }))) : null,
-            bots.length ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } }, bots.map((b) => botName(t, b)).join('、')) : null,
-            bots.length ? dotSep() : null,
-            viaBadge(t, row.via, row.who),
-            h('span', { style: { color: C.faint }, title: fmtDate(toMs(row.updatedAt)) }, when),
-          ),
-          latest
-            ? h(
-                'span',
-                { 'data-dsh-bots-need-latest': latest.status, style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
-                // A delivered need says "done" once, on its own chip.
-                row.status === 'done' ? null : h(ReportChip, { t, status: latest.status }),
-                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, str(latest.preview)),
-              )
-            : str(row.asked).trim()
-              ? h('span', { style: { fontSize: TINY, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, t('needYouSaid', { text: str(row.asked) }))
-              : null,
-          Number(row.failed) > 0 && row.status !== 'failed' ? h('span', { 'data-dsh-bots-need-failed': row.failed, style: { fontSize: TINY, color: C.error } }, t('needSomeFailed', { n: Number(row.failed) })) : null,
-          Number(row.stalled) > 0 && row.status === 'working' ? h('span', { 'data-dsh-bots-need-stalled': row.stalled, style: { fontSize: TINY, color: C.warn } }, t('needSomeStalled', { n: Number(row.stalled) })) : null,
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0, flexWrap: 'wrap' } },
+          bots.length ? h('span', { 'data-dsh-bots-need-bots': bots.length, title: bots.map((b) => botName(t, b)).join('、'), style: { display: 'inline-flex', alignItems: 'center', gap: 2 } }, bots.map((b) => h(BotFace, { key: b, id: b, size: 16 }))) : null,
+          bots.length === 1 ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 } }, botName(t, bots[0])) : null,
+          viaBadge(t, row.via, row.who),
+          h('span', { style: { color: C.faint, marginLeft: 'auto' }, title: fmtDate(toMs(row.updatedAt)) }, when),
         ),
       );
     }
-    /** Every request of the person's: what waits for them, what moves, what was delivered (the tasks stay one level down). */
-    function NeedsView({ t, onOpen, onTasks }) {
-      const { data, failed } = useJson('needs?limit=300', STATE_POLL_MS);
+    /** One column of the board; while a card is dragged, the columns it may go to are marked, and dropping it there acts. */
+    function BoardColumn({ t, col, rows, count, dragging, over, onOver, onDropCard, onOpen, onDrag, children }) {
+      const action = dropAction(dragging, col.id);
+      const lit = Boolean(action) && over === col.id;
+      return h(
+        'div',
+        {
+          'data-dsh-bots-need-group': col.id,
+          'data-count': rows.length,
+          'data-drop': action || undefined,
+          onDragOver: (e) => {
+            if (!action) return;
+            e.preventDefault?.();
+            if (over !== col.id) onOver(col.id);
+          },
+          onDragLeave: (e) => {
+            if (e.currentTarget?.contains?.(e.relatedTarget)) return;
+            if (over === col.id) onOver(null);
+          },
+          onDrop: (e) => {
+            e.preventDefault?.();
+            onOver(null);
+            if (action) onDropCard(dragging, action);
+          },
+          style: {
+            flex: '1 0 240px',
+            minWidth: 240,
+            maxWidth: 420,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            padding: 8,
+            borderRadius: 12,
+            background: lit ? tint(C.label, 12) : C.layer1,
+            border: `1px ${action ? 'dashed' : 'solid'} ${action ? tint(C.label, lit ? 80 : 45) : C.border1}`,
+            transition: 'background .12s, border-color .12s',
+          },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px', fontSize: SMALL, fontWeight: 600 } },
+          h('span', { style: { color: NEED_COLOR[col.status] ?? C.muted, display: 'inline-flex' } }, needIcon(col.status)),
+          col.title,
+          h('span', { style: { fontWeight: 500, color: C.faint } }, count ?? rows.length),
+          action ? h('span', { style: { marginLeft: 'auto', fontSize: TINY, fontWeight: 500, color: C.label } }, t(action === 'start' ? 'boardDropStart' : 'boardDropDone')) : null,
+        ),
+        rows.length === 0 ? h('div', { style: { fontSize: TINY, color: C.faint, padding: '4px 4px 8px', lineHeight: 1.5 } }, col.empty) : rows.map((r) => h(BoardCard, { key: r.id, t, row: r, onOpen, onDrag })),
+        children ?? null,
+      );
+    }
+    /** The person files a card (Bots 0.12): a title, what it is about, its project, and who takes it, now or later. */
+    function CardForm({ t, bots, primaryId, projects, project, toast, onClose, onCreated }) {
+      const [title, setTitle] = useState('');
+      const [description, setDescription] = useState('');
+      const [pid, setPid] = useState(project && project !== 'none' ? project : '');
+      const [who, setWho] = useState('');
+      const [busy, setBusy] = useState(false);
+      const front = bots.find((b) => b.id === primaryId) ?? null;
+      const mates = bots.filter((b) => b.id !== primaryId);
+      const submit = (start) => {
+        if (busy || !title.trim()) return;
+        setBusy(true);
+        void postJson('needs/create', { title: title.trim(), description, projectId: pid, assignee: start ? who : '', start })
+          .then((r) => {
+            if (r && r.ok !== false) {
+              if (r.startError) toast(t('cardNotStarted', { reason: r.startError }), 'error');
+              else toast(start ? t('cardStarted') : t('cardFiled'));
+              onCreated?.(r);
+              onClose();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setBusy(false));
+      };
+      return h(
+        Modal,
+        {
+          title: t('newCard'),
+          closeLabel: t('close'),
+          width: 560,
+          onClose,
+          footer: [
+            h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
+            h(Btn, { key: 'l', disabled: busy || !title.trim(), onClick: () => submit(false), 'data-dsh-bots-card-later': true }, t('cardLater')),
+            h(Btn, { key: 's', kind: 'primary', disabled: busy || !title.trim() || !front, onClick: () => submit(true), 'data-dsh-bots-card-start': true }, t('cardStart')),
+          ],
+        },
+        h(
+          Field,
+          { label: t('cardTitle') },
+          h(Input, {
+            value: title,
+            maxLength: 80,
+            autoFocus: true,
+            placeholder: t('cardTitlePlaceholder'),
+            'data-dsh-bots-card-title': true,
+            onChange: (e) => setTitle(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) submit(true);
+            },
+          }),
+        ),
+        h(Field, { label: t('cardDescription'), hint: t('cardDescriptionHint') }, h(TextArea, { value: description, rows: 6, maxLength: 20000, placeholder: t('cardDescriptionPlaceholder'), 'data-dsh-bots-card-description': true, onChange: (e) => setDescription(e.target.value) })),
+        h(
+          'div',
+          { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
+          h(
+            Field,
+            { label: t('cardProject'), style: { flex: '1 1 200px' } },
+            h(
+              'select',
+              { className: 'dshb-input', value: pid, onChange: (e) => setPid(e.target.value), 'data-dsh-bots-card-project': true },
+              h('option', { value: '' }, t('noProject')),
+              projects.map((p) => h('option', { key: p.id, value: p.id }, `${p.key} · ${p.name}`)),
+            ),
+          ),
+          mates.length
+            ? h(
+                Field,
+                { label: t('cardAssignee'), style: { flex: '1 1 200px' } },
+                h(
+                  'select',
+                  { className: 'dshb-input', value: who, onChange: (e) => setWho(e.target.value), 'data-dsh-bots-card-assignee': true },
+                  h('option', { value: '' }, t('cardToDispatcher', { name: front?.name ?? t('dispatcher') })),
+                  mates.map((b) => h('option', { key: b.id, value: b.id }, `${b.name} (@${b.handle})`)),
+                ),
+              )
+            : null,
+        ),
+        h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, who ? t('cardDirectHint') : t('cardDispatcherHint')),
+      );
+    }
+    /** The projects cards are filed under (Bots 0.12): list, add, change and remove them. */
+    function ProjectsModal({ t, projects, toast, onClose, onChanged }) {
+      const [editing, setEditing] = useState(null);
+      const [form, setForm] = useState({ name: '', key: '', dir: '', brief: '' });
+      const [error, setError] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [removing, setRemoving] = useState(null);
+      const edit = (p) => {
+        setEditing(p ?? {});
+        setForm({ name: p?.name ?? '', key: p?.key ?? '', dir: p?.dir ?? '', brief: p?.brief ?? '' });
+        setError('');
+      };
+      const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+      const save = () => {
+        if (busy || !form.name.trim()) return;
+        setBusy(true);
+        void postJson('projects/save', { project: { ...(editing?.id ? { id: editing.id } : {}), ...form } })
+          .then((r) => {
+            if (r && r.ok !== false) {
+              toast(t('projectSaved'));
+              setEditing(null);
+              onChanged();
+            } else setError(r?.reason || t('actionFailed'));
+          })
+          .finally(() => setBusy(false));
+      };
+      const remove = (p) =>
+        postJson('projects/delete', { id: p.id }).then((r) => {
+          if (r && r.ok !== false) {
+            toast(t('projectRemoved', { n: Number(r.cards) || 0 }));
+            onChanged();
+          } else toast(r?.reason || t('actionFailed'), 'error');
+        });
+      const body = editing
+        ? h(
+            'div',
+            { 'data-dsh-bots-project-form': editing.id ?? 'new', style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+            h(
+              'div',
+              { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
+              h(Field, { label: t('projectName'), style: { flex: '2 1 220px' } }, h(Input, { value: form.name, maxLength: 60, autoFocus: true, 'data-dsh-bots-project-name': true, onChange: set('name') })),
+              h(Field, { label: t('projectKey'), style: { flex: '1 1 120px' } }, h(Input, { value: form.key, maxLength: 6, mono: true, placeholder: t('projectKeyAuto'), 'data-dsh-bots-project-key': true, onChange: set('key') })),
+            ),
+            h('div', { style: { fontSize: TINY, color: C.faint, marginTop: -8 } }, t('projectKeyHint')),
+            h(Field, { label: t('projectDir'), hint: t('projectDirHint') }, h(Input, { value: form.dir, mono: true, placeholder: '~/code/app', 'data-dsh-bots-project-dir': true, onChange: set('dir') })),
+            h(Field, { label: t('projectBrief'), hint: t('projectBriefHint') }, h(TextArea, { value: form.brief, rows: 6, maxLength: 4000, placeholder: t('projectBriefPlaceholder'), 'data-dsh-bots-project-brief': true, onChange: set('brief') })),
+            error ? h('div', { 'data-dsh-bots-project-error': true, style: { fontSize: SMALL, color: C.error } }, error) : null,
+          )
+        : h(
+            'div',
+            { 'data-dsh-bots-projects': projects.length, style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+            h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('projectsIntro')),
+            projects.length === 0
+              ? h('div', { style: { fontSize: SMALL, color: C.faint, padding: '8px 0' } }, t('projectsEmpty'))
+              : projects.map((p) =>
+                  h(
+                    'div',
+                    { key: p.id, className: 'dshb-card', 'data-dsh-bots-project': p.id, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px' } },
+                    h(CardRef, { text: p.key }),
+                    h(
+                      'div',
+                      { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+                      h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.name),
+                      h('span', { className: p.dir ? 'dshb-mono' : '', style: { fontSize: TINY, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.dir || t('projectNoDir')),
+                    ),
+                    h(Btn, { size: 'sm', icon: Icon.edit(12), onClick: () => edit(p), 'data-dsh-bots-project-edit': p.id }, t('edit')),
+                    h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.trash(12), title: t('projectRemove'), onClick: () => setRemoving(p), 'data-dsh-bots-project-remove': p.id }),
+                  ),
+                ),
+          );
+      return h(
+        Modal,
+        {
+          title: editing ? (editing.id ? t('projectEditTitle', { key: editing.key }) : t('projectNew')) : t('projects'),
+          closeLabel: t('close'),
+          width: 560,
+          onClose,
+          footer: editing
+            ? [h(Btn, { key: 'b', onClick: () => setEditing(null) }, t('cancel')), h(Btn, { key: 's', kind: 'primary', disabled: busy || !form.name.trim(), onClick: save, 'data-dsh-bots-project-save': true }, t('save'))]
+            : [h(Btn, { key: 'n', icon: Icon.plus(12), onClick: () => edit(null), 'data-dsh-bots-project-new': true }, t('projectNew')), h(Btn, { key: 'c', kind: 'primary', onClick: onClose }, t('close'))],
+        },
+        body,
+        removing
+          ? h(Confirm, {
+              t,
+              title: t('projectRemoveTitle', { name: removing.name }),
+              body: t('projectRemoveBody'),
+              confirmLabel: t('projectRemove'),
+              onClose: () => setRemoving(null),
+              onConfirm: () => remove(removing),
+            })
+          : null,
+      );
+    }
+    /**
+     * The board (Bots 0.12): every request of the person's as a card, in columns (To do, In progress,
+     * Waiting for you, Done; dropped ones folded), filtered by project. File a card here or ask in the
+     * chat; drag one to In progress to start it, or to Done to mark it done.
+     */
+    function NeedsView({ t, bots = [], primaryId = null, toast = () => {}, onOpen, onTasks }) {
+      const { data, failed, reload } = useJson('needs?limit=300', STATE_POLL_MS);
+      const { data: pdata, reload: reloadProjects } = useJson('projects', STATE_POLL_MS * 6);
       const [doneShown, setDoneShown] = useState(DONE_PAGE);
       const [showStopped, setShowStopped] = useState(false);
-      const items = needRows(data);
+      const [filter, setFilter] = useState('');
+      const [creating, setCreating] = useState(false);
+      const [managing, setManaging] = useState(false);
+      const [dragging, setDragging] = useState(null);
+      const [over, setOver] = useState(null);
+      const [confirm, setConfirm] = useState(null);
+      const projects = projectRows(pdata);
+      const all = needRows(data);
+      const unfiled = all.filter((r) => !r.ref).length;
+      const items = all.filter((r) => !filter || (filter === 'none' ? !r.ref : r.projectId === filter));
       const byNewest = (a, b) => (toMs(b.updatedAt) || 0) - (toMs(a.updatedAt) || 0);
-      const groups = [
-        { id: 'needs', title: t('needsYou'), empty: t('needsYouEmpty') },
-        { id: 'working', title: t('needsWorking'), empty: t('needsWorkingEmpty') },
-        { id: 'done', title: t('needsDone'), empty: t('needsDoneEmpty') },
+      const columns = [
+        { id: 'todo', status: 'todo', title: t('boardTodo'), empty: t('boardTodoEmpty') },
+        { id: 'working', status: 'working', title: t('needsWorking'), empty: t('needsWorkingEmpty') },
+        { id: 'needs', status: 'waiting', title: t('needsYou'), empty: t('needsYouEmpty') },
+        { id: 'done', status: 'done', title: t('needsDone'), empty: t('needsDoneEmpty') },
       ].map((g) => ({ ...g, rows: items.filter((r) => needGroupOf(r) === g.id).sort(byNewest) }));
       const stopped = items.filter((r) => needGroupOf(r) === 'stopped').sort(byNewest);
-      const doneCount = groups[2].rows.length;
-      groups[2].rows = groups[2].rows.slice(0, doneShown);
+      const done = columns[3];
+      const doneCount = done.rows.length;
+      done.rows = done.rows.slice(0, doneShown);
       // This week, as the person counts it: what they asked for since, and where it stands.
       const since = Date.now() - 7 * 86_400_000;
       const week = items.filter((r) => (toMs(r.createdAt) || 0) >= since);
       const weekOf = (fn) => week.filter(fn).length;
+      const act = (row, action) =>
+        postJson(`needs/${encodeURIComponent(row.id)}/${action}`, {}).then((r) => {
+          if (r && r.ok !== false) {
+            toast(t(action === 'start' ? 'cardStarted' : 'cardMarkedDone'));
+            void reload();
+            void refreshState();
+          } else toast(r?.reason || t('actionFailed'), 'error');
+        });
+      // Done closes the tasks still under way: asked first.
+      const dropCard = (row, action) => {
+        setDragging(null);
+        if (action === 'done' && (row.status === 'working' || row.status === 'waiting' || row.status === 'failed')) setConfirm(row);
+        else void act(row, action);
+      };
+      const chip = (id, label, n) =>
+        h(
+          'button',
+          { key: id || 'all', type: 'button', className: 'dshb-chip', 'data-dsh-bots-board-filter': id || 'all', 'data-active': filter === id, onClick: () => setFilter(id), style: { flex: 'none' } },
+          label,
+          n !== undefined ? h('span', { style: { color: C.faint } }, n) : null,
+        );
       let body;
-      if (!data && items.length === 0) body = h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('needsUnavailable') : t('loading'));
-      else if (items.length === 0) body = h(Empty, { icon: Icon.target(28), title: t('needsEmptyTitle'), body: t('needsEmptyBody') });
+      if (!data && all.length === 0) body = h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('needsUnavailable') : t('loading'));
+      else if (all.length === 0 && projects.length === 0)
+        body = h(Empty, { icon: Icon.target(28), title: t('needsEmptyTitle'), body: t('needsEmptyBody'), action: h(Btn, { kind: 'primary', icon: Icon.plus(12), onClick: () => setCreating(true), 'data-dsh-bots-board-new-empty': true }, t('newCard')) });
       else {
         body = h(
           'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: 24 } },
+          { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+          projects.length
+            ? h(
+                'div',
+                { 'data-dsh-bots-board-filters': projects.length, style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+                chip('', t('allProjects'), all.length),
+                projects.map((p) => chip(p.id, [h(CardRef, { key: 'k', text: p.key }), h('span', { key: 'n' }, p.name)], all.filter((r) => r.projectId === p.id).length)),
+                unfiled ? chip('none', t('noProject'), unfiled) : null,
+              )
+            : null,
           week.length
             ? h(
                 'div',
@@ -3488,14 +3794,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 t('needsWeek', { n: week.length, done: weekOf((r) => r.status === 'done'), working: weekOf((r) => r.status === 'working'), waiting: weekOf((r) => needGroupOf(r) === 'needs') }),
               )
             : null,
-          groups.map((g) =>
-            h(
-              'div',
-              { key: g.id, 'data-dsh-bots-need-group': g.id, 'data-count': g.rows.length },
+          h(
+            'div',
+            { 'data-dsh-bots-board': true, style: { display: 'flex', gap: 12, alignItems: 'flex-start', overflowX: 'auto', paddingBottom: 6 } },
+            columns.map((g) =>
               h(
-                Section,
-                { title: [g.title, h('span', { key: 'n', style: { marginLeft: 6, fontWeight: 500, color: C.faint } }, g.id === 'done' ? doneCount : g.rows.length)] },
-                g.rows.length === 0 ? h('div', { style: { fontSize: SMALL, color: C.faint, padding: '2px 2px 4px' } }, g.empty) : h(TaskList, { attr: 'data-dsh-bots-need-list', rows: g.rows.map((r) => h(NeedRow, { key: r.id, t, row: r, onOpen })) }),
+                BoardColumn,
+                { key: g.id, t, col: g, rows: g.rows, count: g.id === 'done' ? doneCount : undefined, dragging, over, onOver: setOver, onDropCard: dropCard, onOpen, onDrag: setDragging },
                 g.id === 'done' && doneCount > doneShown ? h('div', null, h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setDoneShown((n) => n + DONE_PAGE), 'data-dsh-bots-needs-more': true }, t('showMore'))) : null,
               ),
             ),
@@ -3505,7 +3810,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 'div',
                 { 'data-dsh-bots-need-group': 'stopped', 'data-count': stopped.length },
                 h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setShowStopped((x) => !x), 'data-dsh-bots-needs-stopped': true }, showStopped ? t('needsHideStopped') : t('needsShowStopped', { n: stopped.length })),
-                showStopped ? h('div', { style: { marginTop: 8 } }, h(TaskList, { attr: 'data-dsh-bots-need-list', rows: stopped.map((r) => h(NeedRow, { key: r.id, t, row: r, onOpen })) })) : null,
+                showStopped ? h('div', { style: { marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 8 } }, stopped.map((r) => h(BoardCard, { key: r.id, t, row: r, onOpen, onDrag: setDragging }))) : null,
               )
             : null,
         );
@@ -3515,21 +3820,44 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         { 'data-dsh-bots-needs': true, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '18px 24px 12px', borderBottom: `1px solid ${C.border1}` } },
-          h('span', { style: { width: 44, height: 44, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label } }, Icon.target(20)),
-          h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { style: { fontWeight: 700, fontSize: 17 } }, t('needs')), h('div', { style: { fontSize: SMALL, color: C.muted } }, t('needsSub'))),
-          onTasks ? h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.tasks(13), onClick: onTasks, 'data-dsh-bots-needs-tasks': true }, t('needsAllTasks')) : null,
+          { style: { display: 'flex', alignItems: 'center', gap: 12, padding: '18px 24px 12px', borderBottom: `1px solid ${C.border1}`, flexWrap: 'wrap' } },
+          h('span', { style: { width: 44, height: 44, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.target(20)),
+          h('div', { style: { flex: '1 1 220px', minWidth: 0 } }, h('div', { style: { fontWeight: 700, fontSize: 17 } }, t('needs')), h('div', { style: { fontSize: SMALL, color: C.muted } }, t('needsSub'))),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+            onTasks ? h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.tasks(13), onClick: onTasks, 'data-dsh-bots-needs-tasks': true }, t('needsAllTasks')) : null,
+            h(Btn, { size: 'sm', icon: Icon.folder(13), onClick: () => setManaging(true), 'data-dsh-bots-board-projects': true }, t('projects')),
+            h(Btn, { size: 'sm', kind: 'primary', icon: Icon.plus(12), onClick: () => setCreating(true), 'data-dsh-bots-board-new': true }, t('newCard')),
+          ),
         ),
-        h('div', { className: 'dshb-scroll', style: { flex: 1, padding: '18px 24px 28px' } }, h('div', { style: { maxWidth: 900, margin: '0 auto' } }, body)),
+        h('div', { className: 'dshb-scroll', style: { flex: 1, padding: '16px 24px 28px' } }, body),
+        creating ? h(CardForm, { t, bots, primaryId, projects, project: filter, toast, onClose: () => setCreating(false), onCreated: () => (void reload(), void refreshState()) }) : null,
+        managing ? h(ProjectsModal, { t, projects, toast, onClose: () => setManaging(false), onChanged: () => (void reloadProjects(), void reload()) }) : null,
+        confirm
+          ? h(Confirm, {
+              t,
+              title: t('cardDoneTitle', { title: str(confirm.title) }),
+              body: t('cardDoneBody'),
+              confirmLabel: t('cardMarkDone'),
+              onClose: () => setConfirm(null),
+              onConfirm: () => act(confirm, 'done'),
+            })
+          : null,
       );
     }
 
     /** One request: what you said, what was delivered, what waits for you, and the tasks behind it. */
-    function NeedDetail({ t, id, toast, onBack, onOpenTask }) {
+    function NeedDetail({ t, id, bots = [], primaryId = null, toast, onBack, onOpenTask }) {
       const { data, failed, reload } = useJson(`needs/${encodeURIComponent(id)}`, STATE_POLL_MS);
+      const { data: pdata } = useJson('projects', STATE_POLL_MS * 6);
       const [confirm, setConfirm] = useState(false);
       const [draft, setDraft] = useState(null);
       const [busy, setBusy] = useState(false);
+      // The board (Bots 0.12): who a card in To do goes to, its description being edited, marking it done.
+      const [who, setWho] = useState('');
+      const [desc, setDesc] = useState(null);
+      const [confirmDone, setConfirmDone] = useState(false);
       const v = data && typeof data === 'object' && typeof data.id === 'string' ? data : null;
       const back = h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-needs-back': true, onClick: onBack, style: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: SMALL } }, Icon.back(12), t('allNeeds'));
       if (!v) {
@@ -3561,12 +3889,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         if (!title) return;
         void post('rename', { title }, t('needRenamed')).then((ok) => ok && setDraft(null));
       };
-      const asks = (Array.isArray(v.asks) ? v.asks : []).filter((a) => a && str(a.text).trim());
+      // A card filed on the board starts with its own text: the person's words are what they added since.
+      const asks = (Array.isArray(v.asks) ? v.asks : []).filter((a) => a && str(a.text).trim()).slice(v.via === 'board' ? 1 : 0);
       const results = (Array.isArray(v.results) ? v.results : []).filter((r) => r && str(r.text).trim());
       const tasks = (Array.isArray(v.tickets) ? v.tickets : []).filter((r) => r && typeof r.id === 'string');
       const waiting = new Set(Array.isArray(v.waiting) ? v.waiting : []);
       const asking = v.latest && waiting.has(v.latest.ticket) ? v.latest : null;
       const open = v.status === 'waiting' || v.status === 'working' || v.status === 'failed';
+      const projects = projectRows(pdata);
+      const startable = v.status === 'todo' || v.status === 'stopped';
+      const front = bots.find((b) => b.id === primaryId) ?? null;
+      const mates = bots.filter((b) => b.id !== primaryId);
+      const saveDesc = () => void post('save', { description: str(desc) }, t('cardSaved')).then((ok) => ok && setDesc(null));
       return h(
         'div',
         { 'data-dsh-bots-need-detail': v.id, 'data-status': v.status, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -3599,11 +3933,26 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     h(Btn, { kind: 'primary', size: 'sm', disabled: busy || !str(draft).trim(), onClick: saveTitle, 'data-dsh-bots-need-title-save': true }, t('save')),
                     h(Btn, { size: 'sm', onClick: () => setDraft(null) }, t('cancel')),
                   )
-                : h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } }, h('span', { 'data-dsh-bots-need-title': true, style: { fontWeight: 700, fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, str(v.title)), h(NeedChip, { t, row: v })),
+                : h(
+                    'div',
+                    { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } },
+                    h(CardRef, { text: v.ref, 'data-dsh-bots-need-ref': v.ref }),
+                    h('span', { 'data-dsh-bots-need-title': true, style: { fontWeight: 700, fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, str(v.title)),
+                    h(NeedChip, { t, row: v }),
+                  ),
               h(
                 'div',
                 { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: SMALL, color: C.muted, flexWrap: 'wrap' } },
-                h('span', { title: fmtDate(toMs(v.createdAt)) }, t('needAsked', { when: fmtAgo(t, v.createdAt) })),
+                // The project it is filed under; changing it gives the card a number there.
+                projects.length
+                  ? h(
+                      'select',
+                      { className: 'dshb-input', value: v.projectId ?? '', disabled: busy, 'aria-label': t('cardProject'), 'data-dsh-bots-need-project': v.id, onChange: (e) => void post('save', { projectId: e.target.value }, t('cardMoved')), style: { width: 'auto', maxWidth: 220, height: 26, fontSize: TINY } },
+                      h('option', { value: '' }, t('noProject')),
+                      projects.map((p) => h('option', { key: p.id, value: p.id }, `${p.key} · ${p.name}`)),
+                    )
+                  : null,
+                h('span', { title: fmtDate(toMs(v.createdAt)) }, t(v.via === 'board' ? 'cardFiledWhen' : 'needAsked', { when: fmtAgo(t, v.createdAt) })),
                 viaBadge(t, v.via, v.who),
                 v.status === 'done' && v.endedAt ? dotSep() : null,
                 v.status === 'done' && v.endedAt ? h('span', { title: fmtDate(toMs(v.endedAt)) }, t('needDelivered', { when: fmtAgo(t, v.endedAt) })) : null,
@@ -3613,8 +3962,19 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             h(
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+              // In To do (or dropped): who takes it, and Start.
+              startable && mates.length
+                ? h(
+                    'select',
+                    { className: 'dshb-input', value: who, disabled: busy, 'aria-label': t('cardAssignee'), 'data-dsh-bots-need-assignee': v.id, onChange: (e) => setWho(e.target.value), style: { width: 'auto', maxWidth: 200, height: 30, fontSize: SMALL } },
+                    h('option', { value: '' }, t('cardToDispatcher', { name: front?.name ?? t('dispatcher') })),
+                    mates.map((b) => h('option', { key: b.id, value: b.id }, `${b.name} (@${b.handle})`)),
+                  )
+                : null,
+              startable ? h(Btn, { kind: 'primary', icon: Icon.play(12), disabled: busy || !front, onClick: () => void post('start', { assignee: who }, t('cardStarted')), 'data-dsh-bots-need-start': v.id }, t('cardStart')) : null,
               draft === null ? h(Btn, { icon: Icon.edit(13), disabled: busy, onClick: () => setDraft(str(v.title)), 'data-dsh-bots-need-rename': v.id }, t('needRename')) : null,
-              open ? h(Btn, { kind: 'danger', icon: Icon.stop(12), disabled: busy, onClick: () => setConfirm(true), 'data-dsh-bots-need-drop': v.id }, t('needDrop')) : null,
+              open || v.status === 'todo' ? h(Btn, { icon: Icon.check(13), disabled: busy, onClick: () => (open ? setConfirmDone(true) : void post('done', {}, t('cardMarkedDone'))), 'data-dsh-bots-need-done': v.id }, t('cardMarkDone')) : null,
+              open || v.status === 'todo' ? h(Btn, { kind: 'danger', icon: Icon.stop(12), disabled: busy, onClick: () => setConfirm(true), 'data-dsh-bots-need-drop': v.id }, t('needDrop')) : null,
             ),
           ),
         ),
@@ -3633,7 +3993,26 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   h('div', null, h(Btn, { kind: 'primary', size: 'sm', onClick: () => onOpenTask(asking.ticket), 'data-dsh-bots-need-answer': asking.ticket }, t('needAnswer'))),
                 )
               : null,
-            h(
+            // What the card is about, as the person wrote it on the board (Bots 0.12).
+            v.description || desc !== null || v.via === 'board'
+              ? h(
+                  Section,
+                  { title: t('cardDescription'), right: desc === null ? h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.edit(12), onClick: () => setDesc(str(v.description)), 'data-dsh-bots-need-describe': v.id }, t('edit')) : null },
+                  desc !== null
+                    ? h(
+                        'div',
+                        { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                        h(TextArea, { value: desc, rows: 6, maxLength: 20000, autoFocus: true, 'data-dsh-bots-need-description-input': true, onChange: (e) => setDesc(e.target.value) }),
+                        h('div', { style: { display: 'flex', gap: 6 } }, h(Btn, { kind: 'primary', size: 'sm', disabled: busy, onClick: saveDesc, 'data-dsh-bots-need-description-save': true }, t('save')), h(Btn, { size: 'sm', onClick: () => setDesc(null) }, t('cancel'))),
+                      )
+                    : v.description
+                      ? h('div', { 'data-dsh-bots-need-description': true, style: { fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: str(v.description), lines: 12 }))
+                      : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('cardNoDescription')),
+                )
+              : null,
+            v.via === 'board' && asks.length === 0
+              ? null
+              : h(
               Section,
               { title: t('needYourWords') },
               asks.length === 0
@@ -3686,6 +4065,19 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               onConfirm: () => {
                 setConfirm(false);
                 void post('drop', {}, t('needDropped'));
+              },
+            })
+          : null,
+        confirmDone
+          ? h(Confirm, {
+              t,
+              title: t('cardDoneTitle', { title: str(v.title) }),
+              body: t('cardDoneBody'),
+              confirmLabel: t('cardMarkDone'),
+              onClose: () => setConfirmDone(false),
+              onConfirm: () => {
+                setConfirmDone(false);
+                void post('done', {}, t('cardMarkedDone'));
               },
             })
           : null,
@@ -3795,6 +4187,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h('span', null, requesterText(t, v)),
                 dotSep(),
                 h('span', { title: fmtDate(toMs(v.createdAt)) }, t('taskStarted', { when: fmtAgo(t, v.createdAt) })),
+                // The card on the board it serves (Bots 0.12).
+                v.need && typeof v.need === 'object' && typeof v.need.id === 'string' ? dotSep() : null,
+                v.need && typeof v.need === 'object' && typeof v.need.id === 'string'
+                  ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-ticket-card': v.need.id, title: str(v.need.title), onClick: () => navigate(null, 'needs', v.need.id), style: { fontSize: SMALL, display: 'inline-flex', alignItems: 'center', gap: 4 } }, Icon.target(11), v.need.ref ? t('cardFromBoardRef', { ref: v.need.ref }) : t('taskForRequest'))
+                  : null,
               ),
             ),
             h(
@@ -7768,7 +8165,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           setTasksBot('');
           setTicketId(id ?? null);
         };
-        main = needId ? h(NeedDetail, { key: needId, t, id: needId, toast: showToast, onBack: () => setNeedId(null), onOpenTask: toTask }) : h(NeedsView, { t, onOpen: setNeedId, onTasks: () => toTask(null) });
+        main = needId
+          ? h(NeedDetail, { key: needId, t, id: needId, bots, primaryId, toast: showToast, onBack: () => setNeedId(null), onOpenTask: toTask })
+          : h(NeedsView, { t, bots, primaryId, toast: showToast, onOpen: setNeedId, onTasks: () => toTask(null) });
       } else if (shownView === 'tasks') {
         main = ticketId ? h(TicketDetail, { key: ticketId, t, id: ticketId, env: env2, toast: showToast, onBack: () => setTicketId(null) }) : h(TasksView, { t, bots, focusBot: tasksBot, onOpen: setTicketId });
       } else if (shownView === 'activity') {
@@ -8763,7 +9162,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needsHint: 'What you asked for',
         needsWaitingHint: '{n} waiting for you',
         needsWorkingHint: '{n} in progress',
-        needsSub: 'Everything you asked the team for, in a line, and how far each got. The tasks behind each are one click away.',
+        needsSub: 'Everything you asked the team for, as cards on a board, and how far each got. File one with New card, or ask the dispatcher in the chat.',
         needsYou: 'Waiting for you',
         needsYouEmpty: 'Nothing waits for you.',
         needsWorking: 'In progress',
@@ -8773,7 +9172,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needsShowStopped: 'Show dropped ({n})',
         needsHideStopped: 'Hide dropped',
         needsEmptyTitle: 'No requests yet',
-        needsEmptyBody: 'Ask your dispatcher for something in the chat. Each request shows up here in a line, with how far the team got.',
+        needsEmptyBody: 'File a card with New card, or ask your dispatcher for something in the chat. Each request shows up here as a card, with how far the team got.',
         needsUnavailable: 'Could not load your requests.',
         needsWeek: 'This week: {n} requests · {done} done · {working} in progress · {waiting} waiting for you',
         needsAllTasks: 'All tasks',
@@ -8804,6 +9203,62 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needDropTitle: 'Drop “{title}”?',
         needDropBody: 'Its unfinished tasks stop, and it shows as dropped.',
         needDropped: 'Dropped.',
+        // the board (Bots 0.12)
+        need_todo: 'To do',
+        boardTodo: 'To do',
+        boardTodoEmpty: 'Cards you file for later wait here. Drag one to In progress to start it.',
+        boardDropStart: 'Drop to start',
+        boardDropDone: 'Drop to mark done',
+        allProjects: 'All',
+        noProject: 'No project',
+        viaBoard: 'Board',
+        newCard: 'New card',
+        cardTitle: 'Title',
+        cardTitlePlaceholder: 'What you want, in a line',
+        cardDescription: 'Description',
+        cardDescriptionHint: 'Details, links, what done looks like. The bot that takes it reads all of it.',
+        cardDescriptionPlaceholder: 'Optional',
+        cardNoDescription: 'No description.',
+        cardProject: 'Project',
+        cardAssignee: 'Who takes it',
+        cardToDispatcher: '{name} (the dispatcher decides)',
+        cardDispatcherHint: 'The dispatcher reads the card in its chat and hands it to the teammates who fit; their answers show there and on the card.',
+        cardDirectHint: "It goes straight to that bot as a task. Its answers show in the dispatcher's chat and on the card.",
+        cardLater: 'Add to To do',
+        cardStart: 'Start',
+        cardStarted: 'Started.',
+        cardFiled: 'Added to To do.',
+        cardNotStarted: 'Filed, but it did not start: {reason}',
+        cardMarkDone: 'Mark done',
+        cardMarkedDone: 'Marked done.',
+        cardDoneTitle: 'Mark “{title}” done?',
+        cardDoneBody: 'Its tasks still under way are closed as done, and their work stops.',
+        cardSaved: 'Saved.',
+        cardMoved: 'Moved.',
+        cardFiledWhen: 'filed {when}',
+        cardFromBoard: 'Card from the board',
+        cardFromBoardRef: 'Card {ref}',
+        taskForRequest: 'Its request',
+        projects: 'Projects',
+        projectsIntro: 'File cards under a project to number them (OPC-12), and to give their tasks a folder to work in and a brief to read.',
+        projectsEmpty: 'No projects yet.',
+        projectNew: 'New project',
+        projectEditTitle: 'Edit {key}',
+        projectName: 'Name',
+        projectKey: 'Key',
+        projectKeyAuto: 'From the name',
+        projectKeyHint: 'Cards are numbered with it: OPC-1, OPC-2… 2–6 capital letters or digits.',
+        projectDir: 'Folder',
+        projectDirHint: 'Its tasks work in this folder (Harness adds it as a workspace). Leave it empty for the Bots workspace.',
+        projectNoDir: 'No folder: its tasks work in the Bots workspace',
+        projectBrief: 'Brief',
+        projectBriefHint: 'Every task of the project reads it: goals, conventions, links.',
+        projectBriefPlaceholder: 'What this project is, and how work on it is done',
+        projectSaved: 'Project saved.',
+        projectRemove: 'Remove project',
+        projectRemoveTitle: 'Remove “{name}”?',
+        projectRemoveBody: 'Its cards stay on the board, under no project, and lose their numbers. Tasks under way go on where they are.',
+        projectRemoved: 'Removed. {n} cards are under no project now.',
         tasksSub: 'Work your bots have taken on. Each task runs in its own conversation, so several move at once.',
         tasksNeeds: 'Needs you',
         tasksNeedsEmpty: 'Nothing needs you right now.',
@@ -9693,7 +10148,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needsHint: '你提的每件事',
         needsWaitingHint: '{n} 个等你处理',
         needsWorkingHint: '{n} 个进行中',
-        needsSub: '你交给团队的每件事，一句话说清楚要什么、做到哪一步了。每件事背后的任务点开就能看到。',
+        needsSub: '你交给团队的每件事都是看板上的一张卡，写清要什么、做到哪一步了。点「新建卡片」，或在聊天里交给调度者。',
         needsYou: '等你处理',
         needsYouEmpty: '没有要你处理的事。',
         needsWorking: '进行中',
@@ -9703,7 +10158,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needsShowStopped: '显示已取消的（{n}）',
         needsHideStopped: '收起已取消的',
         needsEmptyTitle: '还没有需求',
-        needsEmptyBody: '在聊天里交给调度者一件事，它就会出现在这里：一句话说清楚要什么，以及团队做到了哪一步。',
+        needsEmptyBody: '点「新建卡片」，或在聊天里交给调度者一件事，它就会作为一张卡出现在这里，写清要什么、团队做到了哪一步。',
         needsUnavailable: '没能加载需求。',
         needsWeek: '本周 {n} 个需求 · 完成 {done} · 进行中 {working} · 等你 {waiting}',
         needsAllTasks: '全部任务',
@@ -9734,6 +10189,62 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         needDropTitle: '不做「{title}」了？',
         needDropBody: '它下面还没完成的任务会停下，这件事算作已取消。',
         needDropped: '已取消。',
+        // 看板（Bots 0.12）
+        need_todo: '待办',
+        boardTodo: '待办',
+        boardTodoEmpty: '先记下、稍后再做的卡片放在这里。拖到「进行中」就开始。',
+        boardDropStart: '放下即开始',
+        boardDropDone: '放下即完成',
+        allProjects: '全部',
+        noProject: '不归属项目',
+        viaBoard: '看板',
+        newCard: '新建卡片',
+        cardTitle: '标题',
+        cardTitlePlaceholder: '一句话说清楚要什么',
+        cardDescription: '描述',
+        cardDescriptionHint: '细节、链接、做到什么程度算完成。接手的 bot 会全部读到。',
+        cardDescriptionPlaceholder: '可选',
+        cardNoDescription: '没有描述。',
+        cardProject: '项目',
+        cardAssignee: '交给谁',
+        cardToDispatcher: '{name}（由调度者分派）',
+        cardDispatcherHint: '调度者会在它的聊天里收到这张卡，再分派给合适的同事；回复显示在聊天里，也显示在卡片上。',
+        cardDirectHint: '直接作为任务交给这个 bot。它的回复显示在调度者的聊天里，也显示在卡片上。',
+        cardLater: '放进待办',
+        cardStart: '开始',
+        cardStarted: '已开始。',
+        cardFiled: '已放进待办。',
+        cardNotStarted: '卡片建好了，但没能开始：{reason}',
+        cardMarkDone: '标记完成',
+        cardMarkedDone: '已标记完成。',
+        cardDoneTitle: '把「{title}」标记为完成？',
+        cardDoneBody: '它下面还在进行的任务会按完成关闭，工作随即停止。',
+        cardSaved: '已保存。',
+        cardMoved: '已移动。',
+        cardFiledWhen: '{when}创建',
+        cardFromBoard: '来自看板的卡片',
+        cardFromBoardRef: '卡片 {ref}',
+        taskForRequest: '所属需求',
+        projects: '项目',
+        projectsIntro: '把卡片归到项目下，卡片就按项目编号（如 OPC-12），它的任务也会在项目目录里工作，并读到项目简介。',
+        projectsEmpty: '还没有项目。',
+        projectNew: '新建项目',
+        projectEditTitle: '编辑 {key}',
+        projectName: '名称',
+        projectKey: '编号前缀',
+        projectKeyAuto: '按名称生成',
+        projectKeyHint: '卡片用它编号：OPC-1、OPC-2……2 到 6 位大写字母或数字。',
+        projectDir: '目录',
+        projectDirHint: '项目的任务在这个目录里工作（Harness 会把它加为工作区）。留空则用 Bots 工作区。',
+        projectNoDir: '没有目录：任务在 Bots 工作区里工作',
+        projectBrief: '简介',
+        projectBriefHint: '项目的每个任务都会读到：目标、约定、链接。',
+        projectBriefPlaceholder: '这个项目是什么，活怎么干',
+        projectSaved: '项目已保存。',
+        projectRemove: '删除项目',
+        projectRemoveTitle: '删除「{name}」？',
+        projectRemoveBody: '它的卡片仍留在看板上，变成不归属项目，编号也会去掉。进行中的任务照常在原处继续。',
+        projectRemoved: '已删除。{n} 张卡片现在不归属任何项目。',
         tasksSub: 'Bot 们接手的工作。每个任务在自己的会话里进行，几件事可以同时推进。',
         tasksNeeds: '需要你处理',
         tasksNeedsEmpty: '现在没有需要你处理的。',

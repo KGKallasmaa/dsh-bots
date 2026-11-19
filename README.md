@@ -112,26 +112,44 @@ bot answers in that message's **thread**.
 - A thread quiet for a day leaves the Harness sidebar; a new reply brings it back, and the thread goes on where it was.
 - 0.9's topics read as the chat they were, with a link to each under its first message.
 
-## Requests: everything you asked the team for
+## The board: every request as a card, filed under projects
 
 A **task** is a bot's view: one piece of work it took on. A **request** is yours: one thing you want. A request often
 takes several tasks (the dispatcher splits research between teammates, then hands the results to one who writes them
-up), and several messages (you ask, then add "include the UK in the Europe one", then ask how it is going).
+up), and several messages (you ask, then add "include the UK in the Europe one", then ask how it is going). The
+**Requests** board shows each request as a card.
 
 - **The dispatcher restates it.** When it hands out the work, it names the request in one line, in your language,
   saying what you get rather than who does it ("Q3 competitor pricing table (North America + Europe)", not "@scout
   researches North American pricing"). Tasks for the same request count toward it, and what you add later joins it.
   When the dispatcher did not restate one, the title is your own words, and the page says so.
-- **Its status comes from its tasks**: **Waiting for you** (a task asks you something, or is stuck), **In progress**
-  (with how many tasks are done and the latest word), **Not done**, **Done** and **Dropped**. A follow-up reopens the
-  task, and the request is in progress again.
-- **Requests** in the sidebar sits above **Tasks**, in three groups (**Waiting for you**, **In progress**, **Done**),
-  with dropped ones folded away and this week's numbers on top. Open one for your own words (to check the restatement),
-  the question waiting for you (**Answer** opens its task), what was delivered and the tasks behind it; **Rename** it, or
-  **Drop it** (its unfinished tasks stop).
-- When you say "forget that one", the dispatcher drops the request; when two turn out to be one, it merges them.
-- Only what you ask the dispatcher for is a request: work teammates ask each other for, and work a schedule starts,
-  is not.
+- **Its column comes from its tasks**: **To do** (filed for later, nobody took it yet), **In progress** (with how many
+  tasks are done and the latest word), **Waiting for you** (a task asks you something or cannot go on, or the work did not get done)
+  and **Done**. Dropped cards fold away below. A follow-up reopens the task, and the card is in progress again. You
+  don't move cards between columns by hand, except for two moves: drag a card from **To do** to **In progress** to
+  start it, or onto **Done** to mark it done (its tasks still under way are closed, after you confirm).
+- **File a card yourself**: **New card** takes a title, a description, a project and who takes it. Given to the
+  dispatcher (the default), the card arrives in its chat as your message, marked as the card, and the tasks it opens
+  for it count toward the card. Given to one teammate, it goes straight to that bot as a task, opened on the
+  dispatcher's behalf: the card shows in the dispatcher's chat with the bot's answers under it, a reply to it goes to
+  the task, and the dispatcher is told without being woken. **Add to To do** keeps it for later; **Start** on the
+  card's page (or a drag) hands it out then.
+- **Projects** group cards and number them: a card filed under project `OPC` is `OPC-1`, `OPC-2`… (numbers are not
+  reused). A project has a **folder** and a **brief**. Its tasks work in the folder, which Harness adds as a workspace
+  (the same one when the folder is a workspace already); every task of the project reads the brief. Without a folder
+  its tasks work in the Bots workspace. The dispatcher reads the list of projects and files a new request under one
+  when it clearly fits (`project` on `bot_send_message`); a sub-task works on its parent's project. Manage projects
+  with **Projects** on the board; filter the board by project with the chips on top. Removing a project keeps its
+  cards, under no project; its tasks under way go on where they are, and those still waiting to start work in the
+  Bots workspace. Moving a card to another project leaves its tasks under way where they are; new ones work on the
+  new project.
+- Open a card for its description, your own words (to check the restatement), the question waiting for you
+  (**Answer** opens its task), what was delivered and the tasks behind it; **Rename** it, edit its description, move it
+  to another project (it gets a number there), **Start** it, **Mark done**, or **Drop it** (its unfinished tasks
+  stop). A task's page links back to its card, and so does the card's message in the chat.
+- When you say "forget that one", the dispatcher drops the request; when two turn out to be one, it merges them; when
+  it answered a card itself, without a task, it marks it done.
+- Only what you ask for is a request: work teammates ask each other for, and work a schedule starts, is not.
 
 ## Tasks: delegated work in conversations of their own
 
@@ -521,19 +539,20 @@ one connection. If you change scopes later, reinstall the app to the workspace a
 
 - Each bot owns one ordinary Harness conversation of its own, in the **Bots** workspace
   (`~/.dsh/bots/workspace` unless `workdir` is set), and one more for each task it works on
-  (`ticket-<id>`), in the same workspace. A task's conversation is archived in Harness once the task has
+  (`ticket-<id>`), in the same workspace, or in its project's folder when the task works on a project that has one. A task's conversation is archived in Harness once the task has
   been over for the hours set in Settings. Each thread is a conversation too, forked with Harness's session fork
   from the bot's conversation at the message replied to and titled "<bot> · <the start of that message>"; it is
   archived after a quiet day and taken out of the archive on the next reply.
 - When it runs, the bot's persona and the team roster join its system prompt; its own skills, ability
   limits and apps apply to its conversations only. In a task's conversation the prompt also says which
-  task it is, who asked, and how to report. Edits apply at once; a new or changed app connects the next
+  task it is, who asked, and how to report, and for a task of a project, the project's brief and folder. The
+  dispatcher's prompt lists the projects. Edits apply at once; a new or changed app connects the next
   time the conversation starts.
 - `bot_send_message` from a bot's own conversation opens a task and returns at once; from a task's
   conversation it reports to whoever asked (with a status) or opens a sub-task. A message to the dispatcher
   opens no task: it goes into the dispatcher's own conversation (one sent from a task names it, and the
   dispatcher's answer is added to that task). The dispatcher names the request a task serves with `need`
-  ([Requests](#requests-everything-you-asked-the-team-for)). Two bots may exchange at most 16 messages in 10
+  ([The board](#the-board-every-request-as-a-card-filed-under-projects)). Two bots may exchange at most 16 messages in 10
   minutes (new tasks and messages added to tasks count), so conversations end.
 - A bot with nothing to say (after a report, say) answers `NO_REPLY`, which is never shown or sent to a chat app.
   Harness counts an answer with no content as a failed model call (`returned a completed response with no
@@ -544,7 +563,7 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   `memory_forget` and `memory_search`. `bot_reply` sends an answer to a named chat; `bot_recall` reads a
   task, its reports or its conversation, or a chat thread, a page at a time, so a bot looks things up
   instead of guessing; `bot_ticket` stops, closes or retries a task the bot asked for, or asks it for a
-  status report; `bot_need` lets the dispatcher rename, merge or drop one of your requests. [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md) lists their parameters. A sub-agent started in a bot's or a task's
+  status report; `bot_need` lets the dispatcher rename, merge, drop, finish or file one of your requests (by its id or its card, `OPC-12`). [API.md](https://github.com/kadaliao/dsh-bots/blob/main/API.md) lists their parameters. A sub-agent started in a bot's or a task's
   conversation uses them as that bot or task; one that cannot be traced back to where it started (that
   conversation is gone) is refused.
 - A bot's memory is a section of its system prompt, read when a topic or a task's conversation starts
@@ -574,7 +593,9 @@ permission and restart it.
   from; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
   `memory/` (notes, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
   kept 400 days), `topics.json`, `discussions.json` (threads, where each message sits in its conversation, threads
-  you have read), `settings.json`, `price-catalog.json`. If `tickets.json` cannot be read
+  you have read), `needs.json` (your requests: the cards on the board, with your words and descriptions) and
+  `projects.json` (projects, with their folders and briefs), both readable by your user only, `settings.json`,
+  `price-catalog.json`. If `tickets.json` cannot be read
   (permissions, say), Bots does not start and says why in the Harness log, so the file is never written over;
   a damaged one is kept as `tickets.json.corrupt-<time>` and tasks start empty.
 - Custom endpoints and a borrowed Codex login are written to Harness's own model settings (`llm-pi-ai`) and
@@ -606,6 +627,15 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.11.1
+
+- **Requests** is a board now: the same requests, in columns (To do, In progress, Waiting for you, Done) instead of
+  groups. Nothing to migrate: your requests stay as they were, under no project, without numbers.
+- Make projects with **Projects** on the board when you want cards numbered and their tasks working in a folder; the
+  dispatcher sees them at its next step. Requests from before can be filed under one from their page.
+- Tasks under way keep working where they started; a task opened after you give a project a folder works in that
+  folder.
 
 ## Upgrading from 0.11.0
 

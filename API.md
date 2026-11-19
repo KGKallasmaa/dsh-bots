@@ -911,3 +911,103 @@ completed response with no content`), retries it, then fails the turn. Every per
 stop) is never logged as a reply, sent to a chat app or kept in a task's log. A task whose turn still fails with
 `EMPTY_RESPONSE` is not failed or retried by the plugin (the watchdog still asks one that never reports), and a run
 that ended so is not marked `error`.
+
+## v0.12 — the board: cards and projects
+
+The panel shows needs as cards on a board, in columns by status, and the person may file one there themselves. A
+**project** groups cards and numbers them (`OPC-12`); its tasks work in its folder and read its brief.
+
+### Projects
+```ts
+Project = {
+  id: string,                    // pj + 8 [a-z0-9]
+  key: string,                   // 2–6 [A-Z0-9], a letter first, unique; cards read `${key}-${number}`
+  name: string,                  // ≤ 60 characters
+  brief: string,                 // ≤ 4000 characters; every task of the project reads it
+  dir: string,                   // '' or an absolute path to an existing folder other than / (`~/` expanded on save)
+  last: number,                  // the last card number given; numbers only go up
+  createdAt, updatedAt,
+}
+ProjectView = { id, key, name, brief, dir, next /* last + 1 */, counts: { todo, working, waiting /* + failed */, done, stopped }, createdAt, updatedAt }
+```
+A key left out on create is suggested from the name: initials of its words (`One-person company` → `OPC`), pinyin
+initials of a Chinese name (`内容工作室` → `NRGZS`), the first three letters of one word, numbered when taken (`OPC2`).
+`~/.dsh/cache/bots/projects.json` holds `{ version: 1, projects: Project[] }`, mode 600, at most 100 projects; a file
+that is not JSON in this shape is set aside as `projects.json.corrupt-<ms>`.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `projects` | – | `{ items: ProjectView[] }`, by key |
+| POST | `projects/save` | `{ project: { id?, name, key?, brief?, dir? } }` (no id = create; only the fields given change) | `{ ok, project: ProjectView }`; errors: `a project needs a name`, `the key OPC is taken by another project`, `a project key is 2–6 capital letters…`, `there is no folder …`, `… is a file, not a folder`, `the folder must be a full path …` |
+| POST | `projects/delete` | `{ id }` | `{ ok, cards }`: its cards are filed under none (number dropped); tasks with a Session keep it, tasks not started yet lose `projectId` (they work in the Bots workspace) |
+
+### Cards (needs)
+```ts
+Need += {
+  projectId?: string, number?: number,   // filed under a project with its number there (both or neither)
+  description?: string,                  // ≤ 20 000 characters, from the board
+  todo?: true,                           // filed for later: nothing handed out yet
+  closed?: { at, by, outcome?: 'done' }, // outcome 'done': marked done by hand (else dropped)
+}
+NeedRow += { ref?: 'OPC-12', projectId?, number? }   // status adds 'todo'
+NeedView += { description? }
+```
+Status (first match): closed → `done` with `outcome: 'done'`, else `stopped`; `todo` with no task → `todo`; then as in
+0.11. Work handed out (a task counted toward it, a start, or a merge into it) takes a card out of To do and makes a
+closed one live again. A start that reaches no one puts back what it changed (To do, dropped, the dispatcher that
+named it). `openNeedsOf` (the dispatcher's `Open needs:` line) leaves To do out and writes `n… OPC-12 "title" (status…)`.
+`state.needs` still counts `waiting` (with `failed`) and `working` only.
+
+A card the person files gets `origin: { via: 'board', who: 'the user' }`, `asks: [{ at, text: title + '\n\n' +
+description, via: 'board' }]` and `botId` = the dispatcher (the one that starts it, when it is started later).
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `needs?project=<id>\|none` | also `status`, `limit`, `offset` | as in 0.11, filtered by project |
+| GET | `needs/<ref>` | `ref`: an id or a card (`OPC-12`, any case) | `NeedView` |
+| POST | `needs/create` | `{ title, description?, projectId? (id or key), assignee? (a bot), start? (default true) }` | `{ ok, ...NeedView, startError? }`: a card that could not be handed out is kept, in To do, and `startError` says why |
+| POST | `needs/<ref>/start` | `{ assignee? }` | `{ ok, ...NeedView }`; only a card in `todo` or `stopped` (`this card is under way already: …`) |
+| POST | `needs/<ref>/done` | `{}` | `{ ok, ...NeedView }`: open tasks ended `done` by the user, the card closed with `outcome: 'done'` |
+| POST | `needs/<ref>/save` | `{ title?, description?, projectId? ('' for none) }` | `{ ok, ...NeedView }`; another project gives it the next number there, and the tasks it opens from then on work on that project (tasks it has keep theirs). Everything is checked before anything changes |
+
+Starting a card:
+- **To the dispatcher** (no `assignee`, or the dispatcher, or a lone dispatcher): `send` as a panel message whose text
+  is the title and description, logged with `need: <id>` (`GET messages` adds `card: { id, title, ref? }` to it). The
+  router reads, after `[Panel]` and `Open needs:`, `[Card OPC-12] The user filed this on the board as need n… ("…") in
+  project OPC (…) and handed it to you. The tasks you open for it count toward it (pass need n…; they work in the
+  project's folder). When you answer it yourself without handing anything out, mark it done with bot_need (action
+  done).` A lone dispatcher reads the project's folder instead and marks it done itself. In that turn a
+  `bot_send_message` with no `need`, or with a restatement when the card is all the person said, counts toward the
+  card; the card's text joins no need as new words, and a card named in its own turn takes none of the turn's other
+  words. New work in a turn that holds several cards, or a card and other messages of the person's, must name its need
+  (`this turn has several cards from the board: pass \`need\` …` / `this turn has card n… "…" and other messages from
+  the person: pass \`need\` …`); a message added to a task already counted toward a need never moves it.
+- **To one teammate** (`assignee`, router mode): a ticket `{ requester: { kind: 'session', sessionId: <dispatcher
+  home>, botId: <dispatcher> }, origin: { threadKey: 'panel:<home>', who: 'the user' }, board: true, projectId }`,
+  counted toward the card before it starts. The dispatcher's chat logs `{ from: 'user', to: <bot>, chat: <dispatcher>,
+  kind: 'user', thread: 'panel:<home>', ticket, need }` (no `sid`: pending until the task starts); a reply to it goes
+  to the task, and its reports show in that chat as for any task the dispatcher opened from the panel. The dispatcher
+  gets `[Board] The user handed card OPC-12 "…" (need n…) to @bot themselves: task t…. …` injected (id
+  `bots:board:<ticket>`). The worker reads `New task t… from the user, from the board: …`.
+
+### Tasks
+`Ticket += { projectId?: string, board?: true }`. A ticket's Session is made in its project's folder
+(`workspaceRegistry.create(dir, name)`, which returns the existing workspace of that folder; `cwd` when Harness has no
+registry); a project whose folder is gone fails the start (`did not start: the folder of project OPC, …, is gone; set
+another one on the board`). A sub-task takes its parent's `projectId`. A ticket the router opens is counted toward its
+need before it starts, so it gets the need's project then. The assignment adds `It is for card OPC-12 ("…") of project
+OPC (…).` after its origin line; the task's persona adds `## The project` (key, name, folder, brief).
+`TicketView += { need?: { id, title, ref? } }`.
+
+### Tools
+- `bot_send_message += { project? }` — router home only: a project key (or id) a new request belongs to; an unknown one
+  is refused before anything opens (`no project "X"; projects: OPC (…), …`). It files the need when it has no project
+  yet; the result says `It counts toward need n… (card OPC-12) ("…").` `need` takes a card (`OPC-12`; an unknown one:
+  `no card OPC-99 on the board. …`). A card in To do is refused unless it came in this turn (`need n… is a card the
+  person keeps in To do; …`): only the person starts it.
+- `bot_need` takes a card (`OPC-12`) for `need` and `into`, and two more actions: `done` (open tasks closed, the need
+  closed as done) and `file` (`project`: a key; empty for none). It works in the dispatcher's home whether it routes or
+  not.
+- `bot_recall` reads `need/OPC-12`; `needs` items add `card`.
+- A router dispatcher's persona adds `## Projects` (each `- KEY — name: the brief's first line`, and when to pass
+  `project`); prompts read the projects as they are assembled, so a change applies at the next step.

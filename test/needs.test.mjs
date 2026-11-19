@@ -117,3 +117,56 @@ test('an unreadable needs file is set aside, not written over', () => {
   assert.ok(readdirSync(dir).some((f) => f.startsWith('needs.json.corrupt-')));
   assert.equal(JSON.parse(readFileSync(join(dir, 'needs.json'), 'utf8')).needs.length, 1);
 });
+
+// --- the board (Bots 0.12) ------------------------------------------------------------------------
+
+test('a card filed for later is in To do until it is started; one marked done is done whatever its tasks say', () => {
+  const need = { id: 'n12345678' };
+  assert.equal(needStatus({ ...need, todo: true, tickets: [] }, [], stageOf).status, 'todo');
+  // Started: work handed out, or the dispatcher still reading it.
+  assert.equal(needStatus({ ...need, tickets: [] }, [], stageOf).status, 'working');
+  assert.equal(needStatus({ ...need, closed: { at: T0, by: 'user', outcome: 'done' } }, [task('t1')], stageOf).status, 'done');
+  assert.equal(needStatus({ ...need, closed: { at: T0, by: 'user' } }, [], stageOf).status, 'stopped');
+});
+
+test('cards keep a project and number, a description, and To do; starting, holding, closing and filing change them', () => {
+  const dir = dirOf();
+  let now = T0;
+  const needs = createNeeds(dir, { now: () => now });
+  const n = needs.create({ title: 'Landing page', description: '  Hero, pricing, FAQ.  ', projectId: 'pjabcdefgh', number: 3, todo: true, asks: [{ at: T0, text: 'Landing page' }] });
+  assert.deepEqual([n.projectId, n.number, n.description, n.todo], ['pjabcdefgh', 3, 'Hero, pricing, FAQ.', true]);
+  // A number counts only with its project, and a project only with its number.
+  assert.equal(needs.create({ title: 'x', projectId: 'pjabcdefgh' }).projectId, undefined);
+  assert.equal(needs.create({ title: 'y', projectId: 'bogus', number: 2 }).number, undefined);
+  now += 1000;
+  needs.start(n.id);
+  assert.equal(needs.get(n.id).todo, undefined);
+  needs.restore(n.id, { todo: true, botId: n.botId });
+  assert.equal(needs.get(n.id).todo, true, 'a start that failed puts it back');
+  needs.addTicket(n.id, 't1');
+  assert.equal(needs.get(n.id).todo, undefined, 'a task starts it');
+  needs.close(n.id, { by: 'user', outcome: 'done' });
+  assert.deepEqual(needs.get(n.id).closed, { at: now, by: 'user', outcome: 'done' });
+  needs.addTicket(n.id, 't2');
+  assert.equal(needs.get(n.id).closed, undefined, 'more work makes it live again');
+  needs.file(n.id, { projectId: 'pjzzzzzzzz', number: 1 });
+  assert.deepEqual([needs.get(n.id).projectId, needs.get(n.id).number], ['pjzzzzzzzz', 1]);
+  needs.describe(n.id, '');
+  assert.equal(needs.get(n.id).description, undefined);
+  assert.equal(needs.unfile('pjzzzzzzzz'), 1);
+  assert.deepEqual([needs.get(n.id).projectId, needs.get(n.id).number], [undefined, undefined]);
+  // A start that failed puts back what it changed.
+  const before = { todo: undefined, closed: { at: now, by: 'user' }, snapshot: undefined, botId: 'b-old' };
+  needs.start(n.id, { botId: 'b-new' });
+  assert.equal(needs.get(n.id).botId, 'b-new');
+  needs.restore(n.id, before);
+  assert.deepEqual([needs.get(n.id).closed, needs.get(n.id).botId], [before.closed, 'b-old']);
+  // Work merged into a card in To do starts it.
+  const later = needs.create({ title: 'Later', todo: true });
+  const other = needs.create({ title: 'Other', tickets: ['t9'] });
+  assert.equal(needs.merge(other.id, later.id).todo, undefined);
+  // Read back.
+  needs.file(n.id, { projectId: 'pjzzzzzzzz', number: 7 });
+  const again = createNeeds(dir).get(n.id);
+  assert.deepEqual([again.projectId, again.number, again.tickets], ['pjzzzzzzzz', 7, ['t1', 't2']]);
+});

@@ -52,7 +52,8 @@ import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
 import { createLedger, promptTokens, report, ticketUsage, todayByBot, usageRow } from './lib/usage.mjs';
 import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
-import { clampNeedTitle, createNeeds, NEED_ID_RE, needStatus } from './lib/needs.mjs';
+import { clampNeedTitle, createNeeds, MAX_DESCRIPTION, NEED_ID_RE, needStatus } from './lib/needs.mjs';
+import { CARD_REF_RE, createProjects, PROJECT_ID_RE } from './lib/projects.mjs';
 import { assignmentText, clip, discussionNoteText, failedNoticeText, followUpNoticeText, NEWS_MESSAGES, nudgeText, panelHeaderText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, shownNoticeText, stalledNoticeText, threadNewsText } from './lib/cards.mjs';
 import { checkTickets, isEmptyResponse, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
 import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
@@ -256,6 +257,8 @@ export function apply(ctx, config, deps = {}) {
   const prices = createPriceCatalog(dir, { enabled: deps.prices !== false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const home = deps.home ?? homedir();
   const workdir = typeof cfg.workdir === 'string' && cfg.workdir.trim() ? cfg.workdir.trim() : join(homeDir(), 'bots', 'workspace');
+  // What work belongs to (Bots 0.12): a request filed under a project is numbered there, and its tasks work in its folder.
+  const projects = createProjects(dir, { now: nowMs, home });
   const zone = (() => {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -503,7 +506,7 @@ export function apply(ctx, config, deps = {}) {
               const roster = store.list();
               const ticket = ticketId ? tickets.get(ticketId) : undefined;
               return now
-                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, teamNames: TEAM_NAMES, ...(ticket ? { ticket } : {}) })
+                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, teamNames: TEAM_NAMES, ...projectsForPersona(ticket), ...(ticket ? { ticket } : {}) })
                 : '';
             },
           }),
@@ -597,6 +600,17 @@ export function apply(ctx, config, deps = {}) {
     }
   }
 
+  /** The projects a persona names (Bots 0.12): the list, and a ticket's own. A projects file that cannot be read leaves them out. */
+  function projectsForPersona(ticket) {
+    try {
+      const own = ticket?.projectId ? projects.get(ticket.projectId) : undefined;
+      return { projects: projects.list(), ...(own ? { project: own } : {}) };
+    } catch (error) {
+      ctx.logger?.warn?.(`bots: projects: ${error?.message ?? error}`);
+      return {};
+    }
+  }
+
   // --- sessions ---------------------------------------------------------------------
   async function workspaceId() {
     const reg = service(ctx, 'workspaceRegistry');
@@ -604,6 +618,29 @@ export function apply(ctx, config, deps = {}) {
     mkdirSync(workdir, { recursive: true });
     const ws = await reg.create(workdir, 'Bots');
     return ws?.id;
+  }
+
+  /**
+   * Where a ticket's Session is made: its project's folder (Bots 0.12), a Harness workspace of its
+   * own (the same one when the folder is a workspace already), else the Bots workspace. A project
+   * whose folder is gone fails the start, saying so.
+   */
+  async function ticketPlace(t) {
+    const p = t?.projectId ? projects.get(t.projectId) : undefined;
+    if (p?.dir) {
+      let ok = false;
+      try {
+        ok = statSync(p.dir).isDirectory();
+      } catch {
+        ok = false;
+      }
+      if (!ok) throw new Error(`the folder of project ${p.key}, ${p.dir}, is gone; set another one on the board`);
+      const reg = service(ctx, 'workspaceRegistry');
+      const ws = reg?.create ? await reg.create(p.dir, p.name).catch(() => undefined) : undefined;
+      return ws?.id ? { workspaceId: ws.id } : { cwd: p.dir };
+    }
+    const wsId = await workspaceId().catch(() => undefined);
+    return wsId ? { workspaceId: wsId } : { cwd: workdir };
   }
 
   /** The bot's home session, created on first need. Returns the session id. */
@@ -1487,7 +1524,10 @@ export function apply(ctx, config, deps = {}) {
   const titleOf = (text) => clip(String(text ?? '').replace(/\s+/g, ' ').trim(), 40).text;
   /** A timeline message as the panel reads it: `pending` while no model has taken it yet; internal fields left out. */
   function messageView(m) {
-    const { sid, ...rest } = m;
+    const { sid, ...base } = m;
+    // A card started from the board (Bots 0.12): the chat links it, by its reference on the board.
+    const n = m.need ? needs.get(m.need) : undefined;
+    const rest = n ? { ...base, card: { id: n.id, title: n.title, ...(cardRefOf(n) ? { ref: cardRefOf(n) } : {}) } } : base;
     if (m.from !== 'user' || m.kind !== 'user' || !/^p[a-z0-9]{8}$/.test(m.id)) return rest;
     const waiting = (sessionId, msgId) => pendingOf(agents()?.get?.(sessionId)).some((x) => x?.id === `${MESSAGE_PREFIX}${msgId}`);
     let pending = false;
@@ -1501,6 +1541,122 @@ export function apply(ctx, config, deps = {}) {
   }
 
   /**
+   * What the dispatcher reads above a card started from the board (Bots 0.12): which need it is,
+   * its project, and that its work counts toward it. `router`: the dispatcher hands the work out;
+   * else it does the work itself (a lone dispatcher), in the project's folder when there is one.
+   */
+  function cardHeaderText(n, router) {
+    const ref = cardRefOf(n);
+    const p = projectOfNeed(n);
+    const where = p ? ` in project ${p.key} (${p.name})` : '';
+    const head = `[Card${ref ? ` ${ref}` : ''}] The user filed this on the board as need ${n.id} ("${n.title}")${where} and handed it to you.`;
+    return router
+      ? `${head} The tasks you open for it count toward it (pass need ${n.id}${p ? `; they work in the project's folder` : ''}). When you answer it yourself without handing anything out, mark it done with bot_need (action done).`
+      : `${head}${p?.dir ? ` The project's folder is ${p.dir}.` : ''} When it is done, mark it done with bot_need (need ${n.id}, action done).`;
+  }
+
+  /** The text a card is handed out with: its title, and its description below. */
+  const cardText = (n) => [n.title, n.description ?? ''].filter(Boolean).join('\n\n');
+
+  /**
+   * Hand a card to one bot from the board (Bots 0.12): a task for it, opened on the dispatcher's
+   * behalf as if it had handed it out, so it lives where the dispatcher's tasks do: the card shows
+   * in the dispatcher's chat as the person's message, the task's answers show there too (a reply
+   * to the card's message goes to the task), and the dispatcher hears of it without waking.
+   */
+  async function openCardTicket(n, bot) {
+    const front = store.primary();
+    if (!front || !isRouter(front)) throw new Error('only a dispatcher with teammates hands a card to one of them');
+    if (bot.id === front.id) throw new Error('the dispatcher takes no tasks: hand the card to it without naming a bot');
+    if (!service(ctx, 'sessionController')) throw new Error('tasks need the Web profile (no session controller here)');
+    const agent = await agentOf(front);
+    const sid = agent.session.id;
+    const key = panelThreadKey(sid);
+    const body = cardText(n);
+    const t = tickets.create({
+      title: n.title,
+      text: body,
+      botId: bot.id,
+      requester: { kind: 'session', sessionId: sid, botId: front.id },
+      origin: { threadKey: key, who: 'the user' },
+      threads: [threadRecordOf({ threadKey: key, kind: 'panel' })],
+      projectId: n.projectId ?? '',
+      board: true,
+    });
+    needs.addTicket(n.id, t.id, []);
+    // No `sid`: it went to no conversation of the dispatcher's; it shows as queued until the task starts.
+    store.log({ id: newPanelId(), from: 'user', to: bot.id, chat: front.id, kind: 'user', text: body, thread: key, ticket: t.id, need: n.id });
+    const ref = cardRefOf(n);
+    void notifyRequester(t, `[Board] The user handed card ${ref ? `${ref} ` : ''}"${n.title}" (need ${n.id}) to @${bot.handle} themselves: task ${t.id}. @${bot.handle} answers them in your chat; this needs no reply.`, { mode: 'inject', key: `board:${t.id}` });
+    quietFailures.add(t.id);
+    try {
+      await pump();
+    } finally {
+      quietFailures.delete(t.id);
+    }
+    return tickets.get(t.id) ?? t;
+  }
+
+  /**
+   * Start a card (Bots 0.12): to one bot (`assignee`, not the dispatcher) as a task of its own, or to
+   * the dispatcher, which reads it as the person's message in its chat and hands it out. A task that
+   * fails to start shows on the card (its error, and Retry on the task); a card that reached nobody
+   * goes back to To do, and the error is thrown.
+   */
+  async function startCard(n, assignee = '') {
+    const front = store.primary();
+    if (!front) throw new Error('hire a bot first: a card needs someone to work on it');
+    const bot = assignee ? resolve(assignee) : null;
+    const cur = needs.get(n.id);
+    const before = { todo: cur.todo, closed: cur.closed, snapshot: cur.snapshot, botId: cur.botId };
+    const had = cur.tickets.length;
+    // The dispatcher of now keeps it (it lists the needs it named), even when the card was filed under another.
+    needs.start(n.id, { botId: front.id });
+    try {
+      if (bot && bot.id !== front.id) await openCardTicket(needs.get(n.id), bot);
+      else await userSend(front, cardText(n), { card: needs.get(n.id) });
+    } catch (error) {
+      // Not handed out: as the person left it (in To do, or dropped).
+      if ((needs.get(n.id)?.tickets.length ?? 0) === had) needs.restore(n.id, before);
+      throw error;
+    }
+    return needs.get(n.id);
+  }
+
+  /**
+   * A card the person filed on the board (Bots 0.12): a need with their title and description, under
+   * a project when they chose one, handed out at once (`start`, to `assignee` or the dispatcher) or
+   * kept in To do. Returns `{need, startError?}`: a card that could not be handed out is kept, in To do.
+   */
+  async function createCard({ title, description = '', projectId = '', assignee = '', start = true } = {}) {
+    const name = clampNeedTitle(title);
+    if (!name) throw new Error('a card needs a title');
+    if (String(description ?? '').length > MAX_DESCRIPTION) throw new Error(`a description is at most ${MAX_DESCRIPTION} characters`);
+    const p = projectId ? projectByRef(projectId) : undefined;
+    const front = store.primary();
+    if (start && !front) throw new Error('hire a bot first: a card needs someone to work on it');
+    const at = nowMs();
+    const text = [name, String(description ?? '').trim()].filter(Boolean).join('\n\n');
+    const n = needs.create({
+      title: name,
+      botId: front?.id ?? '',
+      origin: { via: 'board', who: 'the user' },
+      asks: [{ at, text: clip(text, 2000).text, via: 'board' }],
+      description,
+      ...(p ? { projectId: p.id, number: projects.take(p.id) } : {}),
+      todo: true,
+    });
+    if (start) {
+      try {
+        await startCard(n, assignee);
+      } catch (error) {
+        return { need: needs.get(n.id), startError: String(error?.message ?? error) };
+      }
+    }
+    return { need: needs.get(n.id) };
+  }
+
+  /**
    * The user writes to a bot from the panel. `/new` (or `/clear`, `/新话题`) first starts a new
    * topic of its conversation; text after it goes there. Every message is logged before it is
    * handed over (the panel shows it at once, `pending` until a model takes it). A message goes
@@ -1508,12 +1664,13 @@ export function apply(ctx, config, deps = {}) {
    * header; other homes take it as a turn of its own). With `replyTo` it is a reply in the thread
    * of that message (Bots 0.10, `threadSend`). Returns `{sessionId, message?}`.
    */
-  async function userSend(target, text, { replyTo = '' } = {}) {
+  async function userSend(target, text, { replyTo = '', card = null } = {}) {
     let body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     const ref = String(replyTo ?? '').trim();
     if (ref) return threadSend(store.get(target.id) ?? target, body, ref);
-    const cmd = TOPIC_COMMAND.exec(body);
+    // A card started from the board (Bots 0.12) is a request, never a command.
+    const cmd = card ? null : TOPIC_COMMAND.exec(body);
     if (cmd) {
       const sessionId = await newTopic(target, 'manual');
       body = body.slice(cmd[0].length).trim();
@@ -1523,11 +1680,12 @@ export function apply(ctx, config, deps = {}) {
     const agent = await agentOf(bot);
     const sid = agent.session.id;
     const id = newPanelId();
-    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: panelThreadKey(sid), sid });
+    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: panelThreadKey(sid), sid, ...(card ? { need: card.id } : {}) });
     // The panel shows thread replies in the chat: what the person read there since, the main conversation hears first.
     const news = threadNewsFor(bot, sid);
-    // The router reads which tasks a message may continue, and the person's open requests (Bots 0.11).
-    const header = isRouterHome(bot, sid) ? [panelHeaderText({ open: openTasksOf(bot) }, cardCtx()), openNeedsLine(bot)].filter(Boolean).join('\n') : '';
+    // The router reads which tasks a message may continue, and the person's open requests (Bots 0.11); a card, what it is (0.12).
+    const router = isRouterHome(bot, sid);
+    const header = [...(router ? [panelHeaderText({ open: openTasksOf(bot) }, cardCtx()), openNeedsLine(bot)] : []), card ? cardHeaderText(card, router) : ''].filter(Boolean).join('\n');
     try {
       await sendTo(agent, { content: [news.text, header, body].filter(Boolean).map((text) => ({ type: 'text', text })), source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
     } catch (error) {
@@ -1669,7 +1827,7 @@ export function apply(ctx, config, deps = {}) {
       .map((o) => (o.kind === 'panel' ? `${o.rootId} (${threadLabel(o)})` : `${o.threadKey} (${threadLabel(o)}${o.tickets?.length ? `; task ${o.tickets.join(', ')}` : ''})`));
   // --- tickets: delegated work in Sessions of their own ---------------------------------
   /** What cards and relays read about the team and the tickets. */
-  const cardCtx = () => ({ bots: store.list(), threads: tickets, tickets, stageOf });
+  const cardCtx = () => ({ bots: store.list(), threads: tickets, tickets, stageOf, cardOf: (t) => cardLineOf(t) });
   const handleOf = (botId) => (store.get(botId) ? `@${store.get(botId).handle}` : 'a removed bot');
 
   /** A ticket as the panel lists it (PLAN-0.8 §6.3 `TicketRow`). */
@@ -1722,7 +1880,15 @@ export function apply(ctx, config, deps = {}) {
       usage: { tokens: use.tokens, calls: use.calls, cost: use.cost },
       sessionId: t.sessionId,
       running: Boolean(t.sessionId && agents()?.get?.(t.sessionId)?.status === 'running'),
+      ...cardOfTicketView(t),
     };
+  }
+  /** The card a task serves (Bots 0.12), for its page to link: `{need: {id, title, ref?}}`, or nothing. */
+  function cardOfTicketView(t) {
+    const n = needOfTicket(t);
+    if (!n) return {};
+    const ref = cardRefOf(n);
+    return { need: { id: n.id, title: n.title, ...(ref ? { ref } : {}) } };
   }
 
   // --- needs: what the person asked for, one level above its tasks (Bots 0.11, lib/needs.mjs) ---
@@ -1749,12 +1915,63 @@ export function apply(ctx, config, deps = {}) {
   /** Needs the dispatcher may add to: open ones, and ones that settled in the last day (a change to a result). */
   function openNeedsOf(bot) {
     const since = nowMs() - 24 * 3600_000;
-    return needs.list().filter((n) => (!bot || n.botId === bot.id) && (['waiting', 'working'].includes(needStatusOf(n).status) || n.updatedAt >= since));
+    // A card kept in To do waits for the person to start it (Bots 0.12): nothing is added to it meanwhile.
+    return needs.list().filter((n) => (!bot || n.botId === bot.id) && !n.todo && (['waiting', 'working'].includes(needStatusOf(n).status) || n.updatedAt >= since));
   }
-  /** How the dispatcher reads open needs: `n… "title" (working, 1/3 done)`. */
+  /** How the dispatcher reads open needs: `n… OPC-12 "title" (working, 1/3 done)`. */
   const needPhrase = (n) => {
     const s = needStatusOf(n);
-    return `${n.id} "${n.title}" (${s.status}${s.total > 1 ? `, ${s.done}/${s.total} done` : ''})`;
+    const ref = cardRefOf(n);
+    return `${n.id}${ref ? ` ${ref}` : ''} "${n.title}" (${s.status}${s.total > 1 ? `, ${s.done}/${s.total} done` : ''})`;
+  };
+  // --- the board (Bots 0.12, lib/projects.mjs): cards are needs, filed under projects ----------------
+  /** The project a need is filed under, if it still exists. */
+  const projectOfNeed = (n) => (n?.projectId ? projects.get(n.projectId) : undefined);
+  /** A card's reference on the board: `OPC-12` when it is filed under a project, else ''. */
+  const cardRefOf = (n) => {
+    const p = projectOfNeed(n);
+    return p && n.number ? `${p.key}-${n.number}` : '';
+  };
+  /** The need a reference names: its id (`n…`, `need/n…`) or its card (`OPC-12`, any case). */
+  const needByRef = (ref) => {
+    const s = String(ref ?? '').trim().replace(/^need\//, '');
+    if (NEED_ID_RE.test(s)) return needs.get(s);
+    const m = CARD_REF_RE.exec(s.toUpperCase());
+    if (!m) return undefined;
+    const p = projects.get(m[1]);
+    const number = Number(m[2]);
+    return p ? needs.list().find((n) => n.projectId === p.id && n.number === number) : undefined;
+  };
+  /** A project as a reference names it (its id, or its key in any case); throws listing them when none matches. */
+  const projectByRef = (ref) => {
+    const p = projects.get(ref);
+    if (p) return p;
+    const all = projects.list().map((x) => `${x.key} (${x.name})`);
+    throw new Error(`no project "${String(ref ?? '').trim()}"; ${all.length ? `projects: ${all.join(', ')}` : 'there are no projects yet (the person makes them on the board)'}`);
+  };
+  /** File `n` under project `p` with the next number there (none: under no project). A need already there stays as it is. */
+  function fileNeed(n, p) {
+    if (!n) return n;
+    if (!p) return n.projectId ? needs.file(n.id, {}) : n;
+    if (n.projectId === p.id && n.number) return n;
+    return needs.file(n.id, { projectId: p.id, number: projects.take(p.id) });
+  }
+  /** A project as the panel shows it: its fields, and how many of its cards are in each column. */
+  function projectView(p) {
+    const counts = { todo: 0, working: 0, waiting: 0, done: 0, stopped: 0 };
+    for (const n of needs.list()) {
+      if (n.projectId !== p.id) continue;
+      const st = needStatusOf(n).status;
+      counts[st === 'failed' ? 'waiting' : st] = (counts[st === 'failed' ? 'waiting' : st] ?? 0) + 1;
+    }
+    return { id: p.id, key: p.key, name: p.name, brief: p.brief, dir: p.dir, next: p.last + 1, counts, createdAt: p.createdAt, updatedAt: p.updatedAt };
+  }
+  /** The line a task's first message names its card with (cards.mjs `cardOf`), or ''. */
+  const cardLineOf = (t) => {
+    const n = needOfTicket(t);
+    const ref = cardRefOf(n);
+    const p = projectOfNeed(n);
+    return ref && p ? `It is for card ${ref} ("${n.title}") of project ${p.key} (${p.name}).` : '';
   };
   /** The line a message to the dispatcher lists its needs in, or ''. */
   const openNeedsLine = (bot) => {
@@ -1778,10 +1995,12 @@ export function apply(ctx, config, deps = {}) {
     const asked = s.waiting.length ? reports.filter((r) => s.waiting.includes(r.ticket) && (r.status === 'question' || r.status === 'blocked')).at(-1) : undefined;
     const latest = asked ?? reports.at(-1);
     const first = n.asks[0];
+    const ref = cardRefOf(n);
     return {
       id: n.id,
       title: n.title,
       ...(n.auto ? { auto: true } : {}),
+      ...(ref ? { ref, projectId: n.projectId, number: n.number } : {}),
       status: s.status,
       done: s.done,
       total: s.total,
@@ -1806,10 +2025,10 @@ export function apply(ctx, config, deps = {}) {
     const results = list
       .flatMap((t) => t.reports.filter((r) => r.status === 'done').map((r) => ({ at: r.at, botId: t.botId, ticket: t.id, text: clip(String(r.text ?? ''), 4000).text })))
       .sort((a, b) => a.at - b.at);
-    return { ...needRow(n), asks: n.asks, tickets: list.map(ticketRow), results };
+    return { ...needRow(n), ...(n.description ? { description: n.description } : {}), asks: n.asks, tickets: list.map(ticketRow), results };
   }
   const needOr404 = (id) => {
-    const n = needs.get(String(id ?? ''));
+    const n = needByRef(id);
     if (!n) throw new Error('no such need');
     return n;
   };
@@ -1817,6 +2036,11 @@ export function apply(ctx, config, deps = {}) {
   function dropNeed(n, by) {
     for (const t of needTasks(n)) if (!t.ended) endTicket(t, { by: by === 'user' ? 'user' : 'requester', outcome: 'stopped' });
     return needs.close(n.id, { by });
+  }
+  /** Mark a need done by hand (Bots 0.12): its open tasks are closed as done, and it shows as done. */
+  function finishNeed(n, by) {
+    for (const t of needTasks(n)) if (!t.ended) endTicket(t, { by: by === 'user' ? 'user' : 'requester', outcome: 'done' });
+    return needs.close(n.id, { by, outcome: 'done' });
   }
   /** Where a need was asked, from the task that serves it. */
   const needOrigin = (t) => ({ ...(t?.origin?.threadKey ? { threadKey: t.origin.threadKey } : {}), via: t?.origin?.via || 'panel', ...(t?.origin?.who ? { who: t.origin.who } : {}) });
@@ -1832,20 +2056,28 @@ export function apply(ctx, config, deps = {}) {
     if (n) refreshNeed(n);
     return n ? needs.get(n.id) : undefined;
   }
-  function needOfTurn(bot, sessionId, given, t) {
+  function needOfTurn(bot, sessionId, named, t) {
     const st = turnState.get(sessionId);
     const asks = st?.asks ?? [];
     const root = rootTicketOf(t);
-    if (given && NEED_ID_RE.test(given)) return needs.addTicket(needs.get(given).id, root.id, asks);
+    // A card filed on the board's text is the card's own (kept when it was filed): no new words of the person's (Bots 0.12).
+    const cards = [...new Set(asks.map((a) => a.need).filter((id) => id && needs.get(id)))];
+    const words = asks.filter((a) => !a.need);
+    const given = named;
+    // A card that came in this turn is its own words: what else the person said in it is about other requests.
+    if (given && NEED_ID_RE.test(given)) return needs.addTicket(needs.get(given).id, root.id, cards.includes(needs.get(given).id) ? [] : words);
     const current = needs.byTicket(root.id);
-    if (current) return needs.addAsks(current.id, asks) ?? current;
-    if (!given && asks.length === 0) return undefined;
-    const title = given ? clampNeedTitle(given) : clampNeedTitle(asks[0].text, 60);
+    if (current) return needs.addAsks(current.id, words) ?? current;
+    // New work in a turn a card came in: with no need named, it counts toward the card; with a restatement too,
+    // when the card is all the person said in this turn.
+    if (cards.length === 1 && (!given || words.length === 0)) return needs.addTicket(cards[0], root.id, words);
+    if (!given && words.length === 0) return undefined;
+    const title = given ? clampNeedTitle(given) : clampNeedTitle(words[0].text, 60);
     const made = st ? (st.needs ??= new Map()) : new Map();
     const key = given ? title.toLowerCase() : '';
     const same = made.get(key);
-    if (same && needs.get(same)) return needs.addTicket(same, root.id, asks);
-    const n = needs.create({ title, botId: bot.id, origin: needOrigin(t), asks, tickets: [root.id], ...(given ? {} : { auto: true }) });
+    if (same && needs.get(same)) return needs.addTicket(same, root.id, words);
+    const n = needs.create({ title, botId: bot.id, origin: needOrigin(t), asks: words, tickets: [root.id], ...(given ? {} : { auto: true }) });
     made.set(key, n.id);
     return n;
   }
@@ -1896,8 +2128,8 @@ export function apply(ctx, config, deps = {}) {
   }
 
   /**
-   * The Session a ticket works in: resolved when it exists, else made in the Bots workspace and
-   * decorated as its bot. `info.created` says it had to be made.
+   * The Session a ticket works in: resolved when it exists, else made (in its project's folder, or
+   * the Bots workspace) and decorated as its bot. `info.created` says it had to be made.
    */
   async function ticketAgent(t, info = {}) {
     const controller = service(ctx, 'sessionController');
@@ -1914,9 +2146,9 @@ export function apply(ctx, config, deps = {}) {
         return found.agent;
       }
     }
-    const wsId = await workspaceId().catch(() => undefined);
+    const place = await ticketPlace(t);
     // The Agent's creation already finds the ticket by the `ticket-<id>` name and installs the bot.
-    const created = await controller.create({ sessionId: wanted, ...(wsId ? { workspaceId: wsId } : { cwd: workdir }) });
+    const created = await controller.create({ sessionId: wanted, ...place });
     info.created = true;
     const id = created?.sessionId ?? wanted;
     if (id !== wanted) {
@@ -2202,8 +2434,11 @@ export function apply(ctx, config, deps = {}) {
   /**
    * Open a ticket for `target`, asked from `senderSessionId` (a bot's home or a ticket Session),
    * and start it when a slot is free. Returns the ticket; a start that failed shows as stage `failed`.
+   * A sub-task works on its parent's project (Bots 0.12), another on `projectId`; `onCreate(t)` runs
+   * once the ticket exists and before it starts (the dispatcher counts it toward a need there, which
+   * may file it under a project).
    */
-  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen, relay = false } = {}) {
+  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen, relay = false, projectId = '', onCreate = null } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     // The dispatcher only hands out (Bots 0.10; 0.9 let it hand work to itself): the work goes to a teammate.
@@ -2228,8 +2463,16 @@ export function apply(ctx, config, deps = {}) {
       origin,
       threads: thread ? [thread] : [],
       relay,
+      projectId: parent?.projectId || projectId,
     });
     store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id, ...topicFieldsOf(t) });
+    if (onCreate) {
+      try {
+        onCreate(t);
+      } catch (error) {
+        ctx.logger?.warn?.(`bots: task ${t.id}: ${error?.message ?? error}`);
+      }
+    }
     quietFailures.add(t.id);
     try {
       await pump();
@@ -2903,7 +3146,7 @@ export function apply(ctx, config, deps = {}) {
           const thread = via ? via.threadKey : homeThreadOf(session.id);
           // The person's words in the dispatcher's turn: a need it names now keeps them (Bots 0.11).
           const asked = (m) => {
-            if (isRouterHome(bot, session.id) && m?.text) st.asks = [...(st.asks ?? []), { id: m.id, at: m.at ?? nowMs(), text: m.text, ...(m.via ? { via: m.via } : {}), ...(m.who ? { who: m.who } : {}) }];
+            if (isRouterHome(bot, session.id) && m?.text) st.asks = [...(st.asks ?? []), { id: m.id, at: m.at ?? nowMs(), text: m.text, ...(m.via ? { via: m.via } : {}), ...(m.who ? { who: m.who } : {}), ...(m.need ? { need: m.need } : {}) }];
           };
           if (kind === 'user' && typed) {
             // Logged when it was sent.
@@ -3799,7 +4042,7 @@ export function apply(ctx, config, deps = {}) {
         '- A task from a topic or chat answers the person there itself; pass `report_to: "me"` to get its reports back instead (to combine several results).',
         '- To add to an open task you asked for (an answer to its question, a change, a message of the person\'s that continues it): `ticket` (its id) and `text`.',
         '- In a task conversation, to report to whoever asked: leave out `to`, give `text` and a `status` (progress, done, blocked, question).',
-        '- The dispatcher names the person\'s request a task serves with `need`: a short restatement for a new request, or the id of a need already open.',
+        '- The dispatcher names the person\'s request a task serves with `need`: a short restatement for a new request, or the id of a need already open; and, for a new request that belongs to one of the projects, that project with `project`.',
       ].join('\n'),
       parameters: {
         to: { type: 'string', description: '@handle (or id / name) of the bot. Leave it out to report on your own task.' },
@@ -3809,7 +4052,8 @@ export function apply(ctx, config, deps = {}) {
         title: { type: 'string', description: 'A short title for a new task; taken from the first line of text when left out.' },
         thread: { type: 'string', description: 'Only when this turn involves several topics or chats: the thread (as the message header "(thread …)" shows it) the new task, or the message added to a task, is for. A new task then answers there, and follow-ups there reach it. Left out with several, a new task belongs to none of them.' },
         report_to: { type: 'string', enum: ['thread', 'me'], description: 'For a new task: "thread" (default) — its bot answers the person in the topic or chat the request came from; "me" — its reports come back to you.' },
-        need: { type: 'string', description: 'Dispatcher only: the person\'s request this task serves. For a new request, restate it for the person in one short line in their language, saying what they get (not who does it); tasks for the same request pass the same line or the need id the first call returned. For more work on an open need ("Open needs: …"), its id (n…).' },
+        need: { type: 'string', description: 'Dispatcher only: the person\'s request this task serves. For a new request, restate it for the person in one short line in their language, saying what they get (not who does it); tasks for the same request pass the same line or the need id the first call returned. For more work on an open need ("Open needs: …"), its id (n…) or its card (OPC-12).' },
+        project: { type: 'string', description: 'Dispatcher only: the key of the project a new request belongs to (as "## Projects" lists them, e.g. OPC). Its tasks then work in the project\'s folder. Leave it out when no project clearly fits.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ to: v.to, from: v.from, ...(v.ticket ? { ticket: v.ticket } : {}) }) },
       isConcurrencySafe: () => true,
@@ -3845,18 +4089,49 @@ export function apply(ctx, config, deps = {}) {
         const chosen = typeof args.thread === 'string' && args.thread.trim() !== '' ? threadRef(args.thread, sessionId) : '';
         // The person's request it serves (Bots 0.11): only the dispatcher's own conversation names one.
         const routing = Boolean(sender) && !mine && isRouterHome(sender, sessionId);
-        const needArg = routing ? String(args.need ?? '').trim().replace(/^need\//, '') : '';
+        let needArg = routing ? String(args.need ?? '').trim().replace(/^need\//, '') : '';
+        // A card on the board names a need too (Bots 0.12): `OPC-12` is that card's need.
+        if (needArg && CARD_REF_RE.test(needArg.toUpperCase())) {
+          const card = needByRef(needArg);
+          if (!card) throw new Error(`no card ${needArg.toUpperCase()} on the board. For a new request, pass a short line restating it instead`);
+          needArg = card.id;
+        }
         if (needArg && NEED_ID_RE.test(needArg) && !needs.get(needArg)) {
           const open = openNeedsOf(sender).map((n) => n.id);
           throw new Error(`no need ${needArg}${open.length ? `; open needs: ${open.join(', ')}` : ''}. For a new request, pass a short line restating it instead`);
         }
-        const needText = (n) => (n ? ` It counts toward need ${n.id} ("${n.title}")${n.auto ? '; pass `need` with a short restatement to name it for the person' : ''}.` : '');
+        // Cards the person filed on the board that came in this turn, and their other words (Bots 0.12).
+        const turnAsks = routing ? turnState.get(sessionId)?.asks ?? [] : [];
+        const turnCards = [...new Set(turnAsks.map((a) => a.need).filter((id) => id && needs.get(id)))].map((id) => needs.get(id));
+        const namedNeed = needArg && NEED_ID_RE.test(needArg) ? needs.get(needArg) : undefined;
+        // A card kept in To do waits for the person: only they start it (from the board, which sends it here).
+        if (namedNeed?.todo && !turnCards.some((c) => c.id === namedNeed.id)) throw new Error(`need ${namedNeed.id} is a card the person keeps in To do; it starts when they start it on the board`);
+        /** New work in a turn with cards needs to say which request it is for when that is not plain. */
+        const checkCardTurn = () => {
+          if (!routing || namedNeed || !turnCards.length) return;
+          const label = (c) => `${c.id}${cardRefOf(c) ? ` (${cardRefOf(c)})` : ''} "${c.title}"`;
+          if (turnCards.length > 1) throw new Error(`this turn has several cards from the board: pass \`need\` with the id of the one this task is for: ${turnCards.map(label).join('; ')}`);
+          if (!needArg && turnAsks.some((a) => !a.need)) throw new Error(`this turn has card ${label(turnCards[0])} and other messages from the person: pass \`need\` — the card's id when this task is for the card, or a short restatement of the other request`);
+        };
+        // The project a new request belongs to (Bots 0.12); an unknown key is refused before anything opens.
+        const projectArg = routing && String(args.project ?? '').trim() ? projectByRef(args.project) : undefined;
+        const needText = (n) => {
+          if (!n) return '';
+          const ref = cardRefOf(n);
+          return ` It counts toward need ${n.id}${ref ? ` (card ${ref})` : ''} ("${n.title}")${n.auto ? '; pass `need` with a short restatement to name it for the person' : ''}.`;
+        };
+        /** The need of this call, filed under the project it names when it has none yet. */
+        const needOf = (t) => {
+          const n = needFor(sender, sessionId, needArg, t);
+          return n && projectArg && !n.projectId ? fileNeed(n, projectArg) : n;
+        };
         // Adding to an existing ticket.
         if (wantTicket) {
           const t = tickets.get(wantTicket);
           if (!t) throw new Error(`no task ${wantTicket}`);
           if (named && named.id !== t.botId) throw new Error(`task ${t.id} belongs to ${handleOf(t.botId)}, not @${named.handle}; leave out "to" or name its bot`);
           if (!mayAppend(t, sender, sessionId)) throw new Error(`task ${t.id} was not asked for from this conversation; message its bot with a new task instead`);
+          if (!needOfTicket(t)) checkCardTurn();
           let next = await appendToTicket(t, args.text, { sender: sender ?? null, senderSessionId: sessionId });
           // Carried on from a thread (Bots 0.10): the task follows the thread, and its reports show there.
           const here = !mine ? discussions.bySession(sessionId) : undefined;
@@ -3867,7 +4142,7 @@ export function apply(ctx, config, deps = {}) {
           const target = store.get(next.botId);
           const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
           const after = reportsGoDirect(next) ? `${handleOf(next.botId)} answers the person ${isPanelThread(next.showIn ?? next.origin?.threadKey) ? 'in the panel' : 'in the chat'} itself` : `${handleOf(next.botId)}'s report will arrive here by itself`;
-          const need = routing ? needFor(sender, sessionId, needArg, next) : undefined;
+          const need = routing ? needOf(next) : undefined;
           return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
@@ -3887,8 +4162,17 @@ export function apply(ctx, config, deps = {}) {
         // A new ticket: from a task conversation (a sub-task), or from a bot's home when tasks are on.
         if (sender && sessionId && (mine || isHomeOf(sender, sessionId))) {
           const relay = String(args.report_to ?? '').trim().toLowerCase() === 'me';
-          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay });
-          const need = routing ? needFor(sender, sessionId, needArg, t) : undefined;
+          if (!mine) checkCardTurn();
+          let need;
+          // Counted toward its need before it starts, so it works in the need's project from its first step.
+          const onCreate = (made) => {
+            if (!routing) return;
+            need = needOf(made);
+            const pid = need?.projectId ?? projectArg?.id;
+            if (pid && made.projectId !== pid) tickets.patch(made.id, { projectId: pid });
+          };
+          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay, projectId: projectArg?.id ?? '', onCreate });
+          if (need) need = needs.get(need.id) ?? need;
           const stage = stageOf(t);
           const who = named.id === sender.id ? 'yourself' : `@${named.handle}`;
           const answer = reportsGoDirect(t)
@@ -3964,7 +4248,7 @@ export function apply(ctx, config, deps = {}) {
       description:
         'Read tasks (tickets) and chat threads by reference instead of guessing: `tickets` (a page of them, open ones first), `ticket/<id>` (its card), `ticket/<id>/text` (what was asked), `ticket/<id>/reports`, `ticket/<id>/transcript` (its conversation), `thread/<key>` (a chat thread: its tasks and latest messages), `bot/<handle>` (that bot\'s tasks). Every id on a card can be read this way; long text comes in pages (`offset`). From a task conversation you can read that task, its parent and sub-tasks, and its threads.',
       parameters: {
-        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key>, bot/<handle>, needs or need/<id>.' },
+        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key>, bot/<handle>, needs or need/<id> (or need/OPC-12, a card on the board).' },
         offset: { type: 'number', description: 'Where the next page starts: the `next_offset` of the last one.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
@@ -3972,12 +4256,12 @@ export function apply(ctx, config, deps = {}) {
       execute: async (args, exec) => {
         const ref = String(args.ref ?? '').trim();
         // The person's requests (Bots 0.11): what each asked for and how far it got.
-        if (ref === 'needs' || /^need\/n[a-z0-9]{8}$/.test(ref)) {
+        if (ref === 'needs' || /^need\/(?:n[a-z0-9]{8}|[A-Za-z][A-Za-z0-9]{1,5}-[1-9][0-9]*)$/.test(ref)) {
           if (ref === 'needs') {
-            const items = needs.list().slice(0, 30).map((n) => ({ id: n.id, title: n.title, ...needStatusOf(n), tasks: n.tickets }));
+            const items = needs.list().slice(0, 30).map((n) => ({ id: n.id, ...(cardRefOf(n) ? { card: cardRefOf(n) } : {}), title: n.title, ...needStatusOf(n), tasks: n.tickets }));
             return { ok: true, items, text: JSON.stringify({ needs: items }, null, 1) };
           }
-          const n = needs.get(ref.slice(5));
+          const n = needByRef(ref.slice(5));
           if (!n) throw new Error(`no ${ref}`);
           const v = { ...needRow(n), asks: n.asks.map((a) => ({ at: a.at, text: a.text })), tasks: n.tickets };
           return { ok: true, ...v, text: JSON.stringify(v, null, 1) };
@@ -4051,18 +4335,21 @@ export function apply(ctx, config, deps = {}) {
     defineTool({
       name: 'bot_need',
       description:
-        'Keep the person\'s requests (needs) as they mean them; the panel shows each with how far its tasks got. `rename` one when they change what they want (`title`: the new short line), `merge` one into another when two turn out to be the same request (`into`: the need that stays), `drop` one when they no longer want it (its open tasks stop). `bot_recall` with `needs` lists them.',
+        'Keep the person\'s requests (needs) as they mean them; the panel shows each as a card on its board, with how far its tasks got. `rename` one when they change what they want (`title`: the new short line), `merge` one into another when two turn out to be the same request (`into`: the need that stays), `drop` one when they no longer want it (its open tasks stop), mark one `done` when it was answered without a task (a card you answered yourself) or the person says it is done (its open tasks are closed), `file` one under a project (`project`: its key; empty for none). `bot_recall` with `needs` lists them.',
       parameters: {
-        need: { type: 'string', required: true, description: 'The need id (n…).' },
-        action: { type: 'string', required: true, enum: ['rename', 'merge', 'drop'] },
+        need: { type: 'string', required: true, description: 'The need id (n…), or its card (OPC-12).' },
+        action: { type: 'string', required: true, enum: ['rename', 'merge', 'drop', 'done', 'file'] },
         title: { type: 'string', description: 'For rename: the request restated in one short line, in the person\'s language.' },
         into: { type: 'string', description: 'For merge: the id of the need that takes this one\'s tasks.' },
+        project: { type: 'string', description: 'For file: the project key (OPC); empty to file it under none.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
       execute: async (args, exec) => {
         const { sessionId, bot: sender } = actor(exec);
-        if (sender && !isRouterHome(sender, sessionId)) throw new Error('only the dispatcher keeps the person\'s needs; report on your task instead');
-        const n = needs.get(String(args.need ?? '').trim());
+        // The dispatcher's own conversation (a lone dispatcher's too, for the cards filed on the board).
+        const front = sender && sender.role === 'primary' && isHomeOf(sender, sessionId) && !ticketOf(sessionId);
+        if (sender && !front) throw new Error('only the dispatcher keeps the person\'s needs; report on your task instead');
+        const n = needByRef(args.need);
         if (!n) throw new Error(`no need ${String(args.need ?? '').trim()}. bot_recall {"ref":"needs"} lists them.`);
         const action = String(args.action ?? '').trim().toLowerCase();
         let next;
@@ -4072,7 +4359,7 @@ export function apply(ctx, config, deps = {}) {
           next = needs.rename(n.id, args.title);
           said = `Need ${n.id} is now "${next.title}".`;
         } else if (action === 'merge') {
-          const into = needs.get(String(args.into ?? '').trim());
+          const into = needByRef(args.into);
           if (!into) throw new Error('merge needs `into`: the id of the need that stays');
           if (into.id === n.id) throw new Error('a need cannot be merged into itself');
           next = needs.merge(n.id, into.id);
@@ -4081,7 +4368,15 @@ export function apply(ctx, config, deps = {}) {
           const open = needTasks(n).filter((t) => !t.ended).length;
           next = dropNeed(n, sender ? 'dispatcher' : 'user');
           said = `Dropped need ${n.id} ("${n.title}")${open ? `; stopped its ${open} open task${open > 1 ? 's' : ''}` : ''}.`;
-        } else throw new Error('action is one of rename, merge, drop');
+        } else if (action === 'done') {
+          const open = needTasks(n).filter((t) => !t.ended).length;
+          next = finishNeed(n, sender ? 'dispatcher' : 'user');
+          said = `Marked need ${n.id} ("${n.title}") done${open ? `; closed its ${open} open task${open > 1 ? 's' : ''}` : ''}.`;
+        } else if (action === 'file') {
+          const p = String(args.project ?? '').trim() ? projectByRef(args.project) : undefined;
+          next = fileNeed(n, p);
+          said = p ? `Need ${n.id} is card ${cardRefOf(next)} of project ${p.key} (${p.name}).` : `Need ${n.id} is filed under no project.`;
+        } else throw new Error('action is one of rename, merge, drop, done, file');
         return { ok: true, text: said, need: needRow(next) };
       },
     }),
@@ -4862,6 +5157,29 @@ export function apply(ctx, config, deps = {}) {
   const unfurlLink = createUnfurler();
   const routes = {
     teams: { get: () => teamsView() },
+    // Projects (Bots 0.12): what the cards on the board are filed under.
+    projects: { get: () => ({ items: projects.list().map(projectView) }) },
+    'projects/save': {
+      post: (body) => {
+        const input = body?.project && typeof body.project === 'object' ? body.project : {};
+        const fields = Object.fromEntries(['name', 'key', 'brief', 'dir'].filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
+        // Prompts read the projects as they are assembled: the dispatcher and the project's tasks see the change at their next step.
+        const p = input.id ? projects.update(input.id, fields) : projects.create(fields);
+        return { ok: true, project: projectView(p) };
+      },
+    },
+    'projects/delete': {
+      post: (body) => {
+        const p = projects.get(String(body?.id ?? ''));
+        if (!p) throw new Error('no such project');
+        // Its cards stay, filed under no project; tasks under way keep working where they started, and those not
+        // started yet work in the Bots workspace, without the project, as tasks of no project do.
+        const cards = needs.unfile(p.id);
+        for (const t of tickets.list()) if (t.projectId === p.id && !t.sessionId) tickets.patch(t.id, { projectId: undefined });
+        projects.remove(p.id);
+        return { ok: true, cards };
+      },
+    },
     'teams/hire': {
       post: async (body) => {
         const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en');
@@ -5248,12 +5566,14 @@ export function apply(ctx, config, deps = {}) {
     if (!t) throw new Error('no such task');
     return t;
   };
-  /** GET /needs: the person's requests, newest first (`status` filters: waiting,working,…). */
+  /** GET /needs: the person's requests, newest first (`status` filters: waiting,working,…; `project`: a project's id, or `none`). */
   function needList(url) {
     const want = (url.searchParams.get('status') ?? '').split(',').map((x) => x.trim()).filter(Boolean);
     const limit = Math.min(300, Math.max(1, Math.floor(Number(url.searchParams.get('limit')) || 100)));
     const offset = Math.max(0, Math.floor(Number(url.searchParams.get('offset')) || 0));
-    const rows = needs.list().map(needRow).filter((r) => !want.length || want.includes(r.status)).sort((a, b) => b.updatedAt - a.updatedAt);
+    const project = (url.searchParams.get('project') ?? '').trim();
+    const inProject = (n) => !project || (project === 'none' ? !projectOfNeed(n) : n.projectId === project);
+    const rows = needs.list().filter(inProject).map(needRow).filter((r) => !want.length || want.includes(r.status)).sort((a, b) => b.updatedAt - a.updatedAt);
     return { items: rows.slice(offset, offset + limit), next_offset: offset + limit < rows.length ? offset + limit : null };
   }
   /** How many of the person's requests wait for them (a question, or not done: the board's first group), and how many are being worked on. */
@@ -5277,7 +5597,12 @@ export function apply(ctx, config, deps = {}) {
         if (rest.length !== 1) throw new Error('no such route');
         return needView(needOr404(rest[0]));
       },
-      post: (rest, body) => {
+      post: async (rest, body) => {
+        // A card filed on the board (Bots 0.12).
+        if (rest.length === 1 && rest[0] === 'create') {
+          const { need, startError } = await createCard({ title: body.title, description: body.description, projectId: String(body.projectId ?? ''), assignee: String(body.assignee ?? ''), start: body.start !== false });
+          return { ok: true, ...needView(need), ...(startError ? { startError } : {}) };
+        }
         const [id, action] = rest;
         const n = needOr404(id);
         switch (action) {
@@ -5288,6 +5613,24 @@ export function apply(ctx, config, deps = {}) {
           }
           case 'drop':
             return { ok: true, ...needView(dropNeed(n, 'user')) };
+          // Bots 0.12: hand a card in To do (or a dropped one) out, mark one done, change what it says or where it is filed.
+          case 'start': {
+            const st = needStatusOf(n).status;
+            if (st !== 'todo' && st !== 'stopped') throw new Error('this card is under way already: carry it on in the chat, or reply to its task');
+            return { ok: true, ...needView(await startCard(n, String(body.assignee ?? ''))) };
+          }
+          case 'done':
+            return { ok: true, ...needView(finishNeed(n, 'user')) };
+          case 'save': {
+            // Checked first, so a change that is refused changes nothing.
+            if (body.title !== undefined && !clampNeedTitle(body.title)) throw new Error('a card needs a title');
+            if (body.description !== undefined && String(body.description ?? '').length > MAX_DESCRIPTION) throw new Error(`a description is at most ${MAX_DESCRIPTION} characters`);
+            const p = body.projectId !== undefined && String(body.projectId ?? '').trim() ? projectByRef(body.projectId) : undefined;
+            if (body.title !== undefined) needs.rename(n.id, body.title);
+            if (body.description !== undefined) needs.describe(n.id, body.description);
+            if (body.projectId !== undefined) fileNeed(needs.get(n.id), p);
+            return { ok: true, ...needView(needs.get(n.id)) };
+          }
           default:
             throw new Error('no such route');
         }
