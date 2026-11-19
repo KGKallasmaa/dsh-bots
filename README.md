@@ -145,7 +145,8 @@ up), and several messages (you ask, then add "include the UK in the Europe one",
   new project.
 - **Name a card in a message**: `OPC-12 add the UK too`, in the panel or a chat app. A message to the dispatcher
   that starts with a card's reference goes straight to that card's task when it has one (as a reply to the task's
-  message does), and its answers come back where you wrote; the dispatcher gets a note without being woken. A card
+  message does), and its answers come back where you wrote; the dispatcher gets a note without being woken. If the
+  task reports done before it reads your message, it stays open and answers that too; only then is the card done. A card
   named anywhere else in a message (or one with several tasks) goes to the dispatcher, which reads what each named
   card is, how far it got and its open tasks, and can start one in To do you name.
 - **A card can wait for others**: on its page (**Starts after**), in **New card**, or by asking the dispatcher ("do

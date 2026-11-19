@@ -385,8 +385,8 @@ test('a follow-up on a subscribed Thread goes to the task; the Router only gets 
   await h.step(sid, { claim: [router.injected.at(-1), ...router.inbox.nextStep.splice(0)], answer: 'Two tasks are open.' });
   await settle();
   assert.deepEqual(tg.c.sent.at(-1), { chatId: '42', text: 'Two tasks are open.' });
-  // A done task opens again when its person follows up (before it is archived).
-  await s.call('bot_send_message', { status: 'done', text: 'Done.' }, tb.sessionId);
+  // A done task opens again when its person follows up (before it is archived). The worker reads the follow-up first.
+  await h.step(tb.sessionId, { calls: [{ name: 'bot_send_message', args: { status: 'done', text: 'Done.' } }] });
   assert.equal(api.tickets.get(tb.id).ended.outcome, 'done');
   tg.say('43', 14, 'One more fix please', 't9');
   await settle();
@@ -1379,7 +1379,7 @@ test('a follow-up handed out again after a restart does not reopen the finished 
   const followUpId = worker.deliveries.at(-1).message.id;
   assert.match(followUpId, new RegExp(`^bots:chat:.*:12:${tb.id}$`));
   const noticeId = h.agentsById.get(sid).injected.at(-1).id;
-  await s.call('bot_send_message', { status: 'done', text: 'Done.' }, tb.sessionId);
+  await h.step(tb.sessionId, { calls: [{ name: 'bot_send_message', args: { status: 'done', text: 'Done.' } }] });
   assert.equal(api.tickets.get(tb.id).ended.outcome, 'done');
   s.dispose();
   // The chat app's record of what it handed out is lost; the logs show the follow-up arrived.
@@ -1866,7 +1866,7 @@ test('board: a card handed to one bot is a task opened for the dispatcher, shown
   // A reply to the card's message goes to its task.
   await api.panelSend(env.atlas, '16 and 17', { replyTo: msg.id });
   assert.equal(textOfMsg(h.agentsById.get(t.sessionId).deliveries.at(-1).message), '16 and 17');
-  await call('bot_send_message', { status: 'done', text: 'Fixed for 16 and 17.' }, t.sessionId);
+  await h.step(t.sessionId, { calls: [{ name: 'bot_send_message', args: { status: 'done', text: 'Fixed for 16 and 17.' } }] });
   const done = await api.request('GET', `/needs/${card.id}`);
   assert.deepEqual([done.status, done.results.map((x) => x.text)], ['done', ['Fixed for 16 and 17.']]);
   // The dispatcher takes no card as a task; an unknown bot is refused, and the card stays in To do.
@@ -2077,6 +2077,32 @@ test('cards named: a message that starts with a card goes to its one task; one t
   env.dispose();
 });
 
+test('a done report while the person\'s message to the task waits unread leaves the task open, and the answer to it reaches them', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  await api.request('POST', '/projects/save', { project: { name: 'One-person company', key: 'OPC' } });
+  const card = await api.request('POST', '/needs/create', { title: 'Landing page', projectId: 'OPC', assignee: '@forge' });
+  const t = api.tickets.get(card.tickets[0].id);
+  const worker = h.agentsById.get(t.sessionId);
+  worker.inbox.nextTurn.splice(0);
+  // The person adds to it while its last step is under way: the message waits for the next step.
+  await api.userSend(env.atlas, 'OPC-1 add a footer with the address');
+  assert.equal(textOfMsg(worker.inbox.nextStep.at(-1)), 'OPC-1 add a footer with the address');
+  const first = await call('bot_send_message', { status: 'done', text: 'The page is live.' }, t.sessionId);
+  assert.match(first.text, /The task stays open: the person wrote to it while you worked/);
+  assert.equal(api.tickets.get(t.id).ended, undefined);
+  assert.equal((await api.request('GET', `/needs/${card.id}`)).status, 'working');
+  const shown = api.store.messages({ bot: env.atlas.id }).filter((m) => m.kind === 'reply' && m.ticket === t.id);
+  assert.deepEqual(shown.map((m) => m.text), ['The page is live.'], 'what it did so far is shown');
+  // The next step reads the message; that answer is shown too, and ends the task.
+  const [second] = await h.step(t.sessionId, { calls: [{ name: 'bot_send_message', args: { status: 'done', text: 'Footer added.' } }] });
+  assert.match(second.text, /The task is done/);
+  assert.equal(api.tickets.get(t.id).ended.outcome, 'done');
+  assert.equal((await api.request('GET', `/needs/${card.id}`)).status, 'done');
+  assert.deepEqual(api.store.messages({ bot: env.atlas.id }).filter((m) => m.kind === 'reply' && m.ticket === t.id).map((m) => m.text), ['The page is live.', 'Footer added.']);
+  env.dispose();
+});
+
 test('cards named: a chat message that starts with a card goes to its task, which answers in that chat', async () => {
   const env = boardBoot();
   const { api, call } = env;
@@ -2190,7 +2216,7 @@ test('github: a labelled issue becomes a card of its repository\'s project; the 
   gh.emit(issueMsg(12, { messageId: 'i1012b' }));
   await settle();
   assert.equal((await api.request('GET', '/needs')).items.length, 1);
-  await call('bot_send_message', { status: 'done', text: 'Landing page is live.' }, t.sessionId);
+  await h.step(t.sessionId, { calls: [{ name: 'bot_send_message', args: { status: 'done', text: 'Landing page is live.' } }] });
   await settle();
   assert.equal(gh.sent.at(-1).text, '【Forge】\nLanding page is live.');
   assert.equal((await api.request('GET', `/needs/${card.id}`)).status, 'done');

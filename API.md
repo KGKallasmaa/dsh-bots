@@ -997,7 +997,8 @@ registry); a project whose folder is gone fails the start (`did not start: the f
 another one on the board`). A sub-task takes its parent's `projectId`. A ticket the router opens is counted toward its
 need before it starts, so it gets the need's project then. The assignment adds `It is for card OPC-12 ("…") of project
 OPC (…).` after its origin line; the task's persona adds `## The project` (key, name, folder, brief).
-`TicketView += { need?: { id, title, ref? } }`.
+`TicketView += { need?: { id, title, ref? } }`; `TicketRow += { board?: true }` (the panel reads such a task as asked by
+the person, from the board).
 
 ### Tools
 - `bot_send_message += { project? }` — router home only: a project key (or id) a new request belongs to; an unknown one
@@ -1025,6 +1026,9 @@ an existing card (`needs/<ref>` finds it). In a message to the router home (the 
   an `@handle`) through `toTickets` with `meta.card`. A task that answers the person itself is subscribed to that
   Thread and `showIn` it. The dispatcher gets a `[follow_up]` note injected. Its words join the card's need. When the
   task does not take it, the message goes to the router as usual.
+- A `done` report while a person's message to the task waits unread (pending in its conversation, or parked for a slot)
+  is passed on as usual, but the task stays open (`addReport(…, { keepOpen: true })`); the worker's tool result says the
+  message comes next and to report again. Its next `done` ends it. This holds for any task, not only a card's.
 - **Otherwise** the router reads, after `Open needs:` (a panel message's header; a text block before a chat message's
   source line), `Cards named: n… OPC-12 "…" (working, 1/2 done), open tasks t… (@forge, working); …` (≤ 5 cards; a card
   in To do adds `— in To do: it starts when the person says so`). The turn's asks carry `refs` (need ids named), and

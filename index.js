@@ -1928,6 +1928,8 @@ export function apply(ctx, config, deps = {}) {
       stage: stageOf(t),
       requester: t.requester?.kind === 'session' && t.requester.botId ? { kind: 'bot', botId: t.requester.botId } : { kind: 'user' },
       ...(t.origin?.via ? { via: t.origin.via } : {}),
+      // The person handed a card to this bot themselves (Bots 0.12): the dispatcher only carries it.
+      ...(t.board ? { board: true } : {}),
       // Its conversation waits for the person's answer to a question (state `asks`): it needs you.
       ...(askingIn(t.sessionId) ? { asking: true } : {}),
       // What its conversation does right now (lib/activity.mjs), while it runs.
@@ -2720,7 +2722,10 @@ export function apply(ctx, config, deps = {}) {
     if (body === '') throw new Error('text must not be empty');
     if (t.archivedAt) throw new Error(`task ${t.id} is archived; nobody reads reports on it`);
     const wasOpen = !t.ended;
-    const next = tickets.addReport(t.id, { status, text: body });
+    // A person wrote to the task while it worked, and the worker has not read it yet (Bots 0.14): its
+    // `done` is passed on, but the task stays open for that message, so the answer to it reaches them too.
+    const waits = status === 'done' && wasOpen && personWaits(t);
+    const next = tickets.addReport(t.id, { status, text: body }, { keepOpen: waits });
     const index = next.reports.length - 1;
     const report = next.reports[index];
     let relayed = false;
@@ -2744,8 +2749,15 @@ export function apply(ctx, config, deps = {}) {
         relayed = await notifyRequester(next, reportRelayText(next, report, cardCtx()), { key: `report:${next.id}:${index}:${report.at}` });
       }
     }
-    if (status === 'done' && wasOpen) ticketEnded(next);
-    return { ticket: next, relayed, ...(shown ? { shown } : {}), ...(unread ? { unread, ...(parent ? { parent: parent.id } : {}) } : {}) };
+    if (status === 'done' && wasOpen && !waits) ticketEnded(next);
+    return { ticket: next, relayed, ...(shown ? { shown } : {}), ...(unread ? { unread, ...(parent ? { parent: parent.id } : {}) } : {}), ...(waits ? { waits: true } : {}) };
+  }
+
+  /** A person's message to a ticket that its worker has not read yet: parked for a slot, or pending in its conversation. */
+  function personWaits(t) {
+    if (parkedOf(t).some((m) => m.human)) return true;
+    const agent = t.sessionId ? agents()?.get?.(t.sessionId) : null;
+    return pendingOf(agent).some((m) => m?.source?.kind === 'user');
   }
 
   /**
@@ -4322,10 +4334,12 @@ export function apply(ctx, config, deps = {}) {
           const isReport = wantTicket ? wantTicket === mine.id : !named || (named.id === requesterBot && named.id !== sender.id);
           if (isReport) {
             if (!status) throw new Error(`a report on task ${mine.id} needs a status: progress (an update), done (with the result), blocked or question`);
-            const { ticket, relayed, unread, parent, shown } = await reportTicket(mine, status, args.text);
+            const { ticket, relayed, unread, parent, shown, waits } = await reportTicket(mine, status, args.text);
             const to = requesterBot ? store.get(requesterBot) : null;
             const said =
-              status === 'progress'
+              waits
+                ? `${shown ? `Shown to the person as it is, in ${shown.where}` : `Reported "done" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}`}. The task stays open: the person wrote to it while you worked, and their message comes next. Answer it, then report again (done when it is done).`
+              : status === 'progress'
                 ? `Recorded on task ${ticket.id}; progress does not interrupt whoever asked. Go on with the work.`
                 : shown
                   ? `Shown to the person as it is, in ${shown.where}${to ? `; @${to.handle} is told` : ''}.${status === 'done' ? ` The task is done: end your turn with only ${NO_REPLY}.` : ` Their answer will arrive here by itself; end your turn now with only ${NO_REPLY}.`}`

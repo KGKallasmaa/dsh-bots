@@ -3095,10 +3095,10 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** A task's stage, or that it waits for your answer to its question. */
     const TaskChip = ({ t, row }) => (row?.asking ? h(Badge, { color: C.warn, 'data-dsh-bots-task-asking': row.id }, Icon.question(11), t('askingChip')) : h(StageChip, { t, stage: row?.stage }));
     const ReportChip = ({ t, status }) => (REPORT_COLOR[status] ? h(Badge, { color: REPORT_COLOR[status], 'data-dsh-bots-report': status }, t(`report_${status}`)) : null);
-    /** Who asked for a task: you, or a bot (the dispatcher, or the bot of a parent task). */
+    /** Who asked for a task: you (also a card you handed to a bot on the board), or a bot (the dispatcher, or the bot of a parent task). */
     const requesterBot = (row) => {
       const r = row?.requester ?? {};
-      return r.kind === 'user' || typeof r.botId !== 'string' || !r.botId ? null : r.botId;
+      return row?.board || r.kind === 'user' || typeof r.botId !== 'string' || !r.botId ? null : r.botId;
     };
     const requesterText = (t, row) => (requesterBot(row) ? t('askedBy', { name: botName(t, requesterBot(row)) }) : t('askedByYou'));
     const requesterName = (t, row) => (requesterBot(row) ? botName(t, requesterBot(row)) : t('you'));
@@ -3547,8 +3547,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             if (action) onDropCard(dragging, action);
           },
           style: {
-            flex: '1 0 240px',
-            minWidth: 240,
+            flex: '1 1 0',
+            minWidth: 184,
             maxWidth: 420,
             display: 'flex',
             flexDirection: 'column',
@@ -4256,7 +4256,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         ? h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } }, h('span', null, where), who && !where.includes(who) ? dotSep() : null, who && !where.includes(who) ? h('span', { style: { color: C.muted } }, who) : null)
         : via && via !== 'panel'
           ? viaBadge(t, via, via === 'schedule' ? '' : who)
-          : t('fromPanel');
+          : v.board
+            ? viaBadge(t, 'board', '')
+            : t('fromPanel');
       return h(
         'div',
         { 'data-dsh-bots-ticket': id, 'data-stage': stage, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
