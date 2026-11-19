@@ -250,7 +250,8 @@ const BOT_MEMORY = {
   model: null,
   settings: { auto: true, model: null, dream: true, dreamTime: '03:00' },
 };
-const TEAM_MEMORY = { scope: 'team', notes: [{ id: 't-1', text: 'The company is called Acme.', kind: 'fact', source: 'dream', at: 1, updated: 1 }], digests: [{ date: '2026-11-15', text: '## Done\nAda sent the brief.', at: 1 }], journal: BOT_MEMORY.journal, dream: { lastDate: '2026-11-16', lastAt: Date.now() - 5 * 3_600_000 }, settings: { auto: true, model: null, dream: true, dreamTime: '03:00' } };
+const PROJECT_MEMORY = { scope: 'pjopc00001', project: { id: 'pjopc00001', key: 'OPC', name: 'One-person company' }, notes: [{ id: 'p-1', text: 'Pricing is in USD only.', kind: 'fact', source: 'auto', at: 1, updated: 1 }], today: '2026-11-19' };
+const TEAM_MEMORY = { scope: 'team', today: '2026-11-19', projects: [{ id: 'pjopc00001', key: 'OPC', name: 'One-person company', count: 1 }, { id: 'pjweb00001', key: 'WEB', name: 'Website', count: 0 }], notes: [{ id: 't-1', text: 'The company is called Acme.', kind: 'fact', source: 'dream', at: 1, updated: 1 }, { id: 't-2', text: 'Family day on 1/1.', kind: 'fact', source: 'auto', until: '2999-01-01', at: 1, updated: 1 }, { id: 't-3', text: 'An old offer.', kind: 'fact', source: 'auto', until: '2001-01-01', at: 1, updated: 1 }], digests: [{ date: '2026-11-15', text: '## Done\nAda sent the brief.', at: 1 }], journal: BOT_MEMORY.journal, dream: { lastDate: '2026-11-16', lastAt: Date.now() - 5 * 3_600_000 }, settings: { auto: true, model: null, dream: true, dreamTime: '03:00' } };
 const SOURCES = {
   writable: true,
   apis: ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'],
@@ -388,7 +389,7 @@ function mockFetch(posts = []) {
     if (path.startsWith('/__dsh_bots/skills/library')) return { ok: true, json: async () => LIBRARY };
     if (path.startsWith('/__dsh_bots/apps/external')) return { ok: true, json: async () => EXTERNAL };
     if (path.startsWith('/__dsh_bots/usage')) return { ok: true, json: async () => USAGE };
-    if (path.startsWith('/__dsh_bots/memory')) return { ok: true, json: async () => (path.includes('bot=team') ? TEAM_MEMORY : BOT_MEMORY) };
+    if (path.startsWith('/__dsh_bots/memory')) return { ok: true, json: async () => (path.includes('bot=team') ? TEAM_MEMORY : path.includes('bot=pj') ? PROJECT_MEMORY : BOT_MEMORY) };
     if (path.startsWith('/__dsh_bots/models/sources')) return { ok: true, json: async () => SOURCES };
     if (path.startsWith('/__dsh_bots/settings')) return { ok: true, json: async () => ({ settings: SETTINGS }) };
     if (path.startsWith('/__dsh_bots/prices')) return { ok: true, json: async () => PRICES };
@@ -956,6 +957,52 @@ test('teams: with a roster, the template list asks nothing about the dispatcher:
     assert.deepEqual(groups, ['desk', 'opc', 'other']);
     assert.match(collect(w.tree).join(' '), /One-person company/);
     w.hooks.runCleanups();
+  });
+});
+
+test('0.16: a new bot joins a hired team; on its Profile it moves, and the lead switch follows the team chosen', async () => {
+  await withRoster([BOTS[0], { ...BOTS[1], team: 'opc', lead: true }, BOTS[2]], async () => {
+    const w = await mountPanel();
+    findAll(w.tree, (n) => n.props['data-dsh-bots-new'])[0].props.onClick();
+    await w.rerender(1);
+    findAll(w.tree, (n) => n.props.role === 'menuitem')[0].props.onClick();
+    await w.rerender(2);
+    const pick = findAll(w.tree, (n) => n.props['data-dsh-bots-new-team'])[0];
+    assert.deepEqual(findAll(pick, (n) => n.type === 'option').map((o) => [o.props.value, collect(o).join('')]), [['', 'No team'], ['opc', 'One-person company']]);
+    findAll(w.tree, (n) => n.props['data-dsh-bots-field'] === 'new-name')[0].props.onChange({ target: { value: 'Pulse' } });
+    await w.rerender(1);
+    findAll(w.tree, (n) => n.props['data-dsh-bots-new-team'])[0].props.onChange({ target: { value: 'opc' } });
+    await w.rerender(1);
+    findAll(w.tree, (n) => n.props['data-dsh-bots-create'])[0].props.onClick();
+    await flush();
+    assert.equal(w.posts.find((p) => p.path.endsWith('/save')).body.bot.team, 'opc');
+    w.hooks.runCleanups();
+
+    // A bot of no team joins one on its Profile; Bob, its lead, moves out and no longer leads.
+    let v = await openTab('profile', 'bot-c');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-lead']).length, 0);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-team-select'])[0].props.onChange({ target: { value: 'opc' } });
+    await v.rerender(1);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-lead'] === 'opc').length, 1);
+    assert.match(collect(v.tree).join(' '), /Bob leads One-person company now/);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-save'])[0].props.onClick();
+    await flush();
+    assert.deepEqual([v.posts.find((p) => p.path.endsWith('/save')).body.bot.team, v.posts.find((p) => p.path.endsWith('/save')).body.bot.lead], ['opc', false]);
+    v.hooks.runCleanups();
+    v = await openTab('profile', 'bot-b');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-team-select'])[0].props.value, 'opc');
+    findAll(v.tree, (n) => n.props['data-dsh-bots-team-select'])[0].props.onChange({ target: { value: '' } });
+    await v.rerender(1);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-lead']).length, 0);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-save'])[0].props.onClick();
+    await flush();
+    const body = v.posts.find((p) => p.path.endsWith('/save')).body.bot;
+    assert.deepEqual([body.team, 'lead' in body], ['', false]);
+    v.hooks.runCleanups();
+    // The dispatcher has no team to pick.
+    v = await openTab('profile', 'bot-a');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-team-select']).length, 0);
+    v.hooks.runCleanups();
   });
 });
 
@@ -1528,6 +1575,23 @@ test('team memory: shared notes, digests, journal, and consolidating now', async
   const v = await openView('data-dsh-bots-memory-entry');
   const text = collect(v.tree).join(' ');
   assert.match(text, /Team memory/);
+  // 0.16: a note's last day, and the projects' memory with their own notes.
+  assert.match(text, /until 2999-01-01/);
+  assert.match(text, /past its day \(2001-01-01\)/);
+  assert.match(text, /Project memory/);
+  const pick = findAll(v.tree, (n) => n.props['data-dsh-bots-project-memory-pick'])[0];
+  assert.deepEqual(findAll(pick, (n) => n.type === 'option').map((o) => collect(o).join('')), ['OPC · One-person company (1)', 'WEB · Website']);
+  assert.match(text, /Pricing is in USD only/);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-note-input'] && findAll(v.tree, (m) => m.props['data-dsh-bots-notes'] === 'pjopc00001').length)[0];
+  const notes = findAll(v.tree, (n) => n.props['data-dsh-bots-notes'] === 'pjopc00001')[0];
+  findAll(notes, (n) => n.props['data-dsh-bots-note-input'])[0].props.onChange({ target: { value: 'Launch is on 12/1.' } });
+  await v.rerender(1);
+  const notes2 = findAll(v.tree, (n) => n.props['data-dsh-bots-notes'] === 'pjopc00001')[0];
+  findAll(notes2, (n) => n.props['data-dsh-bots-note-until'])[0].props.onChange({ target: { value: '2026-12-01' } });
+  await v.rerender(1);
+  findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-notes'] === 'pjopc00001')[0], (n) => n.props['data-dsh-bots-note-add'])[0].props.onClick();
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/memory/put')).body, { scope: 'pjopc00001', note: { text: 'Launch is on 12/1.', kind: 'fact', until: '2026-12-01' } });
   assert.match(text, /The company is called Acme/);
   assert.match(text, /2026-11-15/);
   assert.match(text, /Last consolidated/);
@@ -2055,6 +2119,34 @@ test('the router notice shows once, opens the dispatcher, and is dismissed throu
   const v = await openView('data-dsh-bots-usage-entry');
   assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0);
   v.hooks.runCleanups();
+});
+
+test('a team hired before its lead existed is offered it once: Add hires it, No thanks dismisses it', async () => {
+  const offer = { team: 'opc', name: { en: 'One-person company', zh: '一人公司' }, lead: { key: 'ops', handle: 'compass', name: { en: 'Compass', zh: 'Compass 运营' }, bio: { en: 'Operations lead: keeps the plan.', zh: '运营负责人：定计划。' }, color: '#7c5cff', tasks: [{ en: 'Inbox sweep', zh: '收件箱巡检' }, { en: 'Weekly numbers', zh: '每周数据' }] } };
+  for (const [button, path, body] of [
+    ['data-dsh-bots-lead-offer-add', '/__dsh_bots/teams/add-lead', { team: 'opc', lang: 'en' }],
+    ['data-dsh-bots-lead-offer-dismiss', '/__dsh_bots/teams/add-lead/dismiss', { team: 'opc' }],
+  ]) {
+    await withTaskState({ state: { leadOffers: [offer] } }, async () => {
+      const { exports, hooks } = await loadClient();
+      const { ctx, seen } = fakeContext();
+      exports.apply(ctx);
+      const posts = mockFetch();
+      const panel = seen.slots.find((s) => s.options.name === 'main').component;
+      let tree = await renderSettled(panel, {}, hooks);
+      const [notice] = findAll(tree, (n) => n.props['data-dsh-bots-lead-offer'] === 'opc');
+      assert.match(collect(notice).join(' '), /One-person company now has a lead/);
+      assert.match(collect(notice).join(' '), /Compass: Operations lead: keeps the plan\. It runs the team's routines \(Inbox sweep, Weekly numbers\) in place of the dispatcher/);
+      click(tree, button, 'opc');
+      await flush();
+      await flush();
+      hooks.rewind();
+      tree = panel({});
+      assert.deepEqual(posts.find((p) => p.path === path)?.body, body);
+      assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-lead-offer']).length, 0, 'gone at once');
+      hooks.runCleanups();
+    });
+  }
 });
 
 test('the old-leads notice names the leads, and Remove deletes them before it is dismissed', async () => {
@@ -2876,9 +2968,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.15\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.16\.0\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.15.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.16.0' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();
@@ -3015,8 +3107,21 @@ test('board: projects are added, changed and removed from the board', async () =
   click(v.tree, 'data-dsh-bots-project-new');
   await v.rerender(1);
   const field = (attr) => findAll(v.tree, (n) => n.props[attr])[0];
+  // No folder dialog in this Host: the folder is typed.
+  assert.equal(field('data-dsh-bots-project-pick'), undefined);
   field('data-dsh-bots-project-name').props.onChange({ target: { value: 'Website' } });
   await v.rerender(1);
+  // With the desktop's folder dialog, the folder is picked; typing still works after.
+  globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => '/Users/me/code/site' };
+  try {
+    await v.rerender(1);
+    field('data-dsh-bots-project-pick').props.onClick();
+    await v.rerender(1);
+    assert.equal(field('data-dsh-bots-project-dir').props.value, '/Users/me/code/site');
+    assert.equal(field('data-dsh-bots-project-name').props.value, 'Website');
+  } finally {
+    delete globalThis.__DSH_DIRECTORY_PICKER__;
+  }
   field('data-dsh-bots-project-dir').props.onChange({ target: { value: '~/code/site' } });
   await v.rerender(1);
   field('data-dsh-bots-project-brief').props.onChange({ target: { value: 'Astro, deployed on push.' } });

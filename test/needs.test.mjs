@@ -170,3 +170,21 @@ test('cards keep a project and number, a description, and To do; starting, holdi
   const again = createNeeds(dir).get(n.id);
   assert.deepEqual([again.projectId, again.number, again.tickets], ['pjzzzzzzzz', 7, ['t1', 't2']]);
 });
+
+test('a card links its GitHub issue, on github.com or a GitHub Enterprise server', () => {
+  const needs = createNeeds(mkdtempSync(join(tmpdir(), 'bots-needs-')));
+  const n = needs.create({
+    title: 'Portal login',
+    links: [
+      { kind: 'github', ref: 'ghe.corp.example/team/portal#7', url: 'https://ghe.corp.example/team/portal/issues/7' },
+      { kind: 'github', ref: 'acme/site#12', url: 'https://github.com/acme/site/issues/12' },
+      { kind: 'github', ref: 'acme/site#13', url: 'javascript:alert(1)' },
+      { kind: 'github', ref: 'not a ref' },
+    ],
+  });
+  assert.deepEqual(n.links, [
+    { kind: 'github', ref: 'ghe.corp.example/team/portal#7', url: 'https://ghe.corp.example/team/portal/issues/7' },
+    { kind: 'github', ref: 'acme/site#12', url: 'https://github.com/acme/site/issues/12' },
+    { kind: 'github', ref: 'acme/site#13' },
+  ]);
+});

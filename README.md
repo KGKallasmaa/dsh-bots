@@ -13,7 +13,8 @@ came before it, and nothing said in the chat since.
 It is built for two situations:
 
 - **A one-person company (OPC)**: you run a business alone and need a whole staff — engineering, growth,
-  customers, finance — plus a chief of staff who briefs you every morning.
+  customers, finance — plus an operations lead who keeps the week's plan, and a dispatcher who briefs you every
+  morning.
 - **Work that is naturally split between roles**: code needs a builder, a tester and a reviewer; content
   needs a researcher, a writer and a designer; research needs a skeptic.
 
@@ -23,27 +24,34 @@ It is built for two situations:
 
 Open the Bots panel (sidebar, or `/bots`), pick a team template and click **Hire this team**:
 
-| Team | Members | Scheduled tasks it gives your dispatcher |
+| Team | Members (lead first) | Scheduled tasks |
 | --- | --- | --- |
-| **One-person company** | Forge (engineer), Echo (growth), Harbor (customers), Ledger (finance) | Weekday 08:30 inbox sweep, weekday 09:00 morning brief, Monday numbers and market pulse, Friday 17:30 weekly review |
+| **One-person company** | Compass (operations lead), Forge (engineer), Echo (growth), Harbor (customers), Ledger (finance) | Compass: weekday 08:30 inbox sweep, Monday numbers and market pulse. Your dispatcher: weekday 09:00 morning brief, Friday 17:30 weekly review |
 | **Software squad** | Builder, Tester, Review | — |
-| **Content studio** | Scout (research), Quill (writer), Pixel (design) | Monday topic planning |
+| **Content studio** | Quill (editor), Scout (research), Pixel (design) | Your dispatcher: Monday topic planning |
 | **Research desk** | Memo (writer), Analyst, Market, Skeptic | — |
 
 There is one dispatcher, the front desk, and it hands out the work of every team you hire. Hire a second team and it
 joins the same dispatcher; its bots are listed under their team, so the dispatcher sees who belongs together.
 
-A team whose work runs as a pipeline has a **lead**: the bot that delivers the result, and brings in the others.
+Every team has a **lead**, listed first: the bot that owns the team's result and brings in the others.
 Builder leads the software squad (it plans a goal as small changes, checks the plan with you, and has Tester and
 Review check each change), Quill the content studio (Scout researches, Pixel draws), Memo the research desk (Analyst
 and Market dig, Skeptic checks the draft). The dispatcher hands such a team's work to its lead, never past it, unless
 you name a member yourself ("ask @tester to reproduce it"); the lead's teammates report back to the lead, and the lead
-answers you once. The one-person company is four peers (product, growth, customers, money), so it has no lead: the
-dispatcher gives each one its own part. You can still message any bot directly, a lead or a member. Change who leads
+answers you once. In the one-person company, whose four roles (product, growth, customers, money) are peers, Compass
+leads: its own work is the week's plan (`plan.md`) and the follow-through, it hands each part to the role that fits, and
+it runs the team's routines. A one-person company hired before 0.16 is offered Compass once in the panel: it joins
+with those routines, and the dispatcher stops running its own copies. You can still message any bot directly, a lead or a member. Change who leads
 on a bot's **Profile** (**Leads …**), or ask the dispatcher to; a team has one lead at most.
 
 The dispatcher is an ordinary bot: rename it, give it another avatar or persona on its **Profile**, or make another
 bot the dispatcher from its own Profile. It leads no team.
+
+A bot you make yourself joins a team you hired with **Team** in **New bot**, or later on its **Profile** (or ask the
+dispatcher: `bot_create` and `bot_update` take `team`). In a team with a lead, the dispatcher hands its work to the
+lead, which brings the new bot in. A bot moved to another team, or out of one, no longer leads; the dispatcher
+belongs to no team.
 
 Hiring:
 
@@ -53,8 +61,9 @@ Hiring:
 - imports role skills from [anthropics/skills](https://github.com/anthropics/skills) (webapp-testing,
   frontend-design, brand-guidelines, …) with their scripts;
 - adds the apps the role needs (GitHub, Stripe, HubSpot, …), whose keys you fill in later;
-- gives your dispatcher the team's scheduled tasks (one it already has by that name is not added twice), and makes
-  one, Atlas, when you have none;
+- gives the lead the team's own routines (the one-person company's inbox sweep, numbers and market pulse), and your
+  dispatcher the ones that reach across teams (the morning brief, the weekly review, the studio's topic planning; one
+  it already has by that name is not added twice), and makes a dispatcher, Atlas, when you have none;
 - offers to send the dispatcher a kickoff message, so the team starts working right away.
 
 ![Chat](https://raw.githubusercontent.com/kadaliao/dsh-bots/main/docs/en-chat.png)
@@ -63,21 +72,24 @@ Hiring:
 
 > **You → Atlas**: We release the new version next week. Organise it.
 >
-> **Atlas → Forge**: Fix the three P1 bugs before release, review your own diff, merge by Wednesday.
+> **Atlas → Compass**: The founder releases the new version next week; plan it with the team.
 >
-> **Atlas → Echo**: Draft the launch post and three social posts in the founder's voice, by Thursday.
+> **Compass → Forge**: Fix the three P1 bugs before release, review your own diff, merge by Wednesday.
 >
-> **Atlas → Ledger**: For a week after release, check new subscriptions and refunds daily; flag anything odd.
+> **Compass → Echo**: Draft the launch post and three social posts in the founder's voice, by Thursday.
 >
-> **Forge → Atlas**: The three bugs are fixed, tests pass, PR merged.
+> **Compass → Ledger**: For a week after release, check new subscriptions and refunds daily; flag anything odd.
 >
-> **Atlas → You**: This week: bugs cleared; launch draft for your review tomorrow. Decision needed: do we raise the price?
+> **Forge → Compass**: The three bugs are fixed, tests pass, PR merged.
+>
+> **Compass → You**: This week: bugs cleared; launch draft for your review tomorrow. Decision needed: do we raise the price?
 
 Bots answer in the language you write in, so the same team works in Chinese and English
 ([中文示例](README.zh-CN.md#一段示例一人公司)).
 
-Each message from Atlas to a teammate opens a task, the three tasks run at the same time, and Forge's message is the
-report on its task.
+Atlas, the dispatcher, hands the one-person company's work to its lead, Compass, which puts the week's plan in
+`plan.md` and splits it. Each message from Compass to a teammate opens a task, the three tasks run at the same time,
+Forge's message is the report on its task, and Compass answers you once.
 
 ## The chat: reply to a message to open a thread
 
@@ -144,8 +156,10 @@ up), and several messages (you ask, then add "include the UK in the Europe one",
   card's page (or a drag) hands it out then.
 - **Projects** group cards and number them: a card filed under project `OPC` is `OPC-1`, `OPC-2`… (numbers are not
   reused). A project has a **folder** and a **brief**. Its tasks work in the folder, which Harness adds as a workspace
-  (the same one when the folder is a workspace already); every task of the project reads the brief. Without a folder
-  its tasks work in the Bots workspace. The dispatcher reads the list of projects and files a new request under one
+  (the same one when the folder is a workspace already); every task of the project reads the brief, and the project's
+  own memory ([Memory](#memory)). Without a folder its tasks work in the Bots workspace. **Choose folder…** opens the
+  folder dialog of Harness (the desktop app's); you can also type the path. A project's **GitHub repository** is
+  `owner/repo`, or the repository's address, on github.com or a GitHub Enterprise server. The dispatcher reads the list of projects and files a new request under one
   when it clearly fits (`project` on `bot_send_message`); a sub-task works on its parent's project. Manage projects
   with **Projects** on the board; filter the board by project with the chips on top. Removing a project keeps its
   cards, under no project; its tasks under way go on where they are, and those still waiting to start work in the
@@ -385,30 +399,44 @@ and the Bots panel stays where it is (it used to jump to Harness's conversation 
 
 ## Memory
 
-Every bot keeps **notes** that outlast its topics, and the team shares one more list every bot reads:
+Every bot keeps **notes** that outlast its topics. Two more lists are shared:
+
+- **Shared notes**, read by every bot in every piece of work: about you, your business, the setup, shared
+  conventions.
+- **Project memory**, one list per project, read only by the tasks of that project: its decisions, conventions,
+  contacts and dates. Removing a project removes its memory.
+
+How notes are written and kept:
 
 - **After each piece of work** a short model call writes one line to the bot's **journal** (what was asked,
   what came of it) and adds, corrects or removes notes — preferences, people, decisions, procedures, lessons.
-  Facts every bot should know go to the team notes. In a bot's own conversation this happens after every
-  **run** (everything the bot does for one request, until it is idle again); for a task, once, when the task
-  ends.
-- **The bot itself** saves notes with `memory_save` when you tell it to remember something, removes them
-  with `memory_forget`, and looks through notes, the team journal, digests and tasks (their titles and
-  reports) with `memory_search`. In a task's conversation it finds, besides the notes, only the journal
-  lines and tasks of that task, the task that asked for it and its sub-tasks, and no digests.
-- **Every night** (03:00 by default) memory is **consolidated**: each bot's notes are merged, corrected
-  and trimmed with its recent journal, the shared notes too, and the day's work is written up as the
-  team's **daily digest**. **Consolidate now** runs it at once. Notes and digests are written in the
+  What every bot should know goes to the shared notes; what concerns the task's project only goes to that project's
+  memory. In a bot's own conversation this happens after every **run** (everything the bot does for one request,
+  until it is idle again); for a task, once, when the task ends.
+- **Notes never record the state of work** (done, delivered, waiting), where a file is, or who is on the team: the
+  journal, the board and the roster keep those.
+- **A note about something with a date** (an event, a deadline, an offer) has a **last day**. After it, the note is
+  no longer read, and the next consolidation removes it. The passes give one to dated notes; you can set or clear it
+  in the panel. Pinned notes never run out.
+- **The bot itself** saves notes with `memory_save` (scope `self`, `team` or `project`, with `until` for a last day)
+  when you tell it to remember something, removes them with `memory_forget`, and looks through notes, the team
+  journal, digests and tasks (their titles and reports) with `memory_search`. In a task's conversation it finds,
+  besides its own and the shared notes, only its project's notes, the journal lines and tasks of that task, the task
+  that asked for it and its sub-tasks, and no digests.
+- **Every night** (03:00 by default) memory is **consolidated**: notes past their last day go first; each bot's
+  notes are merged, corrected and trimmed with its recent journal, the shared notes and the projects' memory too (a
+  shared note about one project moves into that project), and the day's work is written up as the team's **daily
+  digest**. **Consolidate now** runs it at once. Notes and digests are written in the
   language you write to the bots in, judged from your recent messages; a note left in another language
   is rewritten in it.
-- A bot reads its notes, the team notes, its last few journal lines and the latest digest when a topic
-  or a task's conversation starts, and again at the next run after you edit memory or the nightly
+- A bot reads its notes, the shared notes (a task of a project, that project's memory too), its last few journal
+  lines and the latest digest when a topic or a task's conversation starts, and again at the next run after you edit memory or the nightly
   consolidation ran. Within a topic the memory part of its prompt stays the same, so the model's prompt
   cache over the conversation keeps working (what it learns in a topic is in that conversation anyway). A
   short exchange — an acknowledgement, a one-line answer to a teammate — gets a journal line without a
   model call.
-- The **Memory** tab of a bot and **Team memory** in the sidebar show everything; add, edit, pin or
-  delete notes there. Pinned notes are never changed by the automatic passes. Text that looks like a key
+- The **Memory** tab of a bot and **Team memory** in the sidebar show everything (**Project memory** there, by
+  project); add, edit, pin or delete notes, and set a note's last day. Pinned notes are never changed by the automatic passes. Text that looks like a key
   or token is never stored.
 - Memory work runs on each bot's own model unless Settings names a cheaper one.
 
@@ -573,6 +601,9 @@ and the team takes it:
   first start it looks from then on: label an older issue again to hand it out.
 - The token's account is the one that comments; a bot account of its own reads best. Its own comments (and anything
   marked `<!-- dsh-bots -->`) are never read back as messages.
+- **GitHub Enterprise**: write the repositories as their addresses (`https://github.example.com/owner/repo`), and make
+  the token on that server. The app then talks to the server's API (`/api/v3`, or `api.<name>.ghe.com` on GHE.com). One
+  app watches one server; add it once more for another. A project's **GitHub repository** takes the same address.
 
 ## How it works
 
@@ -631,7 +662,7 @@ permission and restart it.
   `messages.jsonl` (timeline), `channels.json` (paired people per chat app, and the last message handled
   per chat), `tickets.json` (tasks, with what was asked and their reports, and the chat threads they came
   from; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
-  `memory/` (notes, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
+  `memory/` (notes — each bot's, the shared ones and each project's —, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
   kept 400 days), `topics.json`, `discussions.json` (threads, where each message sits in its conversation, threads
   you have read), `needs.json` (your requests: the cards on the board, with your words and descriptions) and
   `projects.json` (projects, with their folders and briefs), both readable by your user only, `settings.json`,
@@ -668,6 +699,22 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.15
+
+- **Every team has a lead, listed first.** The one-person company gets a fifth bot, **Compass** (operations): it keeps
+  the week's plan (`plan.md`), hands each part to the role that fits, and runs the team's inbox sweep, weekly
+  numbers and market pulse. A one-person company you hired before is offered Compass once in the panel: **Add**
+  hires it with those routines and removes your dispatcher's copies still as hired (an edited one stays, and the
+  dispatcher hands its work to Compass); **No thanks** is not asked again. The content studio lists Quill first.
+- Quill is **Quill 主编** and Memo **Memo 主笔** in Chinese, where the name is still as hired.
+- **Teams for your own bots**: **Team** in **New bot** and on the **Profile**.
+- **Memory**: shared notes, project memory, and a last day on dated notes. Nothing to migrate: your notes stay
+  shared, and the nightly consolidation is told to move a note about one project into it and to drop notes that only
+  record the state of work. Review **Team memory** once and delete what is out of date.
+- **Projects**: **Choose folder…** for the folder; the GitHub repository may be on GitHub Enterprise.
+- **GitHub Issues** watches a GitHub Enterprise server when its repositories are written as their addresses (one
+  server per app).
 
 ## Upgrading from 0.14
 

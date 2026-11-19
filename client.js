@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.15.0';
+    const BOTS_VERSION = '0.16.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -339,6 +339,19 @@ window.__ModuleLoader__.load({
     }
     const teamsOf = () => (Array.isArray(store.teams) ? store.teams : []);
     const botsOf = () => (Array.isArray(store.state?.bots) ? store.state.bots : []);
+    /** The teams hired here (Bots 0.16), with `also` (a bot's own team) kept in: `{id, name}` in `lang`, in the order they were hired. */
+    const hiredTeamsOf = (lang, also = '') => {
+      const ids = [...new Set([...botsOf().filter((b) => b.team && b.role !== 'primary').map((b) => b.team), ...(also ? [also] : [])])];
+      return ids.map((id) => ({ id, name: pick(teamsOf().find((x) => x.id === id)?.name ?? id, lang) }));
+    };
+    /** The team a bot is in (Bots 0.16): none, or one of the hired teams. */
+    const TeamSelect = ({ t, value, teams, onChange, attr }) =>
+      h(
+        'select',
+        { className: 'dshb-input', value, onChange: (e) => onChange(e.target.value), [attr]: true },
+        h('option', { value: '' }, t('noTeam')),
+        teams.map((x) => h('option', { key: x.id, value: x.id }, x.name)),
+      );
     const botById = (id) => botsOf().find((b) => b.id === id) ?? null;
     /** Whether the quick poll is newer than the state. */
     const liveFresh = () => Boolean(store.live) && store.liveAt > store.stateAt;
@@ -1157,7 +1170,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     // --- the panel: left rail ----------------------------------------------------------
 
     /**
-     * Bots grouped by `team` (team order = first appearance), with the dispatcher on its own on top:
+     * Bots grouped by `team` (team order = first appearance; its lead first), with the dispatcher on its own on top:
      * it belongs to no team, it hands out the work of all of them. Null when no bot has a team.
      */
     function groupByTeam(t, lang, bots) {
@@ -1176,7 +1189,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         return team ? pick(team.name, lang) : id;
       };
       const rank = (g) => (g.id === 'desk' ? 0 : g.id === '' ? 2 : 1);
-      return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, label: label(g.id) }));
+      // A team's lead comes first in it (Bots 0.16); the others keep their order.
+      const leadFirst = (list) => [...list.filter((b) => b.lead), ...list.filter((b) => !b.lead)];
+      return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, bots: leadFirst(g.bots), label: label(g.id) }));
     }
 
     /** The tag of a team's lead (Bots 0.15): the dispatcher hands the team's work to it. */
@@ -3438,6 +3453,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** Cards another card may wait for: not itself, not dropped, not already waited for. */
     const waitable = (rows, self, taken = []) => rows.filter((r) => r.id !== self && r.status !== 'stopped' && !taken.includes(r.id));
     const cardLabel = (r) => `${r.ref ? `${r.ref} · ` : ''}${str(r.title)}`;
+    /** A repository's web address: `owner/repo` is on github.com, `host/owner/repo` on a GitHub Enterprise server (0.16). */
+    const repoUrl = (repo) => (str(repo).split('/').length === 3 ? `https://${str(repo)}` : `https://github.com/${str(repo)}`);
     /** Where a card lives outside Bots (Bots 0.14): its GitHub issue, as a link. */
     const issueLinks = (row) => (Array.isArray(row?.links) ? row.links : []).filter((l) => l && l.kind === 'github' && typeof l.ref === 'string');
     const IssueLink = ({ link }) =>
@@ -3674,7 +3691,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
     /** The projects cards are filed under (Bots 0.12): list, add, change and remove them. */
-    function ProjectsModal({ t, projects, toast, onClose, onChanged }) {
+    function ProjectsModal({ t, projects, env, toast, onClose, onChanged }) {
       const [editing, setEditing] = useState(null);
       const [form, setForm] = useState({ name: '', key: '', dir: '', repo: '', brief: '' });
       const [error, setError] = useState('');
@@ -3686,6 +3703,19 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         setError('');
       };
       const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+      // The Host's folder dialog (Bots 0.16), as in adding skills from a folder; typing the path still works.
+      const canPick = typeof env?.pickDirectory === 'function' && env.canPickDirectory?.() !== false;
+      const pickDir = () => {
+        setError('');
+        Promise.resolve()
+          .then(() => env.pickDirectory())
+          .then(
+            (dir) => {
+              if (typeof dir === 'string' && dir !== '') setForm((f) => ({ ...f, dir }));
+            },
+            () => setError(t('pickFailed')),
+          );
+      };
       const save = () => {
         if (busy || !form.name.trim()) return;
         setBusy(true);
@@ -3717,8 +3747,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               h(Field, { label: t('projectKey'), style: { flex: '1 1 120px' } }, h(Input, { value: form.key, maxLength: 6, mono: true, placeholder: t('projectKeyAuto'), 'data-dsh-bots-project-key': true, onChange: set('key') })),
             ),
             h('div', { style: { fontSize: TINY, color: C.faint, marginTop: -8 } }, t('projectKeyHint')),
-            h(Field, { label: t('projectDir'), hint: t('projectDirHint') }, h(Input, { value: form.dir, mono: true, placeholder: '~/code/app', 'data-dsh-bots-project-dir': true, onChange: set('dir') })),
-            h(Field, { label: t('projectRepo'), hint: t('projectRepoHint') }, h(Input, { value: form.repo, mono: true, placeholder: 'owner/repo', 'data-dsh-bots-project-repo': true, onChange: set('repo') })),
+            h(
+              Field,
+              { label: t('projectDir'), hint: t('projectDirHint') },
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8 } },
+                h(Input, { value: form.dir, mono: true, placeholder: '~/code/app', 'data-dsh-bots-project-dir': true, onChange: set('dir') }),
+                canPick ? h(Btn, { icon: Icon.folder(13), onClick: pickDir, 'data-dsh-bots-project-pick': true }, t('chooseFolder')) : null,
+              ),
+            ),
+            h(Field, { label: t('projectRepo'), hint: t('projectRepoHint') }, h(Input, { value: form.repo, mono: true, placeholder: t('projectRepoPlaceholder'), 'data-dsh-bots-project-repo': true, onChange: set('repo') })),
             h(Field, { label: t('projectBrief'), hint: t('projectBriefHint') }, h(TextArea, { value: form.brief, rows: 6, maxLength: 4000, placeholder: t('projectBriefPlaceholder'), 'data-dsh-bots-project-brief': true, onChange: set('brief') })),
             error ? h('div', { 'data-dsh-bots-project-error': true, style: { fontSize: SMALL, color: C.error } }, error) : null,
           )
@@ -3773,7 +3812,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
      * Waiting for you, Done; dropped ones folded), filtered by project. File a card here or ask in the
      * chat; drag one to In progress to start it, or to Done to mark it done.
      */
-    function NeedsView({ t, bots = [], primaryId = null, toast = () => {}, onOpen, onTasks }) {
+    function NeedsView({ t, bots = [], primaryId = null, env = null, toast = () => {}, onOpen, onTasks }) {
       const { data, failed, reload } = useJson('needs?limit=300', STATE_POLL_MS);
       const { data: pdata, reload: reloadProjects } = useJson('projects', STATE_POLL_MS * 6);
       const [doneShown, setDoneShown] = useState(DONE_PAGE);
@@ -3887,7 +3926,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         ),
         h('div', { className: 'dshb-scroll', style: { flex: 1, padding: '16px 24px 28px' } }, body),
         creating ? h(CardForm, { t, bots, primaryId, projects, project: filter, cards: all.filter((r) => r.status !== 'done'), toast, onClose: () => setCreating(false), onCreated: () => (void reload(), void refreshState()) }) : null,
-        managing ? h(ProjectsModal, { t, projects, toast, onClose: () => setManaging(false), onChanged: () => (void reloadProjects(), void reload()) }) : null,
+        managing ? h(ProjectsModal, { t, projects, env, toast, onClose: () => setManaging(false), onChanged: () => (void reloadProjects(), void reload()) }) : null,
         confirm
           ? h(Confirm, {
               t,
@@ -4521,6 +4560,47 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
 
+    /**
+     * A team hired before its template had a lead of its own (0.16, the one-person company's Compass):
+     * the lead is offered once. Added, it is hired with its scheduled tasks, which the dispatcher stops
+     * running, and the dispatcher hands the team's work to it.
+     */
+    function LeadOfferBanner({ t, offer, onDone, toast }) {
+      const lang = langOf(t);
+      const [busy, setBusy] = useState(false);
+      const lead = offer.lead ?? {};
+      const name = pick(lead.name, lang);
+      const team = pick(offer.name, lang);
+      const tasks = (Array.isArray(lead.tasks) ? lead.tasks : []).map((x) => pick(x, lang)).join(t('listSep'));
+      const add = () => {
+        setBusy(true);
+        void postJson('teams/add-lead', { team: offer.team, lang })
+          .then((r) => (r?.ok ? toast(t('leadOfferAdded', { name, team })) : toast(r?.reason || t('actionFailed'), 'error')))
+          .finally(() => {
+            setBusy(false);
+            onDone();
+          });
+      };
+      const dismiss = () => Promise.resolve(postJson('teams/add-lead/dismiss', { team: offer.team })).finally(onDone);
+      return h(
+        'div',
+        { role: 'region', 'aria-label': t('leadOfferTitle', { team }), 'data-dsh-bots-lead-offer': offer.team, className: 'dshb-fade', style: { display: 'flex', alignItems: 'flex-start', gap: 12, margin: '12px 24px 0', padding: '12px 14px', borderRadius: 12, border: `1px solid ${tint(lead.color || C.label, 35)}`, background: tint(lead.color || C.label, 8) } },
+        h('span', { style: { color: lead.color || C.label, display: 'inline-flex', paddingTop: 2 } }, Icon.team(16)),
+        h(
+          'div',
+          { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 } },
+          h('div', { style: { fontWeight: 700, fontSize: SMALL } }, t('leadOfferTitle', { team })),
+          h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t(tasks ? 'leadOfferBody' : 'leadOfferBodyNoTasks', { name, bio: pick(lead.bio, lang), tasks, team })),
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
+            h(Btn, { size: 'sm', kind: 'primary', disabled: busy, onClick: add, 'data-dsh-bots-lead-offer-add': offer.team }, busy ? t('leadOfferAdding') : t('leadOfferAdd', { name })),
+            h(Btn, { size: 'sm', disabled: busy, onClick: () => void dismiss(), 'data-dsh-bots-lead-offer-dismiss': offer.team }, t('leadOfferDismiss')),
+          ),
+        ),
+      );
+    }
+
     // --- avatar editor -----------------------------------------------------------------
 
     function readDataUrl(file) {
@@ -4675,6 +4755,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       model: bot.model && bot.model.model ? { provider: str(bot.model.provider), model: str(bot.model.model), ...(bot.model.reasoningEffort ? { reasoningEffort: str(bot.model.reasoningEffort) } : {}) } : null,
       deny: Array.isArray(bot.tools?.deny) ? bot.tools.deny.slice().sort() : [],
       routerAllow: Array.isArray(bot.tools?.routerAllow) ? bot.tools.routerAllow.map(String).sort() : [],
+      team: str(bot.team),
       lead: Boolean(bot.lead),
     });
     /** A clean avatar value: an image keeps its url, anything else is initials (emoji rows from v0.1 too). */
@@ -4764,7 +4845,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const save = () => {
         if (!valid || busy) return;
         setBusy(true);
-        const payload = { id: bot.id, name: draft.name.trim(), handle: draft.handle, bio: draft.bio.trim(), persona: draft.persona, model: draft.model, tools: { deny: draft.deny, routerAllow: draft.routerAllow }, ...(bot.team && bot.role !== 'primary' ? { lead: draft.lead } : {}) };
+        const payload = { id: bot.id, name: draft.name.trim(), handle: draft.handle, bio: draft.bio.trim(), persona: draft.persona, model: draft.model, tools: { deny: draft.deny, routerAllow: draft.routerAllow }, ...(bot.role !== 'primary' && draft.team !== str(bot.team) ? { team: draft.team } : {}), ...(draft.team && bot.role !== 'primary' ? { lead: draft.lead } : {}) };
         if (draft.avatar) payload.avatar = avatarOf(draft.avatar);
         postJson('save', { bot: payload })
           .then((r) => {
@@ -4830,8 +4911,10 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const routerBlocked = (names) => names.filter((x) => routerDeny.has(x) && !routerAllow.has(x));
       const inEffect = routing ? new Set([...draft.deny, ...routerBlocked([...routerDeny])]) : denied;
       const botLabel = draft.name || bot.name;
-      const teamLabel = bot.team ? pick(teamsOf().find((x) => x.id === bot.team)?.name ?? bot.team, lang) : '';
-      const otherLead = bot.team ? botsOf().find((b) => b.id !== bot.id && b.team === bot.team && b.lead) : null;
+      const teamLabel = draft.team ? pick(teamsOf().find((x) => x.id === draft.team)?.name ?? draft.team, lang) : '';
+      const otherLead = draft.team ? botsOf().find((b) => b.id !== bot.id && b.team === draft.team && b.lead) : null;
+      // The teams it may join (Bots 0.16); none to show while nothing is hired and it is in no team.
+      const teamChoices = isPrimary ? [] : hiredTeamsOf(lang, str(bot.team));
       return h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -4864,11 +4947,19 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   ),
                 ),
                 h(Field, { label: t('bio'), hint: t('bioHint'), style: { gridColumn: '1 / -1' } }, h(Input, { value: draft.bio, maxLength: 160, placeholder: t('bioPlaceholder'), onChange: (e) => set({ bio: e.target.value }) })),
-                // A bot hired as part of a team may lead it (Bots 0.15); the dispatcher leads none.
-                bot.team && !isPrimary
+                // Its team (Bots 0.16): moved to another, it no longer leads.
+                teamChoices.length
+                  ? h(
+                      Field,
+                      { label: t('teamField'), hint: t('teamFieldHint'), style: { gridColumn: '1 / -1' } },
+                      h(TeamSelect, { t, value: draft.team, teams: teamChoices, onChange: (team) => set({ team, lead: team === str(bot.team) ? Boolean(bot.lead) : false }), attr: 'data-dsh-bots-team-select' }),
+                    )
+                  : null,
+                // A bot of a team may lead it (Bots 0.15); the dispatcher leads none.
+                draft.team && !isPrimary
                   ? h(
                       'div',
-                      { 'data-dsh-bots-lead': bot.team, style: { gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'flex-start' } },
+                      { 'data-dsh-bots-lead': draft.team, style: { gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'flex-start' } },
                       h(Switch, { on: draft.lead, onChange: (v) => set({ lead: v }), title: t('leadsTeam', { team: teamLabel }), 'data-dsh-bots-lead-switch': true, style: { marginTop: 2 } }),
                       h(
                         'div',
@@ -6086,7 +6177,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               h(
                 'div',
                 { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
-                (Array.isArray(v.watching?.repos) ? v.watching.repos : []).map((r) => h(ExtLink, { key: r, href: `https://github.com/${r}/issues?q=is%3Aissue+is%3Aopen+label%3A${encodeURIComponent(str(v.watching?.label) || 'bots')}`, 'data-dsh-bots-github-repo': r }, r)),
+                (Array.isArray(v.watching?.repos) ? v.watching.repos : []).map((r) => h(ExtLink, { key: r, href: `${repoUrl(r)}/issues?q=is%3Aissue+is%3Aopen+label%3A${encodeURIComponent(str(v.watching?.label) || 'bots')}`, 'data-dsh-bots-github-repo': r }, r)),
               ),
               h('div', { style: { color: C.muted, lineHeight: 1.5 } }, t('githubHow', { label: str(v.watching?.label) || 'bots' })),
             )
@@ -7243,10 +7334,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     }
 
     const NOTE_KINDS = ['fact', 'preference', 'person', 'project', 'procedure', 'lesson'];
-    /** A list of memory notes the user can add to, edit, pin and delete. */
-    function NotesEditor({ t, scope, notes, reload, toast }) {
+    /** A note's last day (Bots 0.16), as its row says it: until then, or past. */
+    const untilText = (t, n, today) => (!n?.until ? '' : today && n.until < today && !n.pinned ? t('noteExpired', { date: n.until }) : t('noteUntil', { date: n.until }));
+    /** A list of memory notes the user can add to, edit, pin and delete; a note may have a last day (`until`, Bots 0.16). */
+    function NotesEditor({ t, scope, notes, today = '', reload, toast }) {
       const [text, setText] = useState('');
       const [kind, setKind] = useState('fact');
+      const [until, setUntil] = useState('');
       const [q, setQ] = useState('');
       const [editing, setEditing] = useState(null);
       const put = (note, ok) =>
@@ -7261,7 +7355,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         });
       const add = () => {
         if (!text.trim()) return;
-        void put({ text: text.trim(), kind }, t('noteSaved')).then((r) => r?.ok && setText(''));
+        void put({ text: text.trim(), kind, ...(until ? { until } : {}) }, t('noteSaved')).then((r) => {
+          if (r?.ok) {
+            setText('');
+            setUntil('');
+          }
+        });
       };
       const remove = (id) =>
         postJson('memory/delete', { scope, id }).then((r) => {
@@ -7283,6 +7382,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           { style: { display: 'flex', gap: 8 } },
           h(Input, { value: text, placeholder: t('addNote'), maxLength: 400, 'data-dsh-bots-note-input': true, onChange: (e) => setText(e.target.value), onKeyDown: (e) => e.key === 'Enter' && !e.isComposing && add(), style: { flex: 1 } }),
           h('select', { className: 'dshb-input', value: kind, onChange: (e) => setKind(e.target.value), style: { width: 110 } }, NOTE_KINDS.map((k) => h('option', { key: k, value: k }, t(`note_${k}`)))),
+          h(Input, { type: 'date', value: until, title: t('untilLabel'), 'aria-label': t('untilLabel'), 'data-dsh-bots-note-until': true, onChange: (e) => setUntil(e.target.value), style: { width: 150, flex: 'none' } }),
           h(Btn, { kind: 'primary', icon: Icon.plus(13), disabled: !text.trim(), onClick: add, 'data-dsh-bots-note-add': true }, t('add')),
         ),
         (notes ?? []).length > 8 ? h(Input, { value: q, placeholder: t('filterNotes'), onChange: (e) => setQ(e.target.value), style: { height: 30, fontSize: SMALL, maxWidth: 280 } }) : null,
@@ -7300,15 +7400,16 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     ? h(
                         'div',
                         { style: { flex: 1, display: 'flex', gap: 6 } },
-                        h(Input, { value: editing.text, maxLength: 400, onChange: (e) => setEditing({ ...editing, text: e.target.value }), onKeyDown: (e) => e.key === 'Enter' && !e.isComposing && put({ id: n.id, text: editing.text }), style: { flex: 1, height: 28 } }),
-                        h(Btn, { size: 'sm', kind: 'primary', onClick: () => put({ id: n.id, text: editing.text }) }, t('save')),
+                        h(Input, { value: editing.text, maxLength: 400, onChange: (e) => setEditing({ ...editing, text: e.target.value }), onKeyDown: (e) => e.key === 'Enter' && !e.isComposing && put({ id: n.id, text: editing.text, until: editing.until }), style: { flex: 1, height: 28 } }),
+                        h(Input, { type: 'date', value: editing.until, title: t('untilLabel'), 'aria-label': t('untilLabel'), 'data-dsh-bots-note-edit-until': n.id, onChange: (e) => setEditing({ ...editing, until: e.target.value }), style: { width: 150, flex: 'none', height: 28 } }),
+                        h(Btn, { size: 'sm', kind: 'primary', onClick: () => put({ id: n.id, text: editing.text, until: editing.until }), 'data-dsh-bots-note-save': n.id }, t('save')),
                         h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setEditing(null) }, t('cancel')),
                       )
                     : h(
                         'div',
                         { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
-                        h('span', { style: { fontSize: SMALL, color: C.primary, lineHeight: 1.5, wordBreak: 'break-word', cursor: 'text' }, onClick: () => setEditing({ id: n.id, text: n.text }) }, n.text),
-                        h('span', { style: { fontSize: TINY, color: C.faint } }, `${t(`src_${n.source}`)} · ${fmtAgo(t, n.updated)}`),
+                        h('span', { style: { fontSize: SMALL, color: C.primary, lineHeight: 1.5, wordBreak: 'break-word', cursor: 'text' }, onClick: () => setEditing({ id: n.id, text: n.text, until: str(n.until) }) }, n.text),
+                        h('span', { style: { fontSize: TINY, color: C.faint } }, [t(`src_${n.source}`), fmtAgo(t, n.updated), untilText(t, n, today)].filter(Boolean).join(' · ')),
                       ),
                   h('button', { type: 'button', className: 'dshb-link', title: n.pinned ? t('unpin') : t('pin'), 'data-dsh-bots-note-pin': n.id, onClick: () => put({ id: n.id, pinned: !n.pinned }), style: { color: n.pinned ? '#d99a00' : C.faint, display: 'inline-flex', paddingTop: 2 } }, Icon.star(13)),
                   h('button', { type: 'button', className: 'dshb-link', title: t('delete'), 'data-dsh-bots-note-delete': n.id, onClick: () => remove(n.id), style: { color: C.faint, display: 'inline-flex', paddingTop: 2 } }, Icon.trash(13)),
@@ -7367,7 +7468,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           h(
             Section,
             { title: t('memoryOf', { name }), hint: t('memoryHint', { name }), right: h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, whiteSpace: 'nowrap' }, onClick: onSettings }, t('memoryModelIs', { model: memModelText(t, data?.settings?.model) })) },
-            data ? h(NotesEditor, { t, scope: bot.id, notes: data.notes, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading')),
+            data ? h(NotesEditor, { t, scope: bot.id, notes: data.notes, today: data.today, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading')),
           ),
           h(Section, { title: t('recentWork'), hint: t('recentWorkHint') }, data ? h(JournalList, { t, items: data.journal }) : null),
           h(
@@ -7385,6 +7486,29 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             ),
           ),
         ),
+      );
+    }
+
+    /** One project's notes (Bots 0.16): only its tasks read them. */
+    function ProjectNotes({ t, project, toast, onChanged }) {
+      const { data, reload } = useJson(`memory?bot=${encodeURIComponent(project.id)}`, 20_000);
+      const again = () => Promise.resolve(reload()).then(() => onChanged?.());
+      return data ? h(NotesEditor, { t, scope: project.id, notes: data.notes ?? [], today: data.today, reload: again, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading'));
+    }
+    /** The projects' memory (Bots 0.16): pick a project, see and edit its notes. */
+    function ProjectMemory({ t, projects, toast, onChanged }) {
+      const [pid, setPid] = useState(() => (projects.find((p) => p.count > 0) ?? projects[0])?.id ?? '');
+      const current = projects.find((p) => p.id === pid) ?? projects[0];
+      if (!current) return h('div', { 'data-dsh-bots-project-memory': 0, style: { fontSize: SMALL, color: C.faint } }, t('projectMemoryNone'));
+      return h(
+        'div',
+        { 'data-dsh-bots-project-memory': projects.length, style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h(
+          'select',
+          { className: 'dshb-input', value: current.id, onChange: (e) => setPid(e.target.value), 'data-dsh-bots-project-memory-pick': true, style: { maxWidth: 360 } },
+          projects.map((p) => h('option', { key: p.id, value: p.id }, `${p.key} · ${p.name}${p.count ? ` (${p.count})` : ''}`)),
+        ),
+        h(ProjectNotes, { key: current.id, t, project: current, toast, onChanged }),
       );
     }
 
@@ -7427,7 +7551,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           h(
             'div',
             { style: { maxWidth: 860, display: 'flex', flexDirection: 'column', gap: 26 } },
-            h(Section, { title: t('teamNotes'), hint: t('teamNotesHint') }, data ? h(NotesEditor, { t, scope: 'team', notes: data.notes, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading'))),
+            h(Section, { title: t('teamNotes'), hint: t('teamNotesHint') }, data ? h(NotesEditor, { t, scope: 'team', notes: data.notes, today: data.today, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading'))),
+            h(Section, { title: t('projectMemory'), hint: t('projectMemoryHint') }, data ? h(ProjectMemory, { t, projects: Array.isArray(data.projects) ? data.projects : [], toast, onChanged: reload }) : null),
             h(
               Section,
               { title: t('digests'), hint: t('digestsHint') },
@@ -7701,6 +7826,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [text, setText] = useState('');
       const [touched, setTouched] = useState({ avatar: false, bio: false, text: false });
       const [busy, setBusy] = useState(false);
+      // The team it joins (Bots 0.16), when a team is hired.
+      const [team, setTeam] = useState('');
+      const teamChoices = hiredTeamsOf(langOf(t));
       const derived = handleTouched ? handle : autoHandle(name);
       const hErr = derived ? handleError(t, derived, null) : '';
       const pick = (id, p) => {
@@ -7714,7 +7842,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const create = () => {
         if (!valid || busy) return;
         setBusy(true);
-        postJson('save', { bot: { name: name.trim(), handle: derived, bio: bio.trim(), persona: personaText, avatar } })
+        postJson('save', { bot: { name: name.trim(), handle: derived, bio: bio.trim(), persona: personaText, avatar, ...(team ? { team } : {}) } })
           .then((r) => {
             if (r?.ok && r.bot) {
               toast(t('created', { name: r.bot.name }));
@@ -7784,6 +7912,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             },
           }),
         ),
+        teamChoices.length ? h(Field, { label: t('teamField'), hint: t('teamFieldHint') }, h(TeamSelect, { t, value: team, teams: teamChoices, onChange: setTeam, attr: 'data-dsh-bots-new-team' })) : null,
         h(
           Field,
           { label: t('persona'), hint: t('personaHint') },
@@ -8247,6 +8376,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [tasksBot, setTasksBot] = useState(''); // the Tasks view's bot filter when another view asked for it
       const [noticeGone, setNoticeGone] = useState(false);
       const [leadsGone, setLeadsGone] = useState(false);
+      const [offersGone, setOffersGone] = useState([]);
       const [toast, showToast] = useToast();
       const seenNav = useRef(0);
       const bots = Array.isArray(s.state?.bots) ? s.state.bots : [];
@@ -8299,7 +8429,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         };
         main = needId
           ? h(NeedDetail, { key: needId, t, id: needId, bots, primaryId, toast: showToast, onBack: () => setNeedId(null), onOpenTask: toTask })
-          : h(NeedsView, { t, bots, primaryId, toast: showToast, onOpen: setNeedId, onTasks: () => toTask(null) });
+          : h(NeedsView, { t, bots, primaryId, env: env2, toast: showToast, onOpen: setNeedId, onTasks: () => toTask(null) });
       } else if (shownView === 'tasks') {
         main = ticketId ? h(TicketDetail, { key: ticketId, t, id: ticketId, env: env2, toast: showToast, onBack: () => setTicketId(null) }) : h(TasksView, { t, bots, focusBot: tasksBot, onOpen: setTicketId });
       } else if (shownView === 'activity') {
@@ -8362,6 +8492,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 },
               })
             : null,
+          (() => {
+            const offer = (Array.isArray(s.state?.leadOffers) ? s.state.leadOffers : []).find((o) => o?.team && o.lead && !offersGone.includes(o.team));
+            return offer
+              ? h(LeadOfferBanner, {
+                  key: `offer-${offer.team}`,
+                  t,
+                  offer,
+                  onDone: () => {
+                    setOffersGone((g) => [...g, offer.team]);
+                    void refreshState();
+                  },
+                  toast: showToast,
+                })
+              : null;
+          })(),
           !leadsGone && (s.state?.oldLeads ?? []).length
             ? h(OldLeadsBanner, {
                 t,
@@ -8679,6 +8824,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         noBio: 'No bio yet',
         dispatcher: 'Dispatcher',
         teamLead: 'Lead',
+        teamField: 'Team',
+        teamFieldHint: 'The team it works in. In a team with a lead, the dispatcher hands its work to the lead, which brings this bot in.',
+        noTeam: 'No team',
         teamLeadHint: 'Leads its team: the dispatcher hands the team\'s work to it',
         leadsTeam: 'Leads {team}',
         leadsTeamOn: 'The dispatcher hands {team}\'s work to this bot, which plans it and brings in its teammates.',
@@ -9123,6 +9271,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         oldLeadsRemove: "Remove",
         oldLeadsKeep: "Keep them",
         oldLeadsFailed: "Could not remove {names}.",
+        leadOfferTitle: "{team} now has a lead",
+        leadOfferBody: "{name}: {bio} It runs the team's routines ({tasks}) in place of the dispatcher, and the dispatcher hands the team's work to it. Add it to your team?",
+        leadOfferBodyNoTasks: "{name}: {bio} The dispatcher hands the team's work to it. Add it to your team?",
+        leadOfferAdd: "Add {name}",
+        leadOfferAdding: "Adding…",
+        leadOfferDismiss: "No thanks",
+        leadOfferAdded: "{name} joined {team}.",
         hireFailed: "Could not hire the team.",
         hireTitle: "Hire {name}",
         hireConfirmBody: "This adds {n} bots next to the ones you have. Their skills, apps and scheduled tasks are set up for you.",
@@ -9384,7 +9539,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         githubIgnored: 'Ignored {n} issues or comments from people who are not the repository\'s owner, members or collaborators (last: {name}).',
         channelHowGithub: 'Add it to your dispatcher with a token and the repositories to watch. Nothing to pair: put the label on an issue to hand it to the team.',
         projectRepo: 'GitHub repository',
-        projectRepoHint: 'Issues from it (GitHub Issues app) are filed under this project. owner/repo; leave it empty for none.',
+        projectRepoHint: 'Issues from it (GitHub Issues app) are filed under this project. owner/repo, or its address (GitHub Enterprise too); leave it empty for none.',
+        projectRepoPlaceholder: 'owner/repo or https://github.example.com/owner/repo',
         // cards that wait for others (Bots 0.13)
         cardAfter: 'Starts after',
         cardAfterNone: 'Nothing: now, or when I start it',
@@ -9624,7 +9780,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         teamMemoryTitle: 'Team memory',
         teamMemoryHint: '{n} shared notes · daily digest',
         teamNotes: 'Shared notes',
-        teamNotesHint: 'Every bot reads these. They hold what all of them should know: about you, your business, shared conventions.',
+        teamNotesHint: 'Every bot reads these, in every piece of work: about you, your business, the setup, shared conventions. What concerns one project goes in its project memory below.',
+        projectMemory: 'Project memory',
+        projectMemoryHint: 'Only the tasks of that project read these: its decisions, conventions, contacts, dates. Removing a project removes its memory.',
+        projectMemoryNone: 'No projects yet. Make one on the board; its tasks then keep their own notes here.',
+        noteUntil: 'until {date}',
+        noteExpired: 'past its day ({date}), forgotten at the next consolidation',
+        untilLabel: 'Last day (optional): after it the note is forgotten',
         digests: 'Daily digests',
         digestsHint: 'Each day the team’s work is written up; every bot reads the latest one.',
         noDigests: 'No digest yet.',
@@ -9705,6 +9867,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         noBio: '还没有简介',
         dispatcher: '调度者',
         teamLead: '负责人',
+        teamField: '所属团队',
+        teamFieldHint: '它在哪个团队干活。团队有负责人时，调度员把活交给负责人，由负责人叫它来做。',
+        noTeam: '不属于团队',
         teamLeadHint: '团队负责人：调度者把团队的活交给它',
         leadsTeam: '{team}负责人',
         leadsTeamOn: '调度者把{team}的活交给它，由它拆分、分给队友。',
@@ -10138,6 +10303,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         oldLeadsRemove: "删除",
         oldLeadsKeep: "保留",
         oldLeadsFailed: "没能删除 {names}。",
+        leadOfferTitle: "{team}有了负责人",
+        leadOfferBody: "{name}：{bio}团队的例行任务（{tasks}）改由它来跑，调度员也会把这个团队的活交给它。要让它加入你的团队吗？",
+        leadOfferBodyNoTasks: "{name}：{bio}调度员会把这个团队的活交给它。要让它加入你的团队吗？",
+        leadOfferAdd: "让 {name} 加入",
+        leadOfferAdding: "正在加入…",
+        leadOfferDismiss: "不用了",
+        leadOfferAdded: "{name} 已加入{team}。",
         hireFailed: "没能雇用这个团队。",
         hireTitle: "雇用{name}",
         hireConfirmBody: "将在现有 Bot 之外新增 {n} 个 Bot，并自动配好它们的技能、应用和定时任务。",
@@ -10399,7 +10571,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         githubIgnored: '已忽略 {n} 条不是仓库 owner、成员或协作者的 issue 或评论（最近一位：{name}）。',
         channelHowGithub: '把它加给调度员，填上令牌和要关注的仓库。不用配对：给 issue 打上标签就是交给团队。',
         projectRepo: 'GitHub 仓库',
-        projectRepoHint: '这个仓库的 issue（GitHub Issues 应用）会归到这个项目下。写 owner/repo；不需要就留空。',
+        projectRepoHint: '这个仓库的 issue（GitHub Issues 应用）会归到这个项目下。写 owner/repo 或仓库地址（GitHub Enterprise 也行）；不需要就留空。',
+        projectRepoPlaceholder: 'owner/repo 或 https://github.example.com/owner/repo',
         // 等别的卡做完再开始（Bots 0.13）
         cardAfter: '在这之后开始',
         cardAfterNone: '无：现在开始，或等我手动开始',
@@ -10639,7 +10812,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         teamMemoryTitle: '团队记忆',
         teamMemoryHint: '{n} 条共享笔记 · 每日摘要',
         teamNotes: '共享笔记',
-        teamNotesHint: '每个 Bot 都会读。放所有 Bot 都该知道的事：关于你、你的业务、团队约定。',
+        teamNotesHint: '每个 Bot 在任何工作里都会读到：关于你、你的业务、环境和约定。只和某个项目有关的事，记在下面的项目记忆里。',
+        projectMemory: '项目记忆',
+        projectMemoryHint: '只有这个项目的任务会读到：它的决定、约定、联系人、日期。删除项目时，它的记忆一起删掉。',
+        projectMemoryNone: '还没有项目。在看板上新建项目后，它的任务会把自己的笔记记在这里。',
+        noteUntil: '到 {date} 为止',
+        noteExpired: '已过 {date}，下次整理时会被忘掉',
+        untilLabel: '截止日（可选）：过了这天就忘掉',
         digests: '每日摘要',
         digestsHint: '每天把团队做过的事写成摘要，每个 Bot 都会读最新的一份。',
         noDigests: '还没有摘要。',

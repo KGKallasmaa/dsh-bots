@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { MARKER, TOKEN_REJECTED, VOUCHED, createConnector, kind, reposOf } from '../lib/channels/github.mjs';
+import { MARKER, TOKEN_REJECTED, VOUCHED, apiBaseOf, cleanRepo, createConnector, kind, repoUrl, reposOf } from '../lib/channels/github.mjs';
 
 const T0 = Date.parse('2026-11-19T10:00:00Z');
 const iso = (ms) => new Date(ms).toISOString();
@@ -80,6 +80,69 @@ test('module contract: kind, vouching, the marker; repositories from text', () =
   assert.equal(VOUCHED, true);
   assert.equal(MARKER, '<!-- dsh-bots -->');
   assert.deepEqual(reposOf(' acme/site, https://github.com/acme/api.git\nnot a repo, acme/site '), ['acme/site', 'acme/api']);
+});
+
+test('a repository on github.com is owner/repo; on GitHub Enterprise it keeps its server', () => {
+  const cases = {
+    'acme/site': 'acme/site',
+    'https://github.com/acme/site.git': 'acme/site',
+    'https://www.github.com/acme/site/issues/12': 'acme/site',
+    'git@github.com:acme/site.git': 'acme/site',
+    'https://GHE.Corp.example/acme/site': 'ghe.corp.example/acme/site',
+    'https://ghe.corp.example:8443/acme/site/tree/main?x=1': 'ghe.corp.example:8443/acme/site',
+    'ghe.corp.example/acme/site': 'ghe.corp.example/acme/site',
+    'git@ghe.corp.example:acme/site.git': 'ghe.corp.example/acme/site',
+    'ssh://git@ghe.corp.example:2222/acme/site.git': 'ghe.corp.example/acme/site',
+    'https://octo.ghe.com/acme/site': 'octo.ghe.com/acme/site',
+    'acme/site/extra': '',
+    'acme': '',
+    'not a repo': '',
+    'https://ghe.corp.example/acme': '',
+    'https://bad_host/acme/site': '',
+    '../site': '',
+  };
+  Object.assign(cases, { 'https://ghe/acme/site': '', 'git@ghe:acme/site.git': '', 'https://ghe:8443/acme/site': 'ghe:8443/acme/site' });
+  for (const [text, want] of Object.entries(cases)) {
+    assert.equal(cleanRepo(text), want, text);
+    // What is kept reads back the same (projects and channels clean it again at every load).
+    if (want) assert.equal(cleanRepo(want), want, `again: ${want}`);
+  }
+  assert.equal(apiBaseOf(''), 'https://api.github.com/');
+  assert.equal(apiBaseOf('ghe.corp.example'), 'https://ghe.corp.example/api/v3/');
+  assert.equal(apiBaseOf('octo.ghe.com'), 'https://api.octo.ghe.com/');
+  assert.equal(repoUrl('acme/site'), 'https://github.com/acme/site');
+  assert.equal(repoUrl('ghe.corp.example/acme/site'), 'https://ghe.corp.example/acme/site');
+  assert.deepEqual(reposOf('https://ghe.corp.example/acme/site, ghe.corp.example/acme/api, GHE.corp.example/acme/site'), ['ghe.corp.example/acme/site', 'ghe.corp.example/acme/api']);
+});
+
+test('a channel on GitHub Enterprise talks to its server and names its repositories with it', async () => {
+  const api = fakeGitHub();
+  const { c, seen } = connector(api, { values: { repos: 'https://ghe.corp.example/acme/site', label: 'bots' } });
+  await c.start();
+  // The API is asked for owner/repo; the server is in the address (next test).
+  assert.ok(api.calls.every((x) => x.path === 'user' || x.path.startsWith('repos/acme/site')));
+  assert.deepEqual(seen.memo.repos['ghe.corp.example/acme/site'], { since: iso(T0), comments: iso(T0), lastComment: 0, issues: [] });
+  api.state.issues['acme/site'] = [issue(12, { html_url: 'https://ghe.corp.example/acme/site/issues/12' })];
+  await c.pollNow();
+  assert.deepEqual([seen.messages[0].chatId, seen.messages[0].chatTitle, seen.messages[0].issue.repo], ['ghe.corp.example/acme/site', 'ghe.corp.example/acme/site', 'ghe.corp.example/acme/site']);
+  await c.send('ghe.corp.example/acme/site', 'On it.', { threadId: '12' });
+  assert.deepEqual(api.state.posted.map((x) => [x.repo, x.number]), [['acme/site', 12]]);
+  await assert.rejects(c.send('acme/site', 'Wrong server.', { threadId: '12' }), /not on the GitHub server this app watches/);
+});
+
+test('a GitHub Enterprise channel calls the server\'s /api/v3; one channel watches one server', async () => {
+  const urls = [];
+  const api = fakeGitHub();
+  const fetchImpl = (url, init) => {
+    urls.push(url);
+    const u = new URL(url);
+    return api.fetchImpl(`https://api.github.test/${u.pathname.replace(/^\/api\/v3\//, '').replace(/^\//, '')}${u.search}`, init);
+  };
+  const { c } = connector(api, { apiBase: undefined, fetchImpl, values: { repos: 'https://ghe.corp.example/acme/site' } });
+  await c.start();
+  assert.ok(urls.length > 0 && urls.every((u) => u.startsWith('https://ghe.corp.example/api/v3/')), urls.join(' '));
+  const mixed = connector(api, { apiBase: undefined, fetchImpl, values: { repos: 'acme/site, https://ghe.corp.example/acme/site' } });
+  await assert.rejects(mixed.c.start(), (e) => e.fatal === true && /one GitHub server.*github\.com and ghe\.corp\.example/.test(e.message));
 });
 
 test('start checks the token and every repository, and looks from now on', async () => {

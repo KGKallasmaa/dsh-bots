@@ -66,6 +66,16 @@ test('projects are created with a suggested key, numbered cards, checked fields,
   assert.equal(again.get('RD'), undefined);
 });
 
+test('a project\'s repository is owner/repo, or kept with its server on GitHub Enterprise', () => {
+  const projects = createProjects(dirOf(), { home: dirOf() });
+  assert.equal(projects.create({ name: 'Site', repo: 'https://github.com/acme/site.git' }).repo, 'acme/site');
+  const ghe = projects.create({ name: 'Portal', repo: 'https://GHE.corp.example/team/portal/issues' });
+  assert.equal(ghe.repo, 'ghe.corp.example/team/portal');
+  assert.throws(() => projects.create({ name: 'Other', repo: 'git@ghe.corp.example:team/portal.git' }), /ghe\.corp\.example\/team\/portal belongs to project POR already/);
+  assert.throws(() => projects.create({ name: 'Other', repo: 'not a repo' }), /GitHub Enterprise/);
+  assert.equal(projects.update(ghe.id, { repo: '' }).repo, '');
+});
+
 test('a projects file that is not JSON is set aside, and the next write starts afresh', () => {
   const dir = dirOf();
   writeFileSync(join(dir, 'projects.json'), '{oops');

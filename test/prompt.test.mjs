@@ -269,7 +269,8 @@ test('0.15: a team with a lead says so in the roster; the dispatcher goes throug
   const builder = { id: 'b-builder', name: 'Builder', handle: 'builder', role: 'bot', persona: '', bio: 'Engineer', skills: [], team: 'dev', lead: true };
   const tester = { id: 'b-tester', name: 'Tester', handle: 'tester', role: 'bot', persona: '', bio: 'Tests', skills: [], team: 'dev' };
   const forge = { id: 'b-forge', name: 'Forge', handle: 'forge', role: 'bot', persona: '', bio: 'Product', skills: [], team: 'opc' };
-  const all = [atlas, builder, tester, forge];
+  // The lead joined after its teammates (0.16: Compass); the roster still lists it first.
+  const all = [atlas, tester, builder, forge];
   const teamNames = { dev: 'Software squad', opc: 'One-person company' };
   const router = personaText(atlas, all, { dispatcher: 'router', tickets: true, teamNames });
   assert.match(router, /\n- Software squad, led by @builder:\n {2}- @builder — Builder \(lead\): Engineer\n {2}- @tester — Tester: Tests\n/);

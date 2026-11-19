@@ -1109,7 +1109,7 @@ A team whose work runs as a pipeline is led by the bot that delivers it; the dis
 
 ```ts
 Bot += { lead?: true }        // only with `team`, never the dispatcher; one per team (saving one clears the others)
-Team += { lead?: string }     // the key of the bot that leads it: dev → builder, content → writer (Quill), research → writer (Memo); opc: none
+Team += { lead?: string }     // the key of the bot that leads it: dev → builder, content → writer (Quill), research → writer (Memo); opc: none (ops, Compass, from 0.16)
 TeamView += { lead?: string }
 Settings += { teamLeads: null | 'given' }   // 'given' once teams hired before 0.15 got their leads
 ```
@@ -1136,3 +1136,91 @@ Settings += { teamLeads: null | 'given' }   // 'given' once teams hired before 0
   `{ …0.11.1 plan, leads: { bots, edits } }`.
 - **Panel**: a lead is tagged **Lead** in the rail and on the team templates; a team bot's Profile has a **Leads …**
   switch.
+
+## v0.16 — leads for every team, teams for your bots, project memory, GitHub Enterprise
+
+### Every team has a lead, listed first
+
+```ts
+Team.opc.lead = 'ops'          // Compass (@compass), a bot of its own; every team's lead is first in `bots` (content: Quill)
+TeamBot(ops).tasks = [Inbox sweep, Weekly numbers, Market pulse]   // were opc `desk`; `desk` keeps Morning brief, Weekly review
+ADDED_LEADS = ['opc']          // lib/teams.mjs: templates whose lead is a bot that teams hired before lack
+State += { leadOffers: { team, name, lead: { key, handle, name, bio, color, tasks: {en,zh}[] } }[] }
+Settings += { leadOffers: { [teamId]: 'dismissed' } }
+```
+
+- `leadOffers`: a team of `ADDED_LEADS` that is hired (a non-dispatcher bot with that `team`), none of whose bots
+  leads it or has the lead's handle, and not dismissed. The panel shows the first as a banner (**Add {name}** /
+  **No thanks**).
+- `POST teams/add-lead { team, lang }` → `{ ok, team, bots: [the lead], dispatcherId, kickoff, skipped, moved }`:
+  `hireTeam(team, lang, { only: [lead] })` (that member alone, `lead: true`, its scheduled tasks; no desk tasks).
+  Refused (`… has its lead already, or was not hired`) when there is nothing to offer.
+  `POST teams/add-lead/dismiss { team }` → `{ ok, leadOffers }`.
+- `hireTeam` (`moved` on `teams/hire` too): a member hired again gets no second routine of a title it has; when the
+  dispatcher existed before, its scheduled tasks whose title and prompt are still one of the lead's tasks in either
+  language (`deskTasksOfLead` in `lib/team-migration.mjs`) are deleted, and only those whose twin the lead now has, so
+  a routine that could not be made on the lead stays on the dispatcher; an edited one stays.
+- The 0.11.0 migration (`planTeamMigration`) still moves a member routine the lead now runs to the dispatcher (as
+  0.11.1–0.15 had it); it moves on when the lead joins.
+- Names (`lib/teams-0.15.mjs`, in `planLeadMigration` at every start): `Quill 写手` → `Quill 主编`, `Memo 撰稿人` →
+  `Memo 主笔` where still as hired.
+- The rail (`groupByTeam`) and the roster (`rosterLines`) list a team's lead first.
+
+### A team for any bot
+
+- `POST save` takes `team`: a hired team's id, or `''` for none. A changed `team` is checked (`teamArg`): a team of
+  the templates one of whose non-dispatcher bots belongs to it, never for the dispatcher (`the dispatcher belongs to no
+  team`); refused → `{ ok: false, reason }`.
+- `bot_create` and `bot_update` take `team` (id, or name in English or Chinese, any case; `none` takes it out).
+  `bot_update lead` is refused for a bot of no team (`@x is part of no team; only a team has a lead`). `bot_list`
+  writes `, team <id> (<name>)[, lead]` in each bot's brackets.
+- Store: a bot whose `team` changes keeps `lead` only when the same save sets `lead: true` (`normalizeBot`), so a lead
+  that moves does not take the lead of its new team.
+- Panel: **Team** (`data-dsh-bots-new-team`, `data-dsh-bots-team-select`) in **New bot** and on a non-dispatcher's
+  Profile, offering **No team** and the hired teams; the **Leads …** switch follows the team chosen and is off after a
+  move.
+
+### Project memory and a last day for notes
+
+```ts
+Note += { until?: 'YYYY-MM-DD' }        // its last day; a pinned note never runs out
+NotesFile += { projects: { [projectId]: Note[] } }   // ids 'p-…', at most PROJECT_CAP = 60 per project
+Edit (add | update | merge) += { until? }           // update: until null or '' takes it away
+```
+
+- A memory scope is `'team'`, a project's id (`pj` + 8, `isProjectScope`) or a bot's id. `memory.prune(today)`
+  removes unpinned notes past their day in every scope; `dropProject(id)`; `projectIds()`; `search(q, { bot, projects })`.
+- Prompt: `memoryText` leaves out notes past their day, writes `(until YYYY-MM-DD)` after a note that has one, and, for
+  a task conversation whose ticket has `projectId`, adds `### Project memory: KEY · Name (every task of this project
+  reads it)`. Its rules: shared notes only for what every bot needs in every piece of work; one project's matters in
+  `project`; never the state of work, where a file is, or who is on the team; `until` for dated notes.
+- Reflection (`reflectionPrompt`): with the task's project, `{summary, notes, team, project}`; the same rules, and
+  today's date. Consolidation (`dream`): `prune(today)` first (`result.expired`), then each bot (rules added), then the
+  team with every project's notes (`dreamTeamPrompt({… projects, today})` → `{digest, team, projects: {KEY: edits}}`;
+  the projects' edits go first, by key; a team note about one project moves there). An answer naming a key that is no
+  project's keeps every team note it would remove.
+- `memory_save`: `scope: 'self' | 'team' | 'project'`, `project` (key; default the task's project, else refused:
+  `this conversation works on no project …`), `until` (`YYYY-MM-DD`, else refused). With `replace_id` the note takes
+  the `until` given, or none. A model's `update` keeps a note's `until` unless it gives one (`null` removes it). `memory_forget` finds a `p-` id in
+  whichever project holds it. `memory_search`: a task searches its project's notes, elsewhere every project's;
+  a project note reads `(project KEY)`.
+- Routes: `GET memory?bot=<projectId>` → `{ scope, project: { id, key, name }, notes, today, tz }`; `GET memory?bot=team`
+  adds `projects: { id, key, name, count }[]` and `today`; a bot's view adds `today`. `memory/put` and
+  `memory/delete` take a project id as `scope`; `memory/put`'s note takes `until` (`''` clears it).
+  `projects/delete` drops the project's memory.
+- Panel: **Team memory** has **Shared notes** and **Project memory** (a project picker, then its notes); a note shows
+  `until …` or `past its day …`; adding and editing take a date.
+
+### GitHub Enterprise and the project folder
+
+- A repository is `owner/repo` on github.com and `host/owner/repo` on any other server (`cleanRepo` in
+  `lib/channels/github.mjs`: from `https://host/owner/repo[/…]`, `git@host:owner/repo.git`,
+  `ssh://git@host[:port]/owner/repo`, or a bare `host/owner/repo`; a host needs a dot or a port, so the kept form reads
+  back the same). Projects, channel
+  `repos`, `chatId`, `issue.repo` and link refs (`host/owner/repo#N`) all use that form; a link's `url` may be any
+  http(s) address.
+- A channel's API is `https://host/api/v3/` (`https://api.<host>/` for `*.ghe.com`; `api.github.com` without a host,
+  `apiBaseOf`); a channel whose repositories are on more than one server stops with a fatal error. `send` refuses a
+  repository on another server. The channel panel links `repoUrl(repo)/issues?…`.
+- The project dialog has **Choose folder…** (`data-dsh-bots-project-pick`) when the Host offers a folder dialog
+  (`__DSH_DIRECTORY_PICKER__`, else `uiWorkspace.pickDirectory`); the path it returns fills the folder field.

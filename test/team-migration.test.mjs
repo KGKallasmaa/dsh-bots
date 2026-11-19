@@ -6,7 +6,11 @@ import { TEAMS_0_11 } from '../lib/teams-0.11.mjs';
 
 const was = (team, handle) => TEAMS_0_11[team][handle];
 const now = (team, handle) => TEAMS.find((t) => t.id === team).bots.find((b) => b.handle === handle);
-const desk = (team, title) => TEAMS.find((t) => t.id === team).desk.find((t) => t.title.en === title);
+// The dispatcher's routine, or one the one-person company's lead took over in 0.16 (the dispatcher's until it joins).
+const desk = (team, title) => {
+  const t = TEAMS.find((x) => x.id === team);
+  return [...(t.desk ?? []), ...(t.bots.find((b) => b.key === t.lead)?.tasks ?? [])].find((x) => x.title.en === title);
+};
 const deskText = (lang) => ({ persona: `desk persona ${lang}`, bio: `desk bio ${lang}` });
 const bot = (id, team, handle, lang, extra = {}) => ({ id, team, handle, persona: was(team, handle).persona[lang], bio: was(team, handle).bio[lang], skills: [], apps: [], ...extra });
 const entry = (id, botId, team, handle, i, lang, extra = {}) => ({ id, botId, title: was(team, handle).tasks[i].title[lang], prompt: was(team, handle).tasks[i].prompt[lang], timing: { kind: 'daily', daily: { time: '09:00:00', time_zone: 'UTC' } }, ...extra });
@@ -123,4 +127,39 @@ test('0.15: a team hired without a lead gets the one its template names, and the
   assert.deepEqual(planLeadMigration({ bots: after, entries: [], deskId: 'a', giveLeads: false }), { bots: [], edits: [] });
   // A team that has a lead already keeps it, whoever it is.
   assert.deepEqual(planLeadMigration({ bots: [hired('b', 'dev', 'builder', 'en', { persona: builder.persona.en, bio: builder.bio.en }), hired('t', 'dev', 'tester', 'en', { lead: true })], entries: [], deskId: null, giveLeads: true }), { bots: [], edits: [] });
+});
+
+// --- Bots 0.16: names, and the routines a new lead takes over -----------------------------------
+
+import { deskTasksOfLead } from '../lib/team-migration.mjs';
+
+test('0.16: Quill and Memo take their new names where they still read as hired', () => {
+  const bots = [
+    { id: 'q', team: 'content', handle: 'quill', role: 'bot', name: 'Quill 写手', lead: true },
+    { id: 'm', team: 'research', handle: 'memo', role: 'bot', name: 'Memo', lead: true },
+    { id: 'm2', team: 'research', handle: 'memo2', role: 'bot', name: 'Memo 撰稿人' },
+    { id: 'x', team: 'research', handle: 'memo', role: 'bot', name: '我的 Memo' },
+  ];
+  const plan = planLeadMigration({ bots, entries: [], deskId: null, giveLeads: false });
+  assert.deepEqual(plan.bots, [{ id: 'q', patch: { name: 'Quill 主编' } }]);
+  const renamed = bots.map((b) => (b.id === 'q' ? { ...b, name: 'Quill 主编' } : b));
+  assert.deepEqual(planLeadMigration({ bots: renamed, entries: [], deskId: null, giveLeads: false }).bots, []);
+  assert.equal(team('research').bots[0].name.zh, 'Memo 主笔');
+});
+
+test('0.16: the dispatcher\'s routines the company\'s lead runs now, still as hired, in either language', () => {
+  const tasks = team('opc').bots.find((b) => b.key === team('opc').lead).tasks;
+  const entries = [
+    { id: 'a', title: tasks[0].title.zh, prompt: tasks[0].prompt.zh },
+    { id: 'b', title: tasks[1].title.en, prompt: tasks[1].prompt.en },
+    { id: 'c', title: tasks[2].title.en, prompt: 'Market pulse, my way.' },
+    { id: 'd', title: team('opc').desk[0].title.en, prompt: team('opc').desk[0].prompt.en },
+  ];
+  assert.deepEqual(deskTasksOfLead('opc', entries), ['a', 'b']);
+  assert.deepEqual(deskTasksOfLead('dev', entries), []);
+});
+
+test('0.16: a 0.11.0 member routine the company\'s lead runs now still goes to the dispatcher first', () => {
+  const plan = planTeamMigration({ bots: [bot('d', 'opc', 'atlas', 'en'), bot('h', 'opc', 'harbor', 'en')], entries: [entry('i', 'h', 'opc', 'harbor', 0, 'en')], deskId: 'd', deskText });
+  assert.deepEqual(plan.moves.map((m) => [m.id, m.title]), [['i', 'Inbox sweep']]);
 });

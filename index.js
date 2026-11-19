@@ -40,8 +40,8 @@ import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SK
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
 import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
-import { OLD_LEADS, TEAMS, namesBot, teamTiming, teamView } from './lib/teams.mjs';
-import { planLeadMigration, planTeamMigration } from './lib/team-migration.mjs';
+import { ADDED_LEADS, OLD_LEADS, TEAMS, namesBot, teamTiming, teamView } from './lib/teams.mjs';
+import { deskTasksOfLead, planLeadMigration, planTeamMigration } from './lib/team-migration.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
@@ -57,7 +57,7 @@ import { CARD_REF_RE, createProjects, PROJECT_ID_RE } from './lib/projects.mjs';
 import { assignmentText, clip, discussionNoteText, failedNoticeText, followUpNoticeText, NEWS_MESSAGES, nudgeText, panelHeaderText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, shownNoticeText, stalledNoticeText, threadNewsText } from './lib/cards.mjs';
 import { checkTickets, isEmptyResponse, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
 import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
-import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, languageOf, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
+import { cleanDay, createMemory, dreamBotPrompt, dreamTeamPrompt, isProjectScope, KINDS as MEMORY_KINDS, languageOf, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
 import { createTopics, rotationReason } from './lib/topics.mjs';
 import { chatMessageRef, createDiscussions, forkPoint, messageRef, seqByTime } from './lib/discussions.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
@@ -779,7 +779,10 @@ export function apply(ctx, config, deps = {}) {
     if (text === undefined) {
       const bot = botOfSession(sessionId);
       try {
-        text = bot ? memory.promptFor(bot, { tz: tzMinutes() }) : '';
+        // A task filed under a project reads that project's notes too (Bots 0.16).
+        const t = ticketOf(sessionId);
+        const p = t?.projectId ? projects.get(t.projectId) : undefined;
+        text = bot ? memory.promptFor(bot, { tz: tzMinutes(), ...(p ? { project: { id: p.id, key: p.key, name: p.name } } : {}) }) : '';
       } catch {
         text = '';
       }
@@ -945,13 +948,18 @@ export function apply(ctx, config, deps = {}) {
     let summary = '';
     if (sel) {
       try {
-        const p = reflectionPrompt({ bot, notes: memory.notes(bot.id), team: memory.notes('team'), transcript, trigger: triggerWords(task), language: userLanguage([transcript]) });
+        // A task of a project may note what concerns that project (Bots 0.16).
+        const ticket = task.ticket ? tickets.get(task.ticket) : undefined;
+        const proj = ticket?.projectId ? projects.get(ticket.projectId) : undefined;
+        const today = memory.dayOf(Date.now(), tzMinutes());
+        const p = reflectionPrompt({ bot, notes: memory.notes(bot.id), team: memory.notes('team'), transcript, trigger: triggerWords(task), language: userLanguage([transcript]), today, ...(proj ? { project: { key: proj.key, name: proj.name, notes: memory.notes(proj.id) } } : {}) });
         const r = await complete(sel, p.system, p.user, { purpose: 'bots-memory', sessionId: task.s });
         ledger.record(usageRow({ botId: bot.id, sessionId: task.s, taskId: task.id, ticketId: task.ticket, kind: 'memory', provider: sel.provider, model: sel.model, usage: r.usage }));
         const parsed = parseJsonReply(r.text) ?? {};
         summary = String(parsed.summary ?? '').trim();
         if (Array.isArray(parsed.notes) && parsed.notes.length) memory.edit(bot.id, parsed.notes, { source: 'auto' });
         if (Array.isArray(parsed.team) && parsed.team.length) memory.edit('team', parsed.team, { source: 'auto' });
+        if (proj && Array.isArray(parsed.project) && parsed.project.length) memory.edit(proj.id, parsed.project, { source: 'auto' });
       } catch (error) {
         ctx.logger?.warn?.(`bots: summarizing a task of @${bot.handle} failed: ${error?.message ?? error}`);
       }
@@ -975,10 +983,12 @@ export function apply(ctx, config, deps = {}) {
     dreaming = (async () => {
       const now = Date.now();
       const tz = tzMinutes();
+      const today = memory.dayOf(now, tz);
       const before = memory.dreamState();
       const since = Number(before.lastAt) || now - DAY_MS;
       const bots = store.list();
-      const result = { at: now, reason, bots: [], digest: null, errors: [] };
+      // Notes past their last day go first (Bots 0.16): no model needed.
+      const result = { at: now, reason, bots: [], digest: null, errors: [], expired: memory.prune(today) };
       const language = userLanguage(memory.journal({ since: now - 7 * DAY_MS, limit: 300 }).map((j) => j.summary || j.title));
       for (const bot of bots) {
         const journal = memory.journal({ bot: bot.id, since: now - 7 * DAY_MS, limit: 300 });
@@ -988,7 +998,7 @@ export function apply(ctx, config, deps = {}) {
         const sel = memoryModelOf(bot);
         if (!sel) continue;
         try {
-          const p = dreamBotPrompt({ bot, notes, journal, tz, language });
+          const p = dreamBotPrompt({ bot, notes, journal, tz, language, today });
           const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
           ledger.record(usageRow({ botId: bot.id, kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
           const parsed = parseJsonReply(r.text);
@@ -1005,13 +1015,25 @@ export function apply(ctx, config, deps = {}) {
         const date = memory.dayOf(journal[journal.length - 1].at, tz);
         if (sel) {
           try {
-            const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz, language });
+            // Every project, so that a team note about one can move there (Bots 0.16).
+            const projs = projects.list().map((x) => ({ id: x.id, key: x.key, name: x.name, notes: memory.notes(x.id) }));
+            const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz, language, projects: projs, today });
             const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
             ledger.record(usageRow({ botId: lead?.id ?? 'team', kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
             const parsed = parseJsonReply(r.text);
             if (!parsed) throw new Error('the model did not answer with JSON');
             if (String(parsed.digest ?? '').trim()) result.digest = memory.addDigest({ date, text: parsed.digest });
-            if (Array.isArray(parsed.team)) result.team = memory.edit('team', parsed.team, { source: 'dream' });
+            // The projects first: a team note moved to a project is removed from the team only when its project took
+            // the answer; one named under an unknown key keeps every team note (the next night tries again).
+            let lost = false;
+            if (parsed.projects && typeof parsed.projects === 'object') {
+              for (const [key, edits] of Object.entries(parsed.projects)) {
+                const x = projs.find((q) => q.key === String(key).trim().toUpperCase());
+                if (!x) lost = true;
+                else if (Array.isArray(edits) && edits.length) (result.projects ??= {})[x.key] = memory.edit(x.id, edits, { source: 'dream' });
+              }
+            }
+            if (Array.isArray(parsed.team)) result.team = memory.edit('team', lost ? parsed.team.filter((o) => !['remove', 'delete', 'forget'].includes(String(o?.op ?? '').toLowerCase())) : parsed.team, { source: 'dream' });
           } catch (error) {
             result.errors.push({ bot: 'team', reason: error?.message ?? String(error) });
           }
@@ -4192,7 +4214,7 @@ export function apply(ctx, config, deps = {}) {
   const tools = [
     defineTool({
       name: 'bot_list',
-      description: "List the user's bots: handle, name, role, status, bio, skills, apps and scheduled tasks. Use it before delegating to find the right bot.",
+      description: "List the user's bots: handle, name, role, team, status, bio, skills, apps and scheduled tasks. Use it before delegating to find the right bot.",
       parameters: {},
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bots: v.bots }) },
       isConcurrencySafe: () => true,
@@ -4209,7 +4231,10 @@ export function apply(ctx, config, deps = {}) {
           const ap = b.apps.filter((a) => a.enabled).map((a) => a.name);
           const ts = tasks.filter((t) => t.botId === b.id).map((t) => `${t.title} (${t.describe}${t.status !== 'active' ? `, ${t.status}` : ''})`);
           const open = tickets.list({ botId: b.id, open: true }).length;
-          return [`${card(b)} [${botStatus(b)}${open ? `, ${open} open task${open === 1 ? '' : 's'}` : ''}]${b.bio ? `: ${b.bio}` : ''}`, sk.length ? `  skills: ${sk.join(', ')}` : '', ap.length ? `  apps: ${ap.join(', ')}` : '', ts.length ? `  scheduled: ${ts.join('; ')}` : ''].filter(Boolean).join('\n');
+          // Its team (0.16), by id and name, as bot_create and bot_update take it.
+          const team = b.team && b.role !== 'primary' ? TEAMS.find((x) => x.id === b.team) : undefined;
+          const on = team ? `, team ${team.id} (${team.name.en})${b.lead ? ', lead' : ''}` : '';
+          return [`${card(b)} [${botStatus(b)}${on}${open ? `, ${open} open task${open === 1 ? '' : 's'}` : ''}]${b.bio ? `: ${b.bio}` : ''}`, sk.length ? `  skills: ${sk.join(', ')}` : '', ap.length ? `  apps: ${ap.join(', ')}` : '', ts.length ? `  scheduled: ${ts.join('; ')}` : ''].filter(Boolean).join('\n');
         });
         return { ok: true, text: lines.length ? lines.join('\n') : 'No bots yet.', bots: bots.map(face) };
       },
@@ -4226,12 +4251,14 @@ export function apply(ctx, config, deps = {}) {
         color: { type: 'string', description: 'Avatar background colour, CSS hex.' },
         ...AVATAR_PARAMS,
         skills: { ...skillInput, description: 'Skills to give it.' },
+        team: { type: 'string', description: 'A hired team it joins (its id or name, as bot_list shows them); leave it out for none. Its work then comes through the team\'s lead, if it has one.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bot: v.bot }) },
       execute: async (args, exec) => {
         const caller = actor(exec);
         const by = caller.bot;
         tooManySkills((args.skills ?? []).length);
+        const team = teamArg(args.team);
         const bot = store.save(
           {
             name: args.name,
@@ -4240,6 +4267,7 @@ export function apply(ctx, config, deps = {}) {
             persona: args.persona ?? '',
             avatar: { kind: 'initials', ...(args.initials ? { text: args.initials } : {}), ...(args.color ? { color: args.color } : {}) },
             skills: (args.skills ?? []).map((s) => ({ ...s, enabled: true })),
+            ...(team ? { team } : {}),
           },
           { createdBy: by?.id ?? 'user' },
         );
@@ -4249,7 +4277,7 @@ export function apply(ctx, config, deps = {}) {
     }),
     defineTool({
       name: 'bot_update',
-      description: "Change a bot (yourself included): name, bio, persona, avatar (letters and colour, a picture drawn by AI, or an image file), skills, make it the dispatcher, or make it its team's lead. Only the fields you pass change.",
+      description: "Change a bot (yourself included): name, bio, persona, avatar (letters and colour, a picture drawn by AI, or an image file), skills, its team, make it the dispatcher, or make it its team's lead. Only the fields you pass change.",
       parameters: {
         bot: { type: 'string', required: true, description: '@handle, id or name of the bot.' },
         name: { type: 'string' },
@@ -4262,7 +4290,8 @@ export function apply(ctx, config, deps = {}) {
         add_skills: { ...skillInput, description: `Skills to add (a skill with the same name is replaced). At most ${MAX_SKILLS_ON} can be on at once; past that they are added switched off.` },
         remove_skills: { type: 'array', items: { type: 'string' }, description: 'Names of skills to remove.' },
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
-        lead: { type: 'boolean', description: "Only for a bot hired as part of a team: true to make it the team's lead (the dispatcher hands the team's work to it, and it brings in its teammates), false to take that away (the dispatcher then hands each member its work)." },
+        team: { type: 'string', description: "Move it to a hired team (its id or name), or 'none' to take it out of its team. A lead that moves no longer leads." },
+        lead: { type: 'boolean', description: "Only for a bot that is part of a team: true to make it the team's lead (the dispatcher hands the team's work to it, and it brings in its teammates), false to take that away (the dispatcher then hands each member its work)." },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bot: v.bot }) },
       execute: async (args, exec) => {
@@ -4278,8 +4307,12 @@ export function apply(ctx, config, deps = {}) {
           tooManySkills(next.skills.length);
         }
         if (args.make_dispatcher === true) next.role = 'primary';
+        if (typeof args.team === 'string') {
+          next.team = teamArg(args.team, { primary: (next.role ?? bot.role) === 'primary' });
+          if (next.team === (bot.team ?? '')) delete next.team;
+        }
         if (typeof args.lead === 'boolean') {
-          if (!bot.team) throw new Error(`@${bot.handle} was not hired as part of a team; only a team has a lead`);
+          if (!(next.team ?? bot.team)) throw new Error(`@${bot.handle} is part of no team; only a team has a lead`);
           if (args.lead && (bot.role === 'primary' || next.role === 'primary')) throw new Error('the dispatcher leads no team: it hands out the work of all of them');
           next.lead = args.lead;
         }
@@ -4720,42 +4753,57 @@ export function apply(ctx, config, deps = {}) {
     defineTool({
       name: 'memory_save',
       description:
-        "Save a note to long-term memory, which outlasts this conversation and every new topic. Use it when the user asks you to remember something, or you learn a lasting fact, preference, decision or lesson. scope 'self' is your own memory; 'team' is read by every bot (only for what all of them should know). One self-contained sentence; never secrets.",
+        "Save a note to long-term memory, which outlasts this conversation and every new topic. Use it when the user asks you to remember something, or you learn a lasting fact, preference, decision or lesson. scope 'self' is your own memory; 'team' is read by every bot (only for what all of them should know in every piece of work: the user, the business, the setup); 'project' is read by every task of one project (what concerns that work only). One self-contained sentence; never secrets, never the state of work or where a file is.",
       parameters: {
         text: { type: 'string', required: true, description: 'The note: one sentence, in the language the user uses.' },
-        scope: { type: 'string', enum: ['self', 'team'], description: "Default 'self'." },
+        scope: { type: 'string', enum: ['self', 'team', 'project'], description: "Default 'self'." },
+        project: { type: 'string', description: "With scope 'project': the project's key (like OPC); left out, the project this task is filed under." },
+        until: { type: 'string', description: 'For a note about something with a date (an event, a deadline, an offer): its last day, YYYY-MM-DD. After that day it is forgotten. With replace_id, give it again when the note still has a last day.' },
         kind: { type: 'string', enum: MEMORY_KINDS },
         replace_id: { type: 'string', description: 'Id of an existing note this one corrects or replaces.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ note: v.note, scope: v.scope }) },
       execute: async (args, exec) => {
-        const me = callerBot(exec);
-        const scope = args.scope === 'team' ? 'team' : 'self';
+        const { sessionId, bot: me } = actor(exec);
+        const scope = args.scope === 'team' ? 'team' : args.scope === 'project' || args.project ? 'project' : 'self';
         if (scope === 'self' && !me) throw new Error("only a bot has its own memory; use scope 'team' to save a note every bot reads");
-        const key = scope === 'team' ? 'team' : me.id;
-        const ops = args.replace_id ? [{ op: 'update', id: String(args.replace_id), text: args.text, kind: args.kind }] : [{ op: 'add', text: args.text, kind: args.kind }];
-        if (args.replace_id && !memory.notes(key).some((n) => n.id === String(args.replace_id))) throw new Error(`no note ${args.replace_id} in ${scope === 'team' ? 'team' : 'your'} memory`);
+        // A project's memory (Bots 0.16): the one named, else the project this task is filed under.
+        let proj;
+        if (scope === 'project') {
+          const own = ticketOf(sessionId)?.projectId;
+          proj = args.project ? projectByRef(args.project) : own ? projects.get(own) : undefined;
+          if (!proj) throw new Error("this conversation works on no project: name one with `project` (its key, like OPC), or save the note with scope 'team' or 'self'");
+        }
+        const key = scope === 'team' ? 'team' : scope === 'project' ? proj.id : me.id;
+        const where = scope === 'team' ? 'team memory' : scope === 'project' ? `project ${proj.key} memory` : 'your memory';
+        const until = String(args.until ?? '').trim();
+        if (until && !cleanDay(until)) throw new Error(`until is a day as YYYY-MM-DD, not "${until}"`);
+        // A note restated with replace_id takes the last day given, or none: a corrected note never runs out on the old one's day.
+        const ops = args.replace_id ? [{ op: 'update', id: String(args.replace_id), text: args.text, kind: args.kind, until: until || '' }] : [{ op: 'add', text: args.text, kind: args.kind, ...(until ? { until } : {}) }];
+        if (args.replace_id && !memory.notes(key).some((n) => n.id === String(args.replace_id))) throw new Error(`no note ${args.replace_id} in ${where}`);
         const r = memory.edit(key, ops, { source: 'tool' });
         const note = memory.notes(key).find((n) => n.id === r.touched[0]) ?? null;
         if (!note) {
           if (args.replace_id) throw new Error(`note ${args.replace_id} is pinned by the user; it stays as it is (ask the user to change it)`);
           throw new Error(looksSecret(args.text) ? 'not saved: it looks like a secret (keys, passwords and tokens are never stored)' : String(args.text ?? '').trim() ? 'not saved: memory is full of pinned notes; ask the user to unpin some' : 'not saved: the note is empty');
         }
-        return { ok: true, scope, note, text: `${r.added ? 'Saved' : args.replace_id ? 'Updated' : 'Already remembered'} (${scope === 'team' ? 'team memory' : 'your memory'}${note ? `, id ${note.id}` : ''}).` };
+        return { ok: true, scope, ...(proj ? { project: proj.key } : {}), note, text: `${r.added ? 'Saved' : args.replace_id ? 'Updated' : 'Already remembered'} (${where}${note ? `, id ${note.id}` : ''}${note?.until ? `, until ${note.until}` : ''}).` };
       },
     }),
     defineTool({
       name: 'memory_forget',
       description: 'Remove a note from long-term memory that is wrong or no longer true, by its id (shown in brackets in your memory).',
-      parameters: { id: { type: 'string', required: true }, scope: { type: 'string', enum: ['self', 'team'], description: "Default 'self'." } },
+      parameters: { id: { type: 'string', required: true }, scope: { type: 'string', enum: ['self', 'team', 'project'], description: 'Default: as the id says (t- team, p- a project, n- yours).' } },
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
       execute: async (args, exec) => {
         const me = callerBot(exec);
-        const scope = args.scope === 'team' || String(args.id).startsWith('t-') ? 'team' : 'self';
+        const id = String(args.id);
+        const scope = args.scope === 'team' || id.startsWith('t-') ? 'team' : args.scope === 'project' || id.startsWith('p-') ? 'project' : 'self';
         if (scope === 'self' && !me) throw new Error('only a bot has its own memory');
-        const key = scope === 'team' ? 'team' : me.id;
-        const target = memory.notes(key).find((n) => n.id === String(args.id));
-        if (!target) throw new Error(`no note ${args.id} in ${scope === 'team' ? 'team' : 'your'} memory`);
+        // A project note (Bots 0.16) is found in whichever project holds it.
+        const key = scope === 'team' ? 'team' : scope === 'project' ? memory.projectIds().find((pid) => memory.notes(pid).some((n) => n.id === id)) ?? '' : me.id;
+        const target = key ? memory.notes(key).find((n) => n.id === id) : undefined;
+        if (!target) throw new Error(`no note ${args.id} in ${scope === 'team' ? 'team' : scope === 'project' ? 'any project\'s' : 'your'} memory`);
         if (target.pinned) throw new Error(`note ${args.id} is pinned by the user; ask the user before removing it`);
         memory.remove(key, String(args.id));
         return { ok: true, text: `Forgot ${args.id}.` };
@@ -4770,18 +4818,19 @@ export function apply(ctx, config, deps = {}) {
       isConcurrencySafe: () => true,
       execute: async (args, exec) => {
         const { sessionId, bot: me } = actor(exec);
-        const r = memory.search(args.query, { bot: me?.id ?? '' });
+        // A task conversation finds only what it may read with bot_recall: its task, the parent, the sub-tasks;
+        // journal lines of those tasks, none of other work (lines without a task, digests of everyone's day);
+        // of the projects' notes (Bots 0.16), its own project's. Elsewhere every project's.
+        const mine = ticketOf(sessionId);
+        const r = memory.search(args.query, { bot: me?.id ?? '', projects: mine ? (mine.projectId ? [mine.projectId] : []) : memory.projectIds() });
         const tz = tzMinutes();
         const when = (ms) => new Date(ms + tz * 60_000).toISOString().slice(0, 16).replace('T', ' ');
-        // A task conversation finds only what it may read with bot_recall: its task, the parent, the sub-tasks;
-        // journal lines of those tasks, none of other work (lines without a task, digests of everyone's day).
-        const mine = ticketOf(sessionId);
         const scope = mine ? new Set([mine.id, mine.parentId, ...tickets.children(mine.id).map((c) => c.id)].filter(Boolean)) : null;
         const found = searchTickets(args.query, tickets.list().filter((t) => !scope || scope.has(t.id)));
         const journal = scope ? r.journal.filter((j) => j.ticket && scope.has(j.ticket)) : r.journal;
         const digests = scope ? [] : r.digests;
         const lines = [
-          ...r.notes.map((n) => `[${n.id}] (${n.scope === 'team' ? 'team' : 'yours'}) ${n.text}`),
+          ...r.notes.map((n) => `[${n.id}] (${n.scope === 'team' ? 'team' : n.scope === 'project' ? `project ${projects.get(n.project)?.key ?? '?'}` : 'yours'}) ${n.text}${n.until ? ` (until ${n.until})` : ''}`),
           ...journal.map((j) => `${when(j.at)} @${store.get(j.bot)?.handle ?? 'removed'}: ${j.summary || j.title}${j.ticket ? ` (task ${j.ticket})` : ''}`),
           ...digests.map((d) => `Digest ${d.date}: ${d.text.slice(0, 600)}`),
           ...found.map((f) => `Task ${f.ticket.id} (${handleOf(f.ticket.botId)}, ${stageOf(f.ticket)}): ${f.ticket.title}${f.where === 'report' ? ` — ${f.status} report: ${f.snippet}` : ''} [bot_recall "ticket/${f.ticket.id}"]`),
@@ -5119,17 +5168,32 @@ export function apply(ctx, config, deps = {}) {
       models: [...seen].map(([model, provider]) => ({ model, provider, price: priceOf(model, overrides, catalog) })).sort((a, b) => a.model.localeCompare(b.model)),
     };
   }
+  /** A memory scope the page names: 'team', a project's id (Bots 0.16) or a bot's id; undefined for none of those. */
+  const memoryScope = (ref) => {
+    const s = String(ref ?? '');
+    if (s === 'team') return 'team';
+    if (isProjectScope(s)) return projects.get(s)?.id;
+    return store.get(s)?.id;
+  };
   function memoryView(scope) {
     const tz = tzMinutes();
     const dreamState = memory.dreamState();
     if (!scope || scope === 'team') {
-      return { scope: 'team', notes: memory.notes('team'), digests: memory.digests().slice(-30).reverse(), journal: memory.journal({ limit: 150 }).reverse(), dream: dreamState, settings: settings.get().memory, tz };
+      // The projects, with how many notes each keeps (Bots 0.16).
+      const projs = projects.list().map((p) => ({ id: p.id, key: p.key, name: p.name, count: memory.notes(p.id).length }));
+      return { scope: 'team', notes: memory.notes('team'), projects: projs, today: memory.dayOf(Date.now(), tz), digests: memory.digests().slice(-30).reverse(), journal: memory.journal({ limit: 150 }).reverse(), dream: dreamState, settings: settings.get().memory, tz };
+    }
+    if (isProjectScope(scope)) {
+      const p = projects.get(scope);
+      if (!p) return { ok: false, reason: 'no such project' };
+      return { scope: p.id, project: { id: p.id, key: p.key, name: p.name }, notes: memory.notes(p.id), today: memory.dayOf(Date.now(), tz), tz };
     }
     const bot = store.get(scope);
     if (!bot) return { ok: false, reason: 'no such bot' };
     return {
       scope: bot.id,
       notes: memory.notes(bot.id),
+      today: memory.dayOf(Date.now(), tz),
       journal: memory.journal({ bot: bot.id, limit: 100 }).reverse(),
       topic: topics.peek(bot.id),
       topics: topics.history(bot.id).slice(0, 20),
@@ -5235,6 +5299,8 @@ export function apply(ctx, config, deps = {}) {
       routerNoticePending: s.routerNotice === 'pending',
       // Leads of teams hired before 0.11.1 that only pass messages on now: offered once for removal.
       oldLeads: s.leadNotice === 'dismissed' ? [] : oldLeads().map((b) => ({ id: b.id, name: b.name, handle: b.handle, team: b.team })),
+      // Teams hired before their template had a lead of its own (0.16): offered once.
+      leadOffers: leadOffers().map(leadOfferView),
       // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
       attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
       asks: waiting.sort((a, b) => a.at - b.at).map(askView),
@@ -5358,7 +5424,22 @@ export function apply(ctx, config, deps = {}) {
     return { ...plan, leads };
   }
 
-  /** The bot that leads `bot`'s team (Bots 0.15; itself when it leads), or null for a team of peers or a bot of no team. */
+  /** Teams hired here: a team template one of whose bots, not the dispatcher, belongs to it. */
+  const hiredTeams = () => TEAMS.filter((t) => store.list().some((b) => b.team === t.id && b.role !== 'primary'));
+  /**
+   * The team a bot is put in (Bots 0.16), from its id or its name in either language (any case): '' for none.
+   * Only a hired team, and never for the dispatcher, which hands out the work of all of them.
+   */
+  function teamArg(value, { primary = false } = {}) {
+    const v = String(value ?? '').trim().toLowerCase();
+    if (!v || v === 'none') return '';
+    if (primary) throw new Error('the dispatcher belongs to no team: it hands out the work of all of them');
+    const team = TEAMS.find((t) => t.id === v || [t.name.en, t.name.zh].some((n) => String(n).toLowerCase() === v));
+    if (!team || !hiredTeams().includes(team)) throw new Error(`no team "${value}" is hired here${hiredTeams().length ? `; the teams are ${hiredTeams().map((t) => `${t.id} (${t.name.en})`).join(', ')}` : ''}`);
+    return team.id;
+  }
+
+  /** The bot that leads `bot`'s team (Bots 0.15; itself when it leads), or null for a team without one (its lead removed) or a bot of no team. */
   const leadOf = (bot) => (bot?.team ? store.list().find((b) => b.team === bot.team && b.lead && b.role !== 'primary') ?? null : null);
 
   /** Bots hired as a team's lead before 0.11.1 that are not the dispatcher: they only pass messages on. */
@@ -5375,8 +5456,9 @@ export function apply(ctx, config, deps = {}) {
    * schedule its tasks. Its work goes through the one dispatcher (0.11.1), made first when there
    * is none, which gets the team's `desk` tasks (one it already has by that title is not added
    * twice); the bot its template names leads it (0.15). Returns what was made and what was skipped.
+   * `only` (keys): just those members, and no desk tasks (a lead joining a team hired before, 0.16).
    */
-  async function hireTeam(teamId, lang) {
+  async function hireTeam(teamId, lang, { only } = {}) {
     const team = TEAMS.find((t) => t.id === teamId);
     if (!team) throw new Error(`no team "${teamId}"`);
     const zh = lang === 'zh';
@@ -5389,7 +5471,7 @@ export function apply(ctx, config, deps = {}) {
     const created = [];
     const skipped = [];
     const imports = new Map();
-    for (const b of team.bots) {
+    for (const b of team.bots.filter((x) => !only || only.includes(x.key))) {
       const skills = [];
       for (const n of b.dshSkills ?? []) {
         if (have.has(n)) skills.push({ name: n, source: 'dsh', description: have.get(n) ?? '', enabled: true });
@@ -5432,7 +5514,7 @@ export function apply(ctx, config, deps = {}) {
           ...(existing ? {} : { skills, apps }),
           tools: { deny },
           team: team.id,
-          // The bot that delivers the team's work leads it (Bots 0.15); a team of peers has no lead.
+          // The bot its template names leads it (Bots 0.15; every template names one since 0.16).
           ...(team.lead === b.key && existing?.role !== 'primary' ? { lead: true } : {}),
         },
         { createdBy: 'user' },
@@ -5448,7 +5530,20 @@ export function apply(ctx, config, deps = {}) {
         // No schedule service: saving says so below.
       }
     }
-    const jobs = [...created.flatMap(({ bot, spec }) => (spec.tasks ?? []).map((task) => ({ bot, task }))), ...(team.desk ?? []).filter((task) => !deskTitles.has(pick(task.title))).map((task) => ({ bot: desk, task }))];
+    // A member hired again keeps its routines: one it has by that title is not added twice (0.16: the lead has some).
+    const titlesOf = async (bot) => {
+      try {
+        return new Set((await schedulesOf(store.get(bot.id) ?? bot)).map((e) => e.title));
+      } catch {
+        return new Set();
+      }
+    };
+    const memberJobs = [];
+    for (const { bot, spec } of created) {
+      const has = spec.tasks?.length ? await titlesOf(bot) : new Set();
+      for (const task of spec.tasks ?? []) if (!has.has(pick(task.title))) memberJobs.push({ bot, task });
+    }
+    const jobs = [...memberJobs, ...(only ? [] : team.desk ?? []).filter((task) => !deskTitles.has(pick(task.title))).map((task) => ({ bot: desk, task }))];
     for (const { bot, task } of jobs) {
       try {
         await scheduleSave(store.get(bot.id) ?? bot, { title: pick(task.title), prompt: pick(task.prompt), timing: teamTiming(task.when, zone) });
@@ -5456,8 +5551,53 @@ export function apply(ctx, config, deps = {}) {
         skipped.push({ bot: bot.handle, kind: 'schedule', name: pick(task.title), reason: error?.message ?? String(error) });
       }
     }
+    // The routines the lead runs now (0.16) leave the dispatcher: its copies still as hired, and only those whose
+    // twin the lead has, so a routine that could not be made on the lead stays where it was.
+    let moved = 0;
+    const lead = created.find((c) => c.spec.key === team.lead && c.spec.tasks?.length);
+    if (hadDesk && lead) {
+      try {
+        const has = await titlesOf(lead.bot);
+        const entries = (await schedulesOf(store.get(desk.id) ?? desk)).filter((e) => has.has(e.title));
+        for (const id of deskTasksOfLead(team.id, entries)) {
+          await schedule().edit({ id, action: 'delete' });
+          moved += 1;
+        }
+      } catch (error) {
+        skipped.push({ bot: desk.handle, kind: 'schedule', name: 'routines', reason: error?.message ?? String(error) });
+      }
+    }
     const bots = [...(hadDesk ? [] : [desk]), ...created.map((c) => c.bot)].map((b) => store.get(b.id));
-    return { team: team.id, bots, dispatcherId: desk.id, kickoff: pick(team.kickoff), skipped };
+    return { team: team.id, bots, dispatcherId: desk.id, kickoff: pick(team.kickoff), skipped, moved };
+  }
+
+  /**
+   * Teams hired before their template had a lead of its own (0.16, `ADDED_LEADS`): the team is hired,
+   * none of its bots leads it, its lead's handle is not among them, and the offer was not turned down.
+   */
+  const leadOffers = () => {
+    const turnedDown = settings.get().leadOffers ?? {};
+    return TEAMS.filter((team) => {
+      if (!ADDED_LEADS.includes(team.id) || turnedDown[team.id] === 'dismissed') return false;
+      const members = store.list().filter((b) => b.team === team.id && b.role !== 'primary');
+      const handle = team.bots.find((b) => b.key === team.lead)?.handle;
+      return members.length > 0 && !members.some((b) => b.lead || b.handle === handle);
+    });
+  };
+  const leadOfferView = (team) => {
+    const lead = team.bots.find((b) => b.key === team.lead);
+    return { team: team.id, name: team.name, lead: { key: lead.key, handle: lead.handle, name: lead.name, bio: lead.bio, color: lead.color, tasks: (lead.tasks ?? []).map((t) => t.title) } };
+  };
+
+  /**
+   * The lead a team's template gained after it was hired (0.16) joins it: hired as in `hireTeam`, with its
+   * scheduled tasks, and the dispatcher's copies of those (still as hired) go.
+   */
+  async function addLead(teamId, lang) {
+    const team = leadOffers().find((t) => t.id === teamId);
+    if (!team) throw new Error('this team has its lead already, or was not hired');
+    // `hireTeam` moves the routines over: the dispatcher's copies go once the lead has its own.
+    return hireTeam(team.id, lang, { only: [team.lead] });
   }
 
   const unfurlLink = createUnfurler();
@@ -5483,6 +5623,9 @@ export function apply(ctx, config, deps = {}) {
         const cards = needs.unfile(p.id);
         for (const t of tickets.list()) if (t.projectId === p.id && !t.sessionId) tickets.patch(t.id, { projectId: undefined });
         projects.remove(p.id);
+        // Its memory goes with it (Bots 0.16).
+        memory.dropProject(p.id);
+        staleMemory();
         return { ok: true, cards };
       },
     },
@@ -5490,6 +5633,21 @@ export function apply(ctx, config, deps = {}) {
       post: async (body) => {
         const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en');
         return { ok: true, ...r, bots: r.bots.map(publicBot) };
+      },
+    },
+    // A team hired before its template had a lead (0.16): the lead joins it, or the offer goes away.
+    'teams/add-lead': {
+      post: async (body) => {
+        const r = await addLead(String(body.team ?? ''), body.lang === 'zh' ? 'zh' : 'en');
+        return { ok: true, ...r, bots: r.bots.map(publicBot) };
+      },
+    },
+    'teams/add-lead/dismiss': {
+      post: (body) => {
+        const id = String(body.team ?? '');
+        if (!TEAMS.some((t) => t.id === id)) return { ok: false, reason: 'no such team' };
+        settings.save({ leadOffers: { ...(settings.get().leadOffers ?? {}), [id]: 'dismissed' } });
+        return { ok: true, leadOffers: leadOffers().map(leadOfferView) };
       },
     },
     'skills/library': { get: async () => ({ skills: await dshSkills(), sources: SKILL_SOURCES }) },
@@ -5597,6 +5755,14 @@ export function apply(ctx, config, deps = {}) {
         if (prev?.avatar?.kind === 'image' && input.avatar?.kind === 'image') input.avatar = { ...input.avatar, url: prev.avatar.url };
         // The page holds channel tokens masked; a mask sent back keeps the stored token.
         if (Array.isArray(input.apps)) input.apps = unmaskApps(input.apps, prev?.apps ?? [], templates());
+        // Its team (0.16): one hired here, or '' for none; a bot that keeps its team is not asked again.
+        if ('team' in input && String(input.team ?? '') !== String(prev?.team ?? '')) {
+          try {
+            input.team = teamArg(input.team, { primary: (input.role ?? prev?.role) === 'primary' });
+          } catch (error) {
+            return { ok: false, reason: error.message };
+          }
+        }
         const bot = store.save(input, { createdBy: 'user' });
         applyModel(bot);
         return { ok: true, bot: { ...publicBot(bot), status: botStatus(bot) } };
@@ -5727,8 +5893,8 @@ export function apply(ctx, config, deps = {}) {
     memory: { get: (url) => memoryView(url.searchParams.get('bot') ?? 'team') },
     'memory/put': {
       post: (body) => {
-        const scope = body.scope === 'team' ? 'team' : store.get(String(body.scope ?? ''))?.id;
-        if (!scope) return { ok: false, reason: 'no such bot' };
+        const scope = memoryScope(body.scope);
+        if (!scope) return { ok: false, reason: 'no such bot or project' };
         const note = memory.put(scope, body.note ?? {});
         staleMemory();
         return { ok: true, note };
@@ -5736,8 +5902,8 @@ export function apply(ctx, config, deps = {}) {
     },
     'memory/delete': {
       post: (body) => {
-        const scope = body.scope === 'team' ? 'team' : store.get(String(body.scope ?? ''))?.id;
-        if (!scope) return { ok: false, reason: 'no such bot' };
+        const scope = memoryScope(body.scope);
+        if (!scope) return { ok: false, reason: 'no such bot or project' };
         const ok = memory.remove(scope, String(body.id ?? ''));
         if (ok) staleMemory();
         return { ok };

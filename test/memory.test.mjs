@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyOps, createMemory, looksSecret, memoryText, normalizeOps, parseJsonReply, reflectionPrompt, dreamBotPrompt, dreamTeamPrompt, clip, languageOf } from '../lib/memory.mjs';
+import { applyOps, cleanDay, createMemory, expired, looksSecret, memoryText, normalizeOps, parseJsonReply, reflectionPrompt, dreamBotPrompt, dreamTeamPrompt, clip, languageOf } from '../lib/memory.mjs';
 import { createSettings, normalizeSettings } from '../lib/settings.mjs';
 import { compactPrices, costOf, priceOf } from '../lib/prices.mjs';
 import { rangeOf, report, todayByBot, usageRow, promptTokens } from '../lib/usage.mjs';
@@ -50,6 +50,84 @@ test('secrets never become notes, and the cap drops the oldest machine notes fir
   assert.equal(capped.notes.length, 4);
   assert.ok(capped.notes.some((n) => n.id === 'n-0'), 'the user note outlives older machine notes');
   assert.ok(!capped.notes.some((n) => n.id === 'n-1'));
+});
+
+test('0.16: a note may have a last day; past it, it is not read and pruning removes it (a pinned one stays)', () => {
+  assert.equal(cleanDay(' 2026-11-28 '), '2026-11-28');
+  assert.equal(cleanDay('11/28'), '');
+  assert.deepEqual(normalizeOps([{ op: 'add', text: 'Event on 11/28', until: '2026-11-28' }, { op: 'add', text: 'bad day', until: 'tomorrow' }, { op: 'update', id: 't-1', text: 'x', until: null }]), [
+    { op: 'add', text: 'Event on 11/28', until: '2026-11-28' },
+    { op: 'add', text: 'bad day' },
+    { op: 'update', id: 't-1', text: 'x', until: '' },
+  ]);
+  let r = applyOps([], [{ op: 'add', text: 'Quote due', until: '2026-11-20' }], { prefix: 't' });
+  assert.equal(r.notes[0].until, '2026-11-20');
+  r = applyOps(r.notes, [{ op: 'update', id: r.notes[0].id, text: 'Quote due, signed', until: '' }], { prefix: 't' });
+  assert.equal(r.notes[0].until, undefined);
+  assert.equal(expired({ until: '2026-11-20' }, '2026-11-21'), true);
+  assert.equal(expired({ until: '2026-11-20' }, '2026-11-20'), false, 'its last day still counts');
+  assert.equal(expired({ until: '2026-11-20', pinned: true }, '2026-12-01'), false);
+  const m = createMemory(tmp());
+  m.put('team', { text: 'Quote due on 11/20.', until: '2026-11-20' });
+  m.put('team', { text: 'Event on 11/28.', until: '2026-11-28' });
+  m.put('team', { text: 'Pinned with a day.', until: '2026-11-01', pinned: true });
+  m.put('team', { text: 'The founder lives in Beijing.' });
+  const now = Date.parse('2026-11-21T12:00:00Z');
+  const text = m.promptFor({ id: 'b1', name: 'A', handle: 'a' }, { now });
+  assert.match(text, /Event on 11\/28\. \(until 2026-11-28\)/);
+  assert.doesNotMatch(text, /Quote due/);
+  assert.match(text, /Pinned with a day/);
+  assert.match(text, /gets `until`, its last day \(YYYY-MM-DD\)/);
+  assert.equal(m.prune('2026-11-21'), 1);
+  assert.deepEqual(m.notes('team').map((n) => n.text).sort(), ['Event on 11/28.', 'Pinned with a day.', 'The founder lives in Beijing.'].sort());
+  // The panel sets and clears a day.
+  const ev = m.notes('team').find((n) => n.text === 'Event on 11/28.');
+  assert.equal(m.put('team', { id: ev.id, until: '' }).until, undefined);
+  assert.equal(m.put('team', { id: ev.id, until: '2026-11-29' }).until, '2026-11-29');
+});
+
+test('0.16: a project keeps notes of its own, read by its tasks, searched and dropped with it', () => {
+  const dir = tmp();
+  const m = createMemory(dir);
+  const pid = 'pjabc12345';
+  m.edit(pid, [{ op: 'add', text: 'Venue is the Yinmo bookstore.', kind: 'project' }], { source: 'auto' });
+  m.put('team', { text: 'The founder lives in Beijing.' });
+  const [note] = m.notes(pid);
+  assert.match(note.id, /^p-/);
+  assert.deepEqual(m.projectIds(), [pid]);
+  const bot = { id: 'b1', name: 'A', handle: 'a' };
+  const inProject = m.promptFor(bot, { project: { id: pid, key: 'EVT', name: 'Family day' } });
+  assert.match(inProject, /### Project memory: EVT · Family day \(every task of this project reads it\)\n- \[p-[^\]]+\] Venue is the Yinmo bookstore\./);
+  assert.match(inProject, /what concerns one project only goes in "project" \(here: EVT\)/);
+  assert.doesNotMatch(m.promptFor(bot), /Project memory|Yinmo/, 'a conversation of no project reads none');
+  assert.deepEqual(m.search('yinmo').notes, [], 'only the projects asked for');
+  assert.deepEqual(m.search('yinmo', { projects: [pid] }).notes.map((n) => [n.scope, n.project]), [['project', pid]]);
+  // Kept on disk, read back by the next process; a project id never reads as a bot's.
+  const again = createMemory(dir);
+  assert.equal(again.notes(pid)[0].text, 'Venue is the Yinmo bookstore.');
+  assert.deepEqual(again.notes('b1'), []);
+  again.dropProject(pid);
+  assert.deepEqual(createMemory(dir).notes(pid), []);
+});
+
+test('0.16: the memory passes keep status, deliveries and the roster out, file project notes there, and give dates a last day', () => {
+  const bot = { name: 'Forge', handle: 'forge' };
+  const project = { key: 'EVT', name: 'Family day', notes: [{ id: 'p-1', text: 'Venue booked.', until: '2026-11-28' }] };
+  const r = reflectionPrompt({ bot, notes: [], team: [], transcript: '[user] hi', trigger: 'a task', project, today: '2026-11-19' });
+  assert.match(r.system, /"project": \[<edits to the project notes>\]/);
+  assert.match(r.system, /Never note the state of work \(started, done, delivered, waiting, blocked\), where a deliverable or file is, or who is on the team/);
+  assert.match(r.system, /What concerns project EVT \(Family day\) only — its decisions, conventions, contacts, links, dates — goes in the project notes\./);
+  assert.match(r.system, /gets "until": the last day it matters \(YYYY-MM-DD\); after that it is forgotten\. Today is 2026-11-19\./);
+  assert.match(r.user, /# Notes of project EVT \(Family day\)\n\[p-1\] Venue booked\. \(until 2026-11-28\)/);
+  const none = reflectionPrompt({ bot, notes: [], team: [], transcript: '[user] hi', trigger: 'a task' });
+  assert.doesNotMatch(none.system, /"project"/);
+  assert.match(none.system, /Nothing that concerns one piece of work only goes in the team notes\./);
+  const d = dreamTeamPrompt({ bots: [], team: [{ id: 't-1', text: 'Venue is the bookstore.' }], journal: [], date: '2026-11-19', projects: [project], today: '2026-11-19' });
+  assert.match(d.system, /A team note about one of the projects below only moves there: remove it from the team notes and add it to that project\./);
+  assert.match(d.system, /"projects": \{"<KEY>": \[<edits>\]\}/);
+  assert.match(d.user, /# Projects\n## EVT · Family day\n\[p-1\] Venue booked\./);
+  assert.match(dreamBotPrompt({ bot, notes: [], journal: [], today: '2026-11-19' }).system, /Drop notes that only say: the state of work/);
+  assert.match(r.system, /it keeps its "until" unless you give a new one, or "until": null when it no longer has a last day/);
 });
 
 test('JSON replies are found inside fences and prose', () => {

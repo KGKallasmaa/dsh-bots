@@ -1850,6 +1850,9 @@ test('board: projects are kept through their routes; a card filed for the dispat
   const { h, api, folder, made } = env;
   const { project } = await api.request('POST', '/projects/save', { project: { name: 'One-person company', brief: 'Ship small, weekly.\nNever deploy on Fridays.', dir: folder } });
   assert.deepEqual([project.key, project.dir, project.next], ['OPC', folder, 1]);
+  // Its memory (0.16): a note its tasks read, and one past its day that nobody reads.
+  await api.request('POST', '/memory/put', { scope: project.id, note: { text: 'Pricing is in USD only.', until: '2999-01-01' } });
+  await api.request('POST', '/memory/put', { scope: project.id, note: { text: 'The old launch date.', until: '2001-01-01' } });
   await assert.rejects(api.request('POST', '/projects/save', { project: { name: 'Again', key: 'opc' } }), /the key OPC is taken/);
   await assert.rejects(api.request('POST', '/projects/save', { project: { name: 'Nowhere', dir: join(folder, 'missing') } }), /there is no folder/);
   // Filed and handed to the dispatcher at once: the dispatcher reads it as the person's message, marked as the card.
@@ -1875,6 +1878,19 @@ test('board: projects are kept through their routes; a card filed for the dispat
   assert.deepEqual(made.find((m) => m.sessionId === t.sessionId), { sessionId: t.sessionId, workspaceId: `ws:${folder}` });
   const worker = h.agentsById.get(t.sessionId);
   assert.match(textOfMsg(worker.deliveries[0].message), /It is for card OPC-1 \("Landing page for 2\.4"\) of project OPC \(One-person company\)\./);
+  assert.match(promptOf(worker), /### Project memory: OPC · One-person company \(every task of this project reads it\)\n- \[p-[^\]]+\] Pricing is in USD only\. \(until 2999-01-01\)/);
+  assert.doesNotMatch(promptOf(worker), /The old launch date/);
+  assert.doesNotMatch(promptOf(router), /Project memory/, 'the dispatcher works on no project');
+  // The task saves to its project's memory without naming it; the dispatcher has to name one.
+  const saved = await env.call('memory_save', { text: 'The FAQ has 6 questions.', scope: 'project' }, t.sessionId);
+  assert.deepEqual([saved.scope, saved.project], ['project', 'OPC']);
+  await assert.rejects(env.call('memory_save', { text: 'x', scope: 'project' }, sid), /works on no project/);
+  await assert.rejects(env.call('memory_save', { text: 'x', scope: 'project', until: 'Friday' }, t.sessionId), /until is a day as YYYY-MM-DD/);
+  assert.match((await env.call('memory_search', { query: 'faq questions' }, sid)).text, /\(project OPC\) The FAQ has 6 questions\./);
+  assert.deepEqual((await api.request('GET', `/memory?bot=${project.id}`)).notes.map((n) => n.text).sort(), ['Pricing is in USD only.', 'The FAQ has 6 questions.', 'The old launch date.'].sort());
+  assert.deepEqual((await api.request('GET', '/memory?bot=team')).projects.map((x) => [x.key, x.count]), [['OPC', 3]]);
+  await env.call('memory_forget', { id: saved.note.id }, t.sessionId);
+  assert.equal(api.memory.notes(project.id).length, 2);
   assert.match(promptOf(worker), new RegExp(`## The project\nThis task is part of project OPC \\(One-person company\\)\\. This conversation works in the project's folder, ${folder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\n\nShip small, weekly\\.\nNever deploy on Fridays\\.`));
   // A sub-task works in the same project.
   const sub = await env.call('bot_send_message', { to: '@scout', text: 'Find three landing pages we like.' }, t.sessionId);
@@ -1970,9 +1986,11 @@ test('board: To do waits for the person; start, done, save and moving between pr
   assert.match(filed.text, /is card WEB-2 of project WEB \(Website\)/);
   const finished = await call('bot_need', { need: 'WEB-2', action: 'done' }, sid);
   assert.equal(finished.need.status, 'done');
-  // A project removed: its cards stay, under no project.
+  // A project removed: its cards stay, under no project; its memory goes (0.16).
+  await api.request('POST', '/memory/put', { scope: web.id, note: { text: 'The site is built with Astro.' } });
   const gone = await api.request('POST', '/projects/delete', { id: web.id });
   assert.equal(gone.cards, 2);
+  assert.deepEqual(api.memory.notes(web.id), []);
   assert.equal((await api.request('GET', `/needs/${later.id}`)).ref, undefined);
   env.dispose();
 });
@@ -2173,7 +2191,7 @@ test('0.15: the dispatcher hands a led team\'s work to its lead, past it only wh
   // One lead per team; the dispatcher leads none; a bot of no team cannot lead.
   await call('bot_update', { bot: '@tester', lead: true }, sid);
   assert.deepEqual(api.store.list().filter((b) => b.lead).map((b) => b.handle), ['tester']);
-  await assert.rejects(call('bot_update', { bot: '@forge', lead: true }, sid), /@forge was not hired as part of a team/);
+  await assert.rejects(call('bot_update', { bot: '@forge', lead: true }, sid), /@forge is part of no team/);
   await call('bot_update', { bot: '@tester', lead: false }, sid);
   assert.deepEqual(api.store.list().filter((b) => b.lead), []);
   // A team with no lead: the dispatcher hands each member its own part.

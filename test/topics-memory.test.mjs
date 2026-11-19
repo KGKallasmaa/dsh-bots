@@ -423,6 +423,42 @@ test('dreaming consolidates each bot and writes the team digest once a day', asy
   assert.match(h.agentsById.get(atlas().sessionId).sections.get('bots:memory').text(), /Latest team digest/);
 });
 
+test('0.16: a consolidation forgets notes past their day, and moves a team note about a project into it', async () => {
+  const p = route('projects/save', { project: { name: 'Family day', key: 'EVT' } }).project;
+  const venue = route('memory/put', { scope: 'team', note: { text: 'The family day venue is the bookstore.' } }).note;
+  route('memory/put', { scope: 'team', note: { text: 'Quote due on 11/20.', until: '2001-01-01' } });
+  route('memory/put', { scope: p.id, note: { text: 'Old rehearsal.', until: '2001-01-01' } });
+  api.memory.addJournal({ bot: atlas().id, task: 't-evt', title: 'Venue', summary: 'Booked the venue.' });
+  calls.length = 0;
+  reply = (req) =>
+    /shared memory of the user's team/.test(req.system)
+      ? { digest: '## Today\nVenue booked.', team: [{ op: 'remove', id: venue.id }], projects: { evt: [{ op: 'add', text: 'The venue is the bookstore.', until: '2999-11-28' }] } }
+      : { notes: [] };
+  const r = await route('memory/dream', {});
+  assert.equal(r.result.expired, 2);
+  const team = calls.find((c) => /shared memory of the user's team/.test(c.system));
+  assert.match(team.prompt, /# Projects\n## EVT · Family day\n\(none\)/, 'expired notes are gone before the model reads them');
+  assert.ok(!api.memory.notes('team').some((n) => /venue|Quote due/.test(n.text)));
+  assert.deepEqual(api.memory.notes(p.id).map((n) => [n.text, n.until, n.source]), [['The venue is the bookstore.', '2999-11-28', 'dream']]);
+  assert.deepEqual(Object.keys(r.result.projects), ['EVT']);
+  // A note moved to a project the answer names under an unknown key stays shared: nothing is lost.
+  const kept = route('memory/put', { scope: 'team', note: { text: 'The rehearsal is at the bookstore.' } }).note;
+  api.memory.addJournal({ bot: atlas().id, task: 't-evt2', title: 'Rehearsal', summary: 'Planned the rehearsal.' });
+  reply = (req) => (/shared memory of the user's team/.test(req.system) ? { digest: 'x', team: [{ op: 'remove', id: kept.id }, { op: 'add', text: 'Invoices go out monthly.' }], projects: { 'Family day': [{ op: 'add', text: 'The rehearsal is at the bookstore.' }] } } : { notes: [] });
+  await route('memory/dream', {});
+  assert.ok(api.memory.notes('team').some((n) => n.id === kept.id));
+  assert.ok(api.memory.notes('team').some((n) => n.text === 'Invoices go out monthly.'), 'the other edits go in');
+  // A note corrected with replace_id takes the last day given, or none.
+  const sid = atlas().sessionId;
+  const offer = await call('memory_save', { text: 'The offer ends on 11/20.', scope: 'team', until: '2999-11-20' }, sid);
+  assert.equal(offer.note.until, '2999-11-20');
+  const fixed = await call('memory_save', { text: 'The offer is permanent now.', scope: 'team', replace_id: offer.note.id }, sid);
+  assert.equal(fixed.note.until, undefined);
+  const moved = await call('memory_save', { text: 'The offer ends on 12/1.', scope: 'team', replace_id: offer.note.id, until: '2999-12-01' }, sid);
+  assert.equal(moved.note.until, '2999-12-01');
+  reply = { summary: 'ok', notes: [], team: [] };
+});
+
 test('a consolidation whose every step failed is tried again from the same point', async () => {
   const before = api.memory.dreamState().lastAt;
   api.memory.addJournal({ bot: atlas().id, task: 't-x', title: 'Late work', summary: 'Late work' });
