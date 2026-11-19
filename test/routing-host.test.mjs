@@ -2030,3 +2030,111 @@ test('board: a task whose project folder is gone fails to start and says why', a
   assert.match(api.tickets.get(card.tickets[0].id).error, /did not start: the folder of project WEB, .*, is gone; set another one on the board/);
   env.dispose();
 });
+
+// --- cards named in messages, and cards that wait for others (Bots 0.13) ---------------------------
+
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+test('cards named: a message that starts with a card goes to its one task; one that names cards elsewhere tells the dispatcher about them', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  await api.request('POST', '/projects/save', { project: { name: 'One-person company', key: 'OPC' } });
+  const card = await api.request('POST', '/needs/create', { title: 'Q3 pricing table', projectId: 'OPC', assignee: '@forge' });
+  const t = api.tickets.get(card.tickets[0].id);
+  const sid = api.store.find('atlas').sessionId;
+  const router = h.agentsById.get(sid);
+  // Leading, in any case: straight to the task, logged in the dispatcher's chat, and the dispatcher told without waking.
+  await api.userSend(env.atlas, 'opc-1 加上英国');
+  assert.equal(textOfMsg(h.agentsById.get(t.sessionId).deliveries.at(-1).message), 'opc-1 加上英国');
+  const logged = api.store.messages({ bot: env.atlas.id }).at(-1);
+  assert.deepEqual([logged.kind, logged.ticket, logged.need, logged.to], ['user', t.id, card.id, api.store.find('forge').id]);
+  const note = router.deliveries.at(-1);
+  assert.equal(note.mode, 'inject');
+  assert.match(textOfMsg(note.message), /^\[follow_up\] The user .*wrote about task t[a-z0-9]{8}/);
+  assert.equal(router.inbox.nextStep.length, 0, 'the dispatcher takes no turn for it');
+  assert.equal((await api.request('GET', `/needs/${card.id}`)).asks.at(-1).text, 'opc-1 加上英国', 'the words join the card');
+  // Named elsewhere: the dispatcher gets the message, with the card it names.
+  await api.userSend(env.atlas, 'Is OPC-1 done yet? And what about OPC-99?');
+  const said = textOfMsg(router.deliveries.at(-1).message);
+  assert.match(said, new RegExp(`Cards named: ${card.id} OPC-1 "Q3 pricing table" \\(working\\), open tasks ${t.id} \\(@forge, working\\)\\n`));
+  assert.doesNotMatch(said, /OPC-99 "/);
+  // Two live tasks: the dispatcher places it.
+  await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Check the UK prices.', need: 'OPC-1' } }] });
+  const before = h.agentsById.get(t.sessionId).deliveries.length;
+  await api.userSend(env.atlas, 'OPC-1 include VAT');
+  assert.equal(h.agentsById.get(t.sessionId).deliveries.length, before);
+  assert.match(textOfMsg(router.deliveries.at(-1).message), /Cards named: n[a-z0-9]{8} OPC-1 /);
+  // A card in To do the person names: the dispatcher may start it.
+  const later = await api.request('POST', '/needs/create', { title: 'FAQ page', projectId: 'OPC', start: false });
+  await h.step(sid, { answer: 'ok' });
+  await api.userSend(env.atlas, 'Start OPC-2 with Scout please');
+  assert.match(textOfMsg(router.deliveries.at(-1).message), /OPC-2 "FAQ page" \(todo\) — in To do: it starts when the person says so/);
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the FAQ page.', need: 'OPC-2' } }] });
+  assert.equal(r.need.id, later.id);
+  assert.equal((await api.request('GET', `/needs/${later.id}`)).status, 'working');
+  env.dispose();
+});
+
+test('cards named: a chat message that starts with a card goes to its task, which answers in that chat', async () => {
+  const env = boardBoot();
+  const { api, call } = env;
+  const tg = await withTelegram(env);
+  const card = await api.request('POST', '/needs/create', { title: 'Logo', assignee: '@forge' });
+  const t = api.tickets.get(card.tickets[0].id);
+  // Filed under a project, the card has a reference to start a message with.
+  await api.request('POST', '/projects/save', { project: { name: 'Brand', key: 'BR' } });
+  await api.request('POST', `/needs/${card.id}/save`, { projectId: 'BR' });
+  tg.say('42', 21, 'BR-1 make it blue');
+  await settle();
+  assert.match(textOfMsg(env.h.agentsById.get(t.sessionId).deliveries.at(-1).message), /BR-1 make it blue$/);
+  await call('bot_send_message', { status: 'done', text: 'Blue logo: logo-blue.svg' }, t.sessionId);
+  await settle();
+  assert.equal(tg.c.sent.at(-1).text, '【Forge】\nBlue logo: logo-blue.svg');
+  env.dispose();
+});
+
+test('waiting cards: a card in To do waits for others and starts by itself with what they delivered; one dropped leaves it waiting', async () => {
+  const env = boardBoot();
+  const { h, api, call } = env;
+  await api.request('POST', '/projects/save', { project: { name: 'One-person company', key: 'OPC' } });
+  const research = await api.request('POST', '/needs/create', { title: 'Competitor research', projectId: 'OPC', assignee: '@scout' });
+  const write = await api.request('POST', '/needs/create', { title: 'Pricing page copy', projectId: 'OPC', assignee: '@forge', after: ['OPC-1'] });
+  assert.deepEqual([write.status, write.after.map((x) => [x.ref, x.status]), write.startWith], ['todo', [['OPC-1', 'working']], api.store.find('forge').id]);
+  // Cards under way, and loops, are refused.
+  const third = await api.request('POST', '/needs/create', { title: 'Launch post', projectId: 'OPC', start: false });
+  await assert.rejects(api.request('POST', `/needs/${research.id}/save`, { after: ['OPC-3'] }), /only a card in To do waits for others/);
+  await api.request('POST', `/needs/${third.id}/save`, { after: ['OPC-2'] });
+  await assert.rejects(api.request('POST', `/needs/${write.id}/save`, { after: ['OPC-1', 'OPC-3'] }), /OPC-3 already waits for this card/);
+  await assert.rejects(api.request('POST', `/needs/${write.id}/save`, { after: ['OPC-2'] }), /a card cannot wait for itself/);
+  // The research is delivered: the copy starts by itself, with Forge, and reads what the research found.
+  const rt = api.tickets.get(research.tickets[0].id);
+  await call('bot_send_message', { status: 'done', text: 'Three tiers everywhere; Acme charges $29.' }, rt.sessionId);
+  await tick();
+  await settle();
+  const started = await api.request('GET', `/needs/${write.id}`);
+  assert.equal(started.status, 'working');
+  const wt = api.tickets.get(started.tickets[0].id);
+  assert.equal(wt.botId, api.store.find('forge').id);
+  assert.match(wt.text, /^Pricing page copy\n\nIt waited for OPC-1 \("Competitor research"\), which is done now: "Three tiers everywhere; Acme charges \$29\."$/);
+  // The launch post waits for the copy; the dispatcher takes it when that is done, with the copy's result in its header.
+  await call('bot_send_message', { status: 'done', text: 'Copy is in pricing.md.' }, wt.sessionId);
+  await tick();
+  await settle();
+  const sid = api.store.find('atlas').sessionId;
+  const header = textOfMsg(h.agentsById.get(sid).deliveries.at(-1).message);
+  assert.match(header, /\[Card OPC-3\] The user filed this on the board as need n[a-z0-9]{8} \("Launch post"\) in project OPC \(One-person company\), to start once other cards were done; it starts now\. The tasks you open for it count toward it \(pass need n[a-z0-9]{8}[^)]*\)\. [^\n]*\nIt waited for OPC-2 \("Pricing page copy"\), which is done now: "Copy is in pricing\.md\."\n/);
+  // One whose card is dropped stays in To do, marked: it will not start by itself.
+  const a = await api.request('POST', '/needs/create', { title: 'Survey', projectId: 'OPC', assignee: '@scout' });
+  const b = await api.request('POST', '/needs/create', { title: 'Survey report', projectId: 'OPC', after: [a.id] });
+  await api.request('POST', `/needs/${a.id}/drop`, {});
+  await tick();
+  const stuck = await api.request('GET', `/needs/${b.id}`);
+  assert.deepEqual([stuck.status, stuck.afterStuck, stuck.after[0].status], ['todo', true, 'stopped']);
+  // The dispatcher sets a wait when the person asks for one.
+  const c = await api.request('POST', '/needs/create', { title: 'Newsletter', projectId: 'OPC', start: false });
+  const set = await call('bot_need', { need: c.id, action: 'after', after: 'OPC-5', start_with: '@scout' }, sid);
+  assert.match(set.text, /OPC-6 starts by itself once OPC-5 is done, with @scout\./);
+  const cleared = await call('bot_need', { need: 'OPC-6', action: 'after', after: '' }, sid);
+  assert.match(cleared.text, /OPC-6 waits for no card now\./);
+  env.dispose();
+});

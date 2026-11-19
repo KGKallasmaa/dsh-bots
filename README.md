@@ -143,6 +143,15 @@ up), and several messages (you ask, then add "include the UK in the Europe one",
   cards, under no project; its tasks under way go on where they are, and those still waiting to start work in the
   Bots workspace. Moving a card to another project leaves its tasks under way where they are; new ones work on the
   new project.
+- **Name a card in a message**: `OPC-12 add the UK too`, in the panel or a chat app. A message to the dispatcher
+  that starts with a card's reference goes straight to that card's task when it has one (as a reply to the task's
+  message does), and its answers come back where you wrote; the dispatcher gets a note without being woken. A card
+  named anywhere else in a message (or one with several tasks) goes to the dispatcher, which reads what each named
+  card is, how far it got and its open tasks, and can start one in To do you name.
+- **A card can wait for others**: on its page (**Starts after**), in **New card**, or by asking the dispatcher ("do
+  OPC-12 after OPC-11"). It stays in To do and starts by itself once they are all done, with whoever you chose (the
+  dispatcher, or one teammate), and reads what they delivered. If one of them is dropped or not done, it does not
+  start by itself, and the board says so.
 - Open a card for its description, your own words (to check the restatement), the question waiting for you
   (**Answer** opens its task), what was delivered and the tasks behind it; **Rename** it, edit its description, move it
   to another project (it gets a number there), **Start** it, **Mark done**, or **Drop it** (its unfinished tasks
@@ -627,6 +636,12 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.12
+
+- Nothing to migrate. A message that starts with a card's reference (`OPC-12 …`) now goes to that card's task when it
+  has one; to ask the dispatcher about the card instead, put the reference later in the message.
+- Cards in To do can wait for others (**Starts after** on the card's page).
 
 ## Upgrading from 0.11.1
 

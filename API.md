@@ -1011,3 +1011,46 @@ OPC (…).` after its origin line; the task's persona adds `## The project` (key
 - `bot_recall` reads `need/OPC-12`; `needs` items add `card`.
 - A router dispatcher's persona adds `## Projects` (each `- KEY — name: the brief's first line`, and when to pass
   `project`); prompts read the projects as they are assembled, so a change applies at the next step.
+
+## v0.13 — cards named in messages, and cards that wait for others
+
+### Cards named
+A card reference is `KEY-N` (any case) with no letter, digit or `-` before it and no letter or digit after it, naming
+an existing card (`needs/<ref>` finds it). In a message to the router home (the panel, a thread of it or a chat app):
+- **Leading**: a message that starts with one (spaces before it allowed) whose card has exactly one live task (not
+  archived, not stopped by a person) goes to that task as the person's message, like a reply in a task's thread: from
+  the panel it is logged in the dispatcher's chat as `{ from: 'user', to: <bot>, chat: <dispatcher>, kind: 'user',
+  thread: 'panel:<home>', ticket, need }` (`bots:panel:<id>:<ticket>`); from a chat app (`createChannels` dep
+  `cardRoute(owner, text) => {need, ticket} | null`, called for a message `routeInbound` sends to the router without
+  an `@handle`) through `toTickets` with `meta.card`. A task that answers the person itself is subscribed to that
+  Thread and `showIn` it. The dispatcher gets a `[follow_up]` note injected. Its words join the card's need. When the
+  task does not take it, the message goes to the router as usual.
+- **Otherwise** the router reads, after `Open needs:` (a panel message's header; a text block before a chat message's
+  source line), `Cards named: n… OPC-12 "…" (working, 1/2 done), open tasks t… (@forge, working); …` (≤ 5 cards; a card
+  in To do adds `— in To do: it starts when the person says so`). The turn's asks carry `refs` (need ids named), and
+  `bot_send_message` with `need` = a card in To do is allowed when the person named it in that turn.
+
+### Waiting cards
+```ts
+Need += { after?: string[] /* need ids, ≤ 10, not its own */, startWith?: string /* a bot id; none: the dispatcher */ }
+NeedRow += { after?: { id, title, status, ref? }[], afterStuck?: true, startWith? }   // a card in To do only
+```
+Only a card in To do waits (`only a card in To do waits for others: this one is under way already`). Refused: an
+unknown card (`no card X to wait for`), itself, more than 10, and a loop (`OPC-3 already waits for this card: they
+would wait for each other`). Its wait is `ready` when every card it waits for is `done` (a merged one is followed, a
+pruned one dropped from the list), `stuck` when one is `stopped` or `failed` (`afterStuck`: it does not start by
+itself), else waiting. After any change of a need (on the next tick) and at every upkeep, each ready card starts with
+`startWith` as the assignee; a start that fails is tried again 4 minutes later at the earliest. It starts as a card
+does (0.12) with, for each card it waited for, `It waited for OPC-11 ("…"), which is done now: "<its latest done
+report, ≤ 600 characters>"` (and `… (bot_recall need/OPC-11 reads all of it)` when cut): below its text for a task
+of one bot, or on the lines after the `[Card …]` header, which then reads `… to start once other cards were done; it
+starts now.`
+Starting it by hand starts it at once.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| POST | `needs/create` | `+= { after?: (id \| ref)[] }` | with `after`: kept in To do, waiting, `assignee` as `startWith` (`start` does not matter then) |
+| POST | `needs/<ref>/save` | `+= { after?: (id \| ref)[] ([] for none), startWith?: bot ('' for the dispatcher) }` | checked before anything changes |
+
+`bot_need` adds `action: 'after'` with `after` (references or ids, comma-separated; empty for none) and `start_with`
+(`@handle`). A router persona with projects reads what `Cards named:` means and when to use it.

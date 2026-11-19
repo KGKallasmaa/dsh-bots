@@ -314,7 +314,7 @@ const NEEDS = [
   { id: 'ndone0001', title: 'Weekly numbers', status: 'done', done: 1, total: 1, bots: ['bot-b'], via: 'panel', createdAt: Date.now() - 200 * MIN, updatedAt: Date.now() - 60 * MIN, endedAt: Date.now() - 60 * MIN, latest: { status: 'done', at: Date.now() - 60 * MIN, botId: 'bot-b', ticket: 'tdone0001', preview: 'Revenue up 12%' } },
   { id: 'nstopped1', title: 'Old idea', status: 'stopped', done: 0, total: 1, bots: ['bot-c'], createdAt: Date.now() - 400 * MIN, updatedAt: Date.now() - 300 * MIN, closed: { at: Date.now() - 300 * MIN, by: 'user' } },
   // A card filed on the board for later (Bots 0.12), older than a week.
-  { id: 'ntodo0001', title: 'Pricing page', ref: 'OPC-2', projectId: 'pjopc00001', number: 2, status: 'todo', done: 0, total: 0, bots: [], via: 'board', asked: 'Pricing page', createdAt: Date.now() - 9 * 24 * 60 * MIN, updatedAt: Date.now() - 9 * 24 * 60 * MIN },
+  { id: 'ntodo0001', title: 'Pricing page', ref: 'OPC-2', projectId: 'pjopc00001', number: 2, status: 'todo', after: [{ id: 'nworking1', ref: 'OPC-1', title: 'Q3 competitor pricing table', status: 'working' }], done: 0, total: 0, bots: [], via: 'board', asked: 'Pricing page', createdAt: Date.now() - 9 * 24 * 60 * MIN, updatedAt: Date.now() - 9 * 24 * 60 * MIN },
 ];
 // The projects cards are filed under (Bots 0.12), as GET /projects lists them.
 const PROJECTS = [{ id: 'pjopc00001', key: 'OPC', name: 'One-person company', brief: 'Ship weekly.', dir: '/Users/me/opc', next: 3, counts: { todo: 1, working: 1, waiting: 0, done: 0, stopped: 0 } }];
@@ -2876,9 +2876,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.12\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.13\.0\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.12.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.13.0' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();
@@ -3081,5 +3081,40 @@ test('board: a card started from the board shows in the chat with its reference,
   click(msg, 'data-dsh-bots-msg-card', 'ntodo0001');
   await v.rerender();
   assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-need-detail'] === 'ntodo0001').length, 1);
+  v.hooks.runCleanups();
+});
+
+test('waiting cards: a card in To do says what it waits for; its page adds and removes cards and names who takes it; a new card can start after one', async () => {
+  const v = await openView('data-dsh-bots-needs-entry');
+  const todo = findAll(v.tree, (n) => n.props['data-dsh-bots-need'] === 'ntodo0001')[0];
+  assert.equal(findAll(todo, (n) => n.props['data-dsh-bots-need-after'] === 'OPC-1').length, 1);
+  assert.match(collect(todo).join(' '), /After OPC-1/);
+  // A new card that starts after another: one button, saying when.
+  click(v.tree, 'data-dsh-bots-board-new');
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-card-title'])[0].props.onChange({ target: { value: 'Launch post' } });
+  await v.rerender(1);
+  const select = findAll(v.tree, (n) => n.props['data-dsh-bots-card-after'])[0];
+  assert.deepEqual(findAll(select, (n) => n.type === 'option').map((o) => o.props.value), ['', 'nwaiting1', 'nworking1', 'ntodo0001'], 'done and dropped cards are not waited for');
+  select.props.onChange({ target: { value: 'nworking1' } });
+  await v.rerender(1);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-card-later']).length, 0);
+  assert.equal(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-card-start'])[0]).join(''), 'Start after OPC-1');
+  click(v.tree, 'data-dsh-bots-card-start');
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/needs/create')).body, { title: 'Launch post', description: '', projectId: '', assignee: '', start: true, after: ['nworking1'] });
+  // Its page: remove what it waits for, add another, and say who takes it then.
+  click(v.tree, 'data-dsh-bots-need', 'ntodo0001');
+  await v.rerender();
+  assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-need-after-edit'] === 'ntodo0001')[0]).join(' '), /OPC-1 Q3 competitor pricing table In progress/);
+  click(v.tree, 'data-dsh-bots-need-after-remove', 'nworking1');
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/ntodo0001/save')).at(-1).body, { after: [] });
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-after-add'] === 'ntodo0001')[0].props.onChange({ target: { value: 'nwaiting1' } });
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/ntodo0001/save')).at(-1).body, { after: ['nworking1', 'nwaiting1'] });
+  findAll(v.tree, (n) => n.props['data-dsh-bots-need-after-who'] === 'ntodo0001')[0].props.onChange({ target: { value: 'bot-b' } });
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((p) => p.path.endsWith('/needs/ntodo0001/save')).at(-1).body, { after: ['nworking1'], startWith: 'bot-b' });
   v.hooks.runCleanups();
 });

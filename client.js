@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.12.0';
+    const BOTS_VERSION = '0.13.0';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -3423,6 +3423,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     /** A card's reference on the board (`OPC-12`), as a small chip. */
     const CardRef = ({ text, ...rest }) =>
       text ? h('span', { className: 'dshb-mono', ...rest, style: { fontSize: TINY, color: C.muted, padding: '0 5px', borderRadius: 5, border: `1px solid ${C.border1}`, background: C.layer2, flex: 'none', lineHeight: '17px', whiteSpace: 'nowrap' } }, text) : null;
+    /** The cards a card in To do waits for (Bots 0.13), as its row lists them. */
+    const afterList = (row) => (Array.isArray(row?.after) ? row.after : []).filter((x) => x && typeof x.id === 'string');
+    /** Their references (`OPC-11, OPC-12`); `stuck`: only those that will not get done. */
+    const afterRefs = (row, stuck = false) =>
+      afterList(row)
+        .filter((x) => !stuck || x.status === 'stopped' || x.status === 'failed')
+        .map((x) => x.ref || str(x.title))
+        .join(', ');
+    /** Cards another card may wait for: not itself, not dropped, not already waited for. */
+    const waitable = (rows, self, taken = []) => rows.filter((r) => r.id !== self && r.status !== 'stopped' && !taken.includes(r.id));
+    const cardLabel = (r) => `${r.ref ? `${r.ref} · ` : ''}${str(r.title)}`;
     /** What dropping a card on a column does: start one in To do (or a dropped one), or mark one done; '' when it cannot go there. */
     const dropAction = (row, column) => {
       if (!row) return '';
@@ -3479,6 +3490,15 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           : null,
         Number(row.failed) > 0 && row.status !== 'failed' ? h('span', { 'data-dsh-bots-need-failed': row.failed, style: { fontSize: TINY, color: C.error } }, t('needSomeFailed', { n: Number(row.failed) })) : null,
         Number(row.stalled) > 0 && row.status === 'working' ? h('span', { 'data-dsh-bots-need-stalled': row.stalled, style: { fontSize: TINY, color: C.warn } }, t('needSomeStalled', { n: Number(row.stalled) })) : null,
+        // A card in To do that waits for others (Bots 0.13): which, and whether it will start by itself.
+        afterList(row).length
+          ? h(
+              'span',
+              { 'data-dsh-bots-need-after': afterList(row).map((x) => x.ref || x.id).join(','), style: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: TINY, color: row.afterStuck ? C.warn : C.muted, minWidth: 0 } },
+              Icon.clock(11),
+              h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.afterStuck ? t('afterStuck', { refs: afterRefs(row, true) }) : t('afterWaiting', { refs: afterRefs(row) })),
+            )
+          : null,
         h(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0, flexWrap: 'wrap' } },
@@ -3540,22 +3560,25 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
     /** The person files a card (Bots 0.12): a title, what it is about, its project, and who takes it, now or later. */
-    function CardForm({ t, bots, primaryId, projects, project, toast, onClose, onCreated }) {
+    function CardForm({ t, bots, primaryId, projects, project, cards = [], toast, onClose, onCreated }) {
       const [title, setTitle] = useState('');
       const [description, setDescription] = useState('');
       const [pid, setPid] = useState(project && project !== 'none' ? project : '');
       const [who, setWho] = useState('');
       const [busy, setBusy] = useState(false);
+      // A card that starts once another is done (Bots 0.13).
+      const [after, setAfter] = useState('');
+      const afterCard = cards.find((r) => r.id === after) ?? null;
       const front = bots.find((b) => b.id === primaryId) ?? null;
       const mates = bots.filter((b) => b.id !== primaryId);
       const submit = (start) => {
         if (busy || !title.trim()) return;
         setBusy(true);
-        void postJson('needs/create', { title: title.trim(), description, projectId: pid, assignee: start ? who : '', start })
+        void postJson('needs/create', { title: title.trim(), description, projectId: pid, assignee: start ? who : '', start, ...(after && start ? { after: [after] } : {}) })
           .then((r) => {
             if (r && r.ok !== false) {
               if (r.startError) toast(t('cardNotStarted', { reason: r.startError }), 'error');
-              else toast(start ? t('cardStarted') : t('cardFiled'));
+              else toast(start ? (after ? t('cardQueued', { ref: afterCard ? afterCard.ref || str(afterCard.title) : '' }) : t('cardStarted')) : t('cardFiled'));
               onCreated?.(r);
               onClose();
             } else toast(r?.reason || t('actionFailed'), 'error');
@@ -3571,8 +3594,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           onClose,
           footer: [
             h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
-            h(Btn, { key: 'l', disabled: busy || !title.trim(), onClick: () => submit(false), 'data-dsh-bots-card-later': true }, t('cardLater')),
-            h(Btn, { key: 's', kind: 'primary', disabled: busy || !title.trim() || !front, onClick: () => submit(true), 'data-dsh-bots-card-start': true }, t('cardStart')),
+            // Waiting for another card is To do already: one button, which says when it starts.
+            after ? null : h(Btn, { key: 'l', disabled: busy || !title.trim(), onClick: () => submit(false), 'data-dsh-bots-card-later': true }, t('cardLater')),
+            h(Btn, { key: 's', kind: 'primary', disabled: busy || !title.trim() || !front, onClick: () => submit(true), 'data-dsh-bots-card-start': true }, afterCard ? t('cardStartAfter', { ref: afterCard.ref || str(afterCard.title) }) : t('cardStart')),
           ],
         },
         h(
@@ -3617,6 +3641,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               )
             : null,
         ),
+        waitable(cards, '').length
+          ? h(
+              Field,
+              { label: t('cardAfter'), hint: after ? t('cardAfterHint') : '' },
+              h(
+                'select',
+                { className: 'dshb-input', value: after, onChange: (e) => setAfter(e.target.value), 'data-dsh-bots-card-after': true },
+                h('option', { value: '' }, t('cardAfterNone')),
+                waitable(cards, '').map((r) => h('option', { key: r.id, value: r.id }, cardLabel(r))),
+              ),
+            )
+          : null,
         h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, who ? t('cardDirectHint') : t('cardDispatcherHint')),
       );
     }
@@ -3832,7 +3868,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           ),
         ),
         h('div', { className: 'dshb-scroll', style: { flex: 1, padding: '16px 24px 28px' } }, body),
-        creating ? h(CardForm, { t, bots, primaryId, projects, project: filter, toast, onClose: () => setCreating(false), onCreated: () => (void reload(), void refreshState()) }) : null,
+        creating ? h(CardForm, { t, bots, primaryId, projects, project: filter, cards: all.filter((r) => r.status !== 'done'), toast, onClose: () => setCreating(false), onCreated: () => (void reload(), void refreshState()) }) : null,
         managing ? h(ProjectsModal, { t, projects, toast, onClose: () => setManaging(false), onChanged: () => (void reloadProjects(), void reload()) }) : null,
         confirm
           ? h(Confirm, {
@@ -3851,6 +3887,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     function NeedDetail({ t, id, bots = [], primaryId = null, toast, onBack, onOpenTask }) {
       const { data, failed, reload } = useJson(`needs/${encodeURIComponent(id)}`, STATE_POLL_MS);
       const { data: pdata } = useJson('projects', STATE_POLL_MS * 6);
+      // The other cards, for what this one may wait for (Bots 0.13).
+      const { data: ndata } = useJson('needs?limit=300', STATE_POLL_MS * 6);
       const [confirm, setConfirm] = useState(false);
       const [draft, setDraft] = useState(null);
       const [busy, setBusy] = useState(false);
@@ -3901,6 +3939,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const front = bots.find((b) => b.id === primaryId) ?? null;
       const mates = bots.filter((b) => b.id !== primaryId);
       const saveDesc = () => void post('save', { description: str(desc) }, t('cardSaved')).then((ok) => ok && setDesc(null));
+      const waits = afterList(v);
+      const waitIds = waits.map((x) => x.id);
+      const saveAfter = (ids, startWith) => void post('save', { after: ids, ...(startWith !== undefined ? { startWith } : {}) }, t('cardSaved'));
       return h(
         'div',
         { 'data-dsh-bots-need-detail': v.id, 'data-status': v.status, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -3991,6 +4032,43 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: SMALL, fontWeight: 600 } }, h(BotFace, { id: asking.botId, size: 18 }), t('needQuestion', { name: botName(t, asking.botId) })),
                   h(Clamp, { t, text: str(asking.preview), lines: 6, style: { fontSize: SMALL } }),
                   h('div', null, h(Btn, { kind: 'primary', size: 'sm', onClick: () => onOpenTask(asking.ticket), 'data-dsh-bots-need-answer': asking.ticket }, t('needAnswer'))),
+                )
+              : null,
+            // What a card in To do waits for, and who takes it then (Bots 0.13).
+            v.status === 'todo'
+              ? h(
+                  Section,
+                  { title: t('cardAfter'), hint: waits.length ? (v.afterStuck ? t('afterStuckHint') : t('afterHint')) : t('afterNoneHint') },
+                  h(
+                    'div',
+                    { 'data-dsh-bots-need-after-edit': v.id, style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+                    waits.map((x) =>
+                      h(
+                        'span',
+                        { key: x.id, className: 'dshb-chip', 'data-dsh-bots-need-after-item': x.id, 'data-status': x.status, style: { cursor: 'default', borderColor: x.status === 'stopped' || x.status === 'failed' ? C.warn : undefined } },
+                        h(CardRef, { text: x.ref }),
+                        h('span', { style: { maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' } }, str(x.title)),
+                        h('span', { style: { color: NEED_COLOR[x.status] ?? C.muted } }, t(`need_${x.status}`)),
+                        h('button', { type: 'button', className: 'dshb-link', title: t('afterRemove'), 'aria-label': t('afterRemove'), disabled: busy, onClick: () => saveAfter(waitIds.filter((id) => id !== x.id)), 'data-dsh-bots-need-after-remove': x.id, style: { display: 'inline-flex' } }, Icon.close(10)),
+                      ),
+                    ),
+                    waitable(needRows(ndata), v.id, waitIds).length
+                      ? h(
+                          'select',
+                          { className: 'dshb-input', value: '', disabled: busy, 'aria-label': t('afterAdd'), 'data-dsh-bots-need-after-add': v.id, onChange: (e) => e.target.value && saveAfter([...waitIds, e.target.value]), style: { width: 'auto', maxWidth: 260, height: 28, fontSize: SMALL } },
+                          h('option', { value: '' }, t('afterAdd')),
+                          waitable(needRows(ndata), v.id, waitIds).map((r) => h('option', { key: r.id, value: r.id }, cardLabel(r))),
+                        )
+                      : null,
+                    waits.length && mates.length
+                      ? h(
+                          'select',
+                          { className: 'dshb-input', value: v.startWith ?? '', disabled: busy, 'aria-label': t('cardAssignee'), 'data-dsh-bots-need-after-who': v.id, onChange: (e) => saveAfter(waitIds, e.target.value), style: { width: 'auto', maxWidth: 220, height: 28, fontSize: SMALL } },
+                          h('option', { value: '' }, t('afterThenDispatcher', { name: front?.name ?? t('dispatcher') })),
+                          mates.map((b) => h('option', { key: b.id, value: b.id }, t('afterThenBot', { name: b.name }))),
+                        )
+                      : null,
+                  ),
                 )
               : null,
             // What the card is about, as the person wrote it on the board (Bots 0.12).
@@ -9239,6 +9317,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         cardFromBoard: 'Card from the board',
         cardFromBoardRef: 'Card {ref}',
         taskForRequest: 'Its request',
+        // cards that wait for others (Bots 0.13)
+        cardAfter: 'Starts after',
+        cardAfterNone: 'Nothing: now, or when I start it',
+        cardAfterHint: 'It waits in To do and starts by itself once that card is done, with what it delivered.',
+        cardStartAfter: 'Start after {ref}',
+        cardQueued: 'It starts once {ref} is done.',
+        afterWaiting: 'After {refs}',
+        afterStuck: 'Waits for {refs}, which will not get done',
+        afterHint: 'It starts by itself once these are done, and reads what they delivered.',
+        afterStuckHint: 'One of them was dropped or did not get done: it will not start by itself. Start it, or wait for others.',
+        afterNoneHint: 'Make it start by itself once other cards are done.',
+        afterAdd: 'Wait for a card…',
+        afterRemove: 'Do not wait for it',
+        afterThenDispatcher: 'Then to {name} (the dispatcher)',
+        afterThenBot: 'Then to {name}',
         projects: 'Projects',
         projectsIntro: 'File cards under a project to number them (OPC-12), and to give their tasks a folder to work in and a brief to read.',
         projectsEmpty: 'No projects yet.',
@@ -10225,6 +10318,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         cardFromBoard: '来自看板的卡片',
         cardFromBoardRef: '卡片 {ref}',
         taskForRequest: '所属需求',
+        // 等别的卡做完再开始（Bots 0.13）
+        cardAfter: '在这之后开始',
+        cardAfterNone: '无：现在开始，或等我手动开始',
+        cardAfterHint: '它会留在待办里，等那张卡完成后自动开始，并带上那张卡交付的结果。',
+        cardStartAfter: '在 {ref} 之后开始',
+        cardQueued: '等 {ref} 完成后自动开始。',
+        afterWaiting: '在 {refs} 之后',
+        afterStuck: '在等 {refs}，但它做不成了',
+        afterHint: '这些卡都完成后，它会自动开始，并读到它们交付的结果。',
+        afterStuckHint: '其中有卡被取消或没做成，它不会自动开始了。可以手动开始，或者改等别的卡。',
+        afterNoneHint: '设置成等别的卡完成后自动开始。',
+        afterAdd: '等一张卡……',
+        afterRemove: '不等它了',
+        afterThenDispatcher: '然后交给 {name}（调度者）',
+        afterThenBot: '然后交给 {name}',
         projects: '项目',
         projectsIntro: '把卡片归到项目下，卡片就按项目编号（如 OPC-12），它的任务也会在项目目录里工作，并读到项目简介。',
         projectsEmpty: '还没有项目。',
