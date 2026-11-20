@@ -55,6 +55,13 @@ dispatcher: `bot_create` and `bot_update` take `team`). In a team with a lead, t
 lead, which brings the new bot in. A bot moved to another team, or out of one, no longer leads; the dispatcher
 belongs to no team.
 
+**Your own teams.** A team doesn't have to be a template. **New bot → New team** makes one with your name, a
+description and a colour, the bots in it and its lead (say "Amazon US" with an operator, a sourcer and a supply-chain
+bot); it shows in the list under its name, before it has any bots, and the bots read the roster under that name and
+description. A hired template team can be renamed, described and recoloured the same way (the pencil on its header in
+the list, or **Your teams** on the Teams page); clear a field to get the template's back. Your own teams can be deleted
+there: their bots stay, in no team. Leads work the same in your teams as in hired ones.
+
 Hiring:
 
 - creates the bots with bilingual personas, in your UI language;
@@ -103,6 +110,10 @@ bot answers in that message's **thread**.
 <!-- screenshot: a quoted reply in the chat -->
 
 - **What you send shows at once**, marked **Queued** until the bot takes it.
+- **Send images.** Click the image button, paste a screenshot, or drop images on the box (PNG, JPEG, WebP or GIF, up
+  to ten a message; images alone are a message too). The bot sees them, when its model reads images, and the chat
+  shows them; click one to see it large. Work handed on takes them along: a task the dispatcher opens from your
+  message carries its images, and so do a lead's sub-tasks. The thread box and a task's message box take images too.
 - **Reply to any message.** Hover over a message and click **Reply**: it is quoted above the box (**×** or Esc drops
   it), and what you send answers it. The bot answers in a conversation of its own, **forked from its conversation at
   that message**: it sees that message and everything before it, and nothing the main chat said after it. So when
@@ -689,10 +700,12 @@ permission and restart it.
   `memory/` (notes — each bot's, the shared ones and each project's —, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
   kept 400 days), `topics.json`, `discussions.json` (threads, where each message sits in its conversation, threads
   you have read), `needs.json` (your requests: the cards on the board, with your words and descriptions) and
-  `projects.json` (projects, with their folders and briefs), both readable by your user only, `settings.json`,
-  `price-catalog.json`. If `tickets.json` cannot be read
+  `projects.json` (projects, with their folders and briefs), both readable by your user only, `settings.json`
+  (with your own teams' names), `images.json` (which images messages and tasks carry, by id), `price-catalog.json`. If `tickets.json` cannot be read
   (permissions, say), Bots does not start and says why in the Harness log, so the file is never written over;
   a damaged one is kept as `tickets.json.corrupt-<time>` and tasks start empty.
+- Images you send are stored by Harness's own attachment store (`~/.dsh/attachments/`), as images pasted into a
+  Harness chat are, and go to the bot's model with the message; Harness keeps them, Bots only their ids.
 - Custom endpoints and a borrowed Codex login are written to Harness's own model settings (`llm-pi-ai`) and
   credential store. With the Codex login in use, tokens Harness refreshes are written back to
   `~/.codex/auth.json`.
@@ -725,6 +738,16 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.16.2
+
+- **Images in the chat.** Attach, paste or drop images in a bot's chat, a thread or a task; the bot sees them, and work
+  it hands on takes them along. `bot_send_message` takes `images`. See [The chat](#the-chat-reply-to-a-message-to-open-a-thread).
+- **Your own teams.** Make a team with your own name, description, colour and lead, or rename a hired one. See
+  [Hire a whole team](#hire-a-whole-team-in-one-click).
+- **Team memory consolidation works on models that route by conversation** (OpenCode Go answered **Consolidate
+  now** with `400 MissingSessionID`). Each consolidation call names a conversation of its own now.
+- **With Harness's sidebar collapsed**, the window buttons no longer sit over the Bots title and the **New bot** button.
 
 ## Upgrading from 0.16.1
 

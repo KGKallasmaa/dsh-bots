@@ -1243,3 +1243,68 @@ Edit (add | update | merge) += { until? }           // update: until null or '' 
   repository on another server. The channel panel links `repoUrl(repo)/issues?…`.
 - The project dialog has **Choose folder…** (`data-dsh-bots-project-pick`) when the Host offers a folder dialog
   (`__DSH_DIRECTORY_PICKER__`, else `uiWorkspace.pickDirectory`); the path it returns fills the folder field.
+
+## v0.17 — images in messages, your own teams
+
+### Images
+
+```ts
+Image = { id: string /* the attachment id */, url: '/__dsh_bots/image/<id>', width: number, height: number, name?: string }
+Message += { images?: Image[] }          // the timeline (messages, threads) and send's answer
+TicketView += { images?: Image[] }       // what its assignment carries
+```
+
+- `POST images` `{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif', data: base64 | data URL, name? }`
+  → `{ ok, image: Image }`. Harness's attachment store (`ctx.attachments.admitPromptContent`) checks the bytes against
+  the type, normalizes and keeps the image; a refusal comes back as `{ ok: false, reason }` in its words. The body may
+  be up to 40 MB (other routes 4 MB). Without an attachment store: `sending images needs a Harness with attachments`.
+  The panel uploads each image as soon as it is attached, so a message only names them.
+- `POST send` and `POST tickets/<id>/message` take `images: string[]` (ids, at most 10). An id no message or upload
+  gave is refused (`no image <id>: …`). With images, `text` may be empty.
+- `GET image/<id>`: the bytes, read through `ctx.attachments.readImage` (which verifies them against the reference),
+  `content-type` the image's, `cache-control: private, max-age=31536000, immutable`; 404 for an id no message named.
+- `images.json` (`lib/images.mjs`): attachment id → `ImageAttachmentRef`, the newest 5000. Refs come from uploads and
+  from the `image` blocks of every `user/message` event in a bot's home or task conversation.
+- To a bot, a message's images are `{ type: 'image', attachment: ImageAttachmentRef }` blocks after its text, then
+  one text block: `[Image attached: <id> (<name>). To pass it on to a teammate, name its id in \`images\`.]`
+  (`N images attached: …` for several). Logged messages and tickets keep `images: string[]` (ids).
+- The images of a home turn's messages (not reports) are the turn's (`turnState.images`). `bot_send_message` takes
+  `images: string[]`: left out, a new task or a message carries the turn's images, or, from a task conversation, the
+  task's; `[]` carries none. Adding to a task (`ticket`) carries only images it does not have; from a task's own
+  conversation, only the ones named. Reports carry none. The answer says `It carries N images.`
+- A ticket keeps `images` (`tickets.create({ images })`, at most 10); its assignment (start, and a new conversation on
+  recovery) has their blocks after the text. A message added before it starts adds its images to the ticket.
+- Panel: an image button (`data-dsh-bots-attach`, `data-dsh-bots-attach-input`) in the chat, thread and task
+  composers; paste and drop on the composer attach images; attached ones show above the box
+  (`data-dsh-bots-attached-item`: `uploading` | `ready` | `error`). Messages show thumbnails
+  (`data-dsh-bots-msg-image`) that open a lightbox (`data-dsh-bots-lightbox`; arrows, Esc).
+
+### Your own teams
+
+```ts
+TeamView = { id, name: { en, zh }, tagline: { en, zh }, color, template?: string, custom?: true, renamed?: true,
+             members: string[] /* lead first */, lead: string | null }
+State += { teams: TeamView[] }                      // hired template teams, then your own
+Settings += { teams: { [id]: { name?, tagline?, color?, custom?: true, at? } } }   // replaced as a whole
+```
+
+- `POST teams/create` `{ name, tagline? | description?, color?: '#rrggbb', members?: (id | @handle)[], lead?: id }`
+  → `{ ok, team: TeamView, teams: TeamView[] }`. The id comes from the name (`amazon-us`; `team`, `team-2` … for a
+  name without Latin letters). Refused: no name, a name a team here has (any case), the dispatcher as a member, a
+  `lead` not among `members`, a colour that is not hex. Members in another team move to it.
+- `POST teams/update` `{ id, name?, tagline? | description?, color? }` → `{ ok, team, teams }`. On a hired template team
+  an empty value gives the template's back; a team of your own keeps a name.
+- `POST teams/delete` `{ id }` → `{ ok, unteamed: string[], teams }`: your own teams only; their bots stay, in no
+  team, and its lead no longer leads.
+- `POST teams/hire` also takes `name`, `tagline` / `description`, `color` (then the answer has `teamView`).
+- `GET teams` (the template gallery) is unchanged; `POST settings` ignores `teams`.
+- `save`, `bot_create` and `bot_update` take any team in `state.teams`, by id or name (yours, or the template's in
+  either language). The roster bots read names a team by your name, with your description after it.
+- Panel: **New bot → New team**; a team's header in the rail shows its colour and an edit button; the Teams page lists
+  **Your teams** above the templates.
+
+### Memory work outside a conversation
+
+- Every model call `complete()` makes names a session (`sessionId`): a task's summary its task's session, the nightly
+  consolidation `bots-dream-<botId>` and `bots-dream-team`, else the call's purpose. Providers that route by
+  conversation (OpenCode Go's `x-opencode-session`) refuse a call without one.
