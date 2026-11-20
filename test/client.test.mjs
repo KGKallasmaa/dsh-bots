@@ -466,6 +466,9 @@ test('the panel lists bots, shows the dispatcher and the chat thread, and sends 
   assert.match(text, /@bob/);
   assert.match(text, /Dispatcher/);
   assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-row']).length, 3);
+  // The rail's head clears the window chrome Harness puts over the top-left corner when its sidebar is collapsed (#4).
+  const [railHead] = findAll(tree, (n) => n.props['data-dsh-bots-rail-head']);
+  assert.match(railHead.props.style.paddingTop, /var\(--dsh-frame-leading-clearance, 0px\)/);
   // Initials avatars: derived from the name, pinyin for a Chinese name; no emoji anywhere.
   const letters = findAll(tree, (n) => n.props['data-dsh-bots-initials']).map((n) => n.props['data-dsh-bots-initials']);
   assert.ok(letters.includes('AD'));

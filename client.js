@@ -1292,7 +1292,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         { 'data-dsh-bots-rail': true, style: { width: 264, flex: 'none', display: 'flex', flexDirection: 'column', borderRight: `1px solid ${C.border1}`, background: C.base, minHeight: 0 } },
         h(
           'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '14px 14px 10px' } },
+          // With Harness's sidebar collapsed (or a drawer), the window's traffic lights and the sidebar's
+          // reopen / New Session controls sit over the panel's top-left corner, and the frame publishes
+          // --dsh-frame-leading-clearance (160px on macOS) while they do. The rail is too narrow to make room
+          // beside them, so its head moves down below their 11–39px band; 0 when nothing is there.
+          { 'data-dsh-bots-rail-head': true, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '14px 14px 10px', paddingTop: 'calc(14px + min(var(--dsh-frame-leading-clearance, 0px), 32px))' } },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 15 } }, h(BotsGlyph, { size: 18, active: true }), t('title')),
           h(
             'div',
