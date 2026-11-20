@@ -1603,7 +1603,7 @@ export function apply(ctx, config, deps = {}) {
     try {
       next = await appendToTicket(tickets.get(ticket.id) ?? ticket, body, {
         human: true,
-        ...(chat ? { chat, header: chat.header } : { logged: true }),
+        ...(chat ? { chat, header: chat.header, ...(chat.context ? { context: chat.context } : {}) } : { logged: true }),
         key: chat ? (messageKey ? `${messageKey}:${ticket.id}` : '') : `panel:${id}:${ticket.id}`,
       });
     } catch (error) {
@@ -2343,7 +2343,16 @@ export function apply(ctx, config, deps = {}) {
   const originFrom = (o) =>
     o.kind === 'panel'
       ? { origin: { threadKey: o.threadKey, who: 'the user' }, thread: threadRecordOf(o) }
-      : { origin: { threadKey: o.threadKey, via: o.kind, ...(o.who ? { who: o.who } : {}), ...(o.replyTo ? { replyTo: String(o.replyTo) } : {}) }, thread: threadRecordOf(o) };
+      : { origin: { threadKey: o.threadKey, via: o.kind, ...(o.who ? { who: o.who } : {}), ...(o.replyTo ? { replyTo: String(o.replyTo) } : {}), ...sourceOf(o) }, thread: threadRecordOf(o) };
+  /**
+   * What a ticket keeps of the chat message it was opened from: the person's words (`said`), the chat
+   * context read with them (`context`), and the chat app's ids (`ids`: chat, message, thread root) for
+   * an app's own tools. The dispatcher hands work out in its own words, so the task gets these as well.
+   */
+  const sourceOf = (o) => {
+    const ids = { ...(o.chatId ? { chat: String(o.chatId) } : {}), ...(o.messageId ? { message: String(o.messageId) } : {}), ...(o.rootId ? { root: String(o.rootId) } : {}) };
+    return { ...(o.said ? { said: String(o.said) } : {}), ...(o.context ? { context: String(o.context) } : {}), ...(Object.keys(ids).length ? { ids } : {}) };
+  };
   /** The choices a delegating call may name with `thread`, for an error. */
   const threadChoices = (list) => list.map((o) => `${o.threadKey} (${threadLabel(o)})`).join(', ');
 
@@ -2360,7 +2369,9 @@ export function apply(ctx, config, deps = {}) {
     const parent = ticketOf(sessionId);
     if (parent) {
       if (chosen) throw new Error('a sub-task takes no thread: follow-ups reach the task that asked for it; leave out `thread`');
-      return { origin: { ...(parent.origin?.via ? { via: parent.origin.via } : {}), ...(parent.origin?.who ? { who: parent.origin.who } : {}) } };
+      // And what the person wrote, with its chat context: a lead's sub-task needs it as much as the lead.
+      const { said, context, ids } = parent.origin ?? {};
+      return { origin: { ...(parent.origin?.via ? { via: parent.origin.via } : {}), ...(parent.origin?.who ? { who: parent.origin.who } : {}), ...(said ? { said } : {}), ...(context ? { context } : {}), ...(ids ? { ids } : {}) } };
     }
     const plan = channels.replyPlan(sessionId);
     if (chosen) {
@@ -2628,7 +2639,7 @@ export function apply(ctx, config, deps = {}) {
    * take the extra one); until then it waits on the ticket. A message whose `key` was delivered (or
    * parked) already changes nothing: a replay after a restart neither reopens nor wakes the ticket.
    */
-  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', chat = null, key = '', logged = false } = {}) {
+  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', context = '', chat = null, key = '', logged = false } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     if (t.archivedAt) throw new Error(`task ${t.id} is archived; open a new task instead`);
@@ -2659,7 +2670,7 @@ export function apply(ctx, config, deps = {}) {
     }
     const who = sender ? `@${sender.handle} (${sender.name})` : 'the user';
     if (!cur.startedAt) {
-      cur = tickets.patch(cur.id, { text: `${cur.text}\n\n--- Added by ${who} ---\n${body}` }) ?? cur;
+      cur = tickets.patch(cur.id, { text: `${cur.text}\n\n--- Added by ${who} ---\n${body}${context ? `\n\n${context}` : ''}` }) ?? cur;
       void pump();
       return cur;
     }
@@ -2672,6 +2683,8 @@ export function apply(ctx, config, deps = {}) {
         ? [
             { type: 'text', text: header },
             { type: 'text', text: body },
+            // What the person answers or the topic they write in, read from the chat app.
+            ...(context ? [{ type: 'text', text: context }] : []),
           ]
         : [{ type: 'text', text: body }];
     // A person's follow-up may take the extra slot (new work cannot crowd it out); a bot's may not.
@@ -3143,7 +3156,7 @@ export function apply(ctx, config, deps = {}) {
    * extra slot), and the Router (the channel owner's home) is told without being woken. That notice
    * is no input of its turn: its replies do not go to that Thread because of it.
    */
-  async function followUp(list, { header, body }, { threadKey: key, origin, owner, key: messageKey }) {
+  async function followUp(list, { header, body, context = '' }, { threadKey: key, origin, owner, key: messageKey }) {
     const router = owner ? store.get(owner.id) : null;
     // A message handed out again after a restart that the Router already took (it opened these very
     // tickets) is no follow-up: it is not run twice.
@@ -3157,7 +3170,7 @@ export function apply(ctx, config, deps = {}) {
     for (const t of list) {
       const cur = tickets.get(t.id) ?? t;
       try {
-        const next = await appendToTicket(cur, body, { human: true, header: `${header}${threadNote(key)}`, chat: { kind: origin?.kind, who: origin?.who, threadKey: key }, ...(messageKey ? { key: `${messageKey}:${cur.id}` } : {}) });
+        const next = await appendToTicket(cur, body, { human: true, header: `${header}${threadNote(key)}`, context, chat: { kind: origin?.kind, who: origin?.who, threadKey: key }, ...(messageKey ? { key: `${messageKey}:${cur.id}` } : {}) });
         reached.push(next);
         if (next.sessionId) sessions.push(next.sessionId);
       } catch (error) {
@@ -3208,7 +3221,7 @@ export function apply(ctx, config, deps = {}) {
     // A chat message is a user prompt like one typed in the panel, after a line naming where it came from
     // and its Thread (so the bot can name it in bot_reply). Its id comes from the chat message's, so a
     // message handed out again after a restart is not run twice.
-    deliver: async (target, { header, body }, meta = {}) => {
+    deliver: async (target, { header, body, context = '' }, meta = {}) => {
       // A reply in a chat Thread the bot spoke in before: its discussion (Bots 0.10).
       let into = null;
       try {
@@ -3226,6 +3239,7 @@ export function apply(ctx, config, deps = {}) {
             ...needsNoteFor(target, into.agent.session.id, body),
             { type: 'text', text: `${note}${header}${threadNote(meta.threadKey)}` },
             { type: 'text', text: body },
+            ...(context ? [{ type: 'text', text: context }] : []),
           ],
           source: { kind: 'user' },
           mode: homeMode(target),
@@ -3245,6 +3259,8 @@ export function apply(ctx, config, deps = {}) {
           ...(card ? [{ type: 'text', text: cardHeaderText(card, isRouterHome(store.get(target.id) ?? target, agent.session.id)) }] : []),
           { type: 'text', text: `${header}${threadNote(meta.threadKey)}` },
           { type: 'text', text: body },
+          // The chat context the chat app read with it (what it replies to, its topic, a forward).
+          ...(context ? [{ type: 'text', text: context }] : []),
         ],
         source: { kind: 'user' },
         mode: homeMode(target),
@@ -3256,7 +3272,7 @@ export function apply(ctx, config, deps = {}) {
     },
     // A new GitHub issue with the label, filed on the board (Bots 0.14).
     fileIssue: (owner, issue, at) => fileIssue(owner, issue, at),
-    toTickets: (list, msg, meta) => (meta?.card ? cardFollowUp(meta.owner, msg.body, meta.card, { key: meta.threadKey, chat: { kind: meta.origin?.kind, who: meta.origin?.who, threadKey: meta.threadKey, header: `${msg.header}${threadNote(meta.threadKey)}` }, messageKey: meta.key ?? '' }).then((r) => (r ? [r.sessionId] : Promise.reject(new Error('the task did not take it')))) : followUp(list, msg, meta)),
+    toTickets: (list, msg, meta) => (meta?.card ? cardFollowUp(meta.owner, msg.body, meta.card, { key: meta.threadKey, chat: { kind: meta.origin?.kind, who: meta.origin?.who, threadKey: meta.threadKey, header: `${msg.header}${threadNote(meta.threadKey)}`, ...(msg.context ? { context: msg.context } : {}) }, messageKey: meta.key ?? '' }).then((r) => (r ? [r.sessionId] : Promise.reject(new Error('the task did not take it')))) : followUp(list, msg, meta)),
     // A chat message to the dispatcher that starts with a card's reference: that card's one live task (Bots 0.13).
     cardRoute: (owner, text) => (isRouter(store.get(owner?.id)) ? leadingCard(text) : null),
     subscribers: (key) => tickets.subscribers(key),
@@ -4598,9 +4614,9 @@ export function apply(ctx, config, deps = {}) {
     defineTool({
       name: 'bot_recall',
       description:
-        'Read tasks (tickets) and chat threads by reference instead of guessing: `tickets` (a page of them, open ones first), `ticket/<id>` (its card), `ticket/<id>/text` (what was asked), `ticket/<id>/reports`, `ticket/<id>/transcript` (its conversation), `thread/<key>` (a chat thread: its tasks and latest messages), `bot/<handle>` (that bot\'s tasks). Every id on a card can be read this way; long text comes in pages (`offset`). From a task conversation you can read that task, its parent and sub-tasks, and its threads.',
+        'Read tasks (tickets) and chat threads by reference instead of guessing: `tickets` (a page of them, open ones first), `ticket/<id>` (its card), `ticket/<id>/text` (what was asked), `ticket/<id>/source` (the chat message it came from and its chat context), `ticket/<id>/reports`, `ticket/<id>/transcript` (its conversation), `thread/<key>` (a chat thread: its tasks and latest messages), `bot/<handle>` (that bot\'s tasks). Every id on a card can be read this way; long text comes in pages (`offset`). From a task conversation you can read that task, its parent and sub-tasks, and its threads.',
       parameters: {
-        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key>, bot/<handle>, needs or need/<id> (or need/OPC-12, a card on the board).' },
+        ref: { type: 'string', required: true, description: 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/source, ticket/<id>/reports, ticket/<id>/transcript, thread/<key>, bot/<handle>, needs or need/<id> (or need/OPC-12, a card on the board).' },
         offset: { type: 'number', description: 'Where the next page starts: the `next_offset` of the last one.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text) },

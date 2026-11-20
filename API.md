@@ -209,9 +209,22 @@ targets). It exports `createConnector({ token, values, onMessage, onStatus, log 
 `{ start() → {id, username, name}, stop(), send(chatId, text, {replyTo}?), typing(chatId) }`, and may export
 `TEXT_LIMIT`, `MARKDOWN` (the app renders Markdown replies), `THREADS` (every part of a reply goes to the
 thread of `replyTo`) and `links({account, code, values})` → `{link?, invite?}`. Messages it reports:
-`{chatId, userId, userName, text, isDirect, mentioned, messageId, order?, chatTitle?, source?}`, where `order`
-is a decimal string rising within a chat (the replay guard) and `source` overrides the label in the
-`[Feishu · Name]` line the bot reads (`Lark` for a Lark app).
+`{chatId, userId, userName, text, isDirect, mentioned, messageId, order?, chatTitle?, source?, context?}`, where `order`
+is a decimal string rising within a chat (the replay guard), `source` overrides the label in the
+`[Feishu · Name]` line the bot reads (`Lark` for a Lark app), and `context` (Bots 0.16.2, Feishu) is the chat
+context the connector read with the message: `{kind: 'root' | 'topic' | 'quoted' | 'forwarded', who, text}[]`,
+oldest first within a kind. The hub renders it (`contextText`) as one block, `[Chat context, read from Feishu
+with this message]`, which the bot reads right after the message (home, discussion and a follow-up to a task
+alike), and which the turn's origin carries as `context`, beside `said` (the message's own words) and
+`messageId`. Feishu reads, for a message addressed to the bot: the message it replies to (`quoted`; in a topic
+the parent is its first message, a `topic` item), the first message of its reply chain (`root`) or the ten
+latest earlier messages of its topic (`topic`, `GET /im/v1/messages?container_id_type=thread`), and for a
+`merge_forward` in a DM (its `text` is `[Forwarded chat history]`, `forwarded: true`) up to 30 messages it holds;
+the hub also puts a forward's context on the origin (not the delivery) of the next message in that Thread within
+10 minutes that has none, so a task opened from "summarize this" keeps the history.
+Each item is ≤ 800 characters (the quoted one ≤ 2000), ≤ 8000 in all, newest kept; files and images read as
+`[file: name]`, `[image]`. It waits at most 6 s; a missing permission (`im:message:readonly`,
+`im:message.group_msg`) is logged once and that lookup rests for 30 minutes.
 
 Behaviour (lib/channels.mjs):
 - A connector runs per enabled channel app with a token; it is started, restarted (token change) and stopped
@@ -418,8 +431,13 @@ Ticket = {
   sessionId: string | null,            // 'ticket-<id>' once started
   requester: { kind: 'session' | 'user', sessionId?, botId?, ticketId? },  // ticketId: asked from that task (a sub-task)
   parentId?: string,
-  origin: { threadKey?, via?, who?, replyTo? },  // via: 'telegram' | 'discord' | 'feishu' | 'slack' | 'schedule'
+  origin: { threadKey?, via?, who?, replyTo?, said?, context?, ids? },  // via: 'telegram' | 'discord' | 'feishu' | 'slack' | 'schedule'
                                        // replyTo: id of the group message that asked; the answer there quotes it
+                                       // said / context / ids (0.16.2): the chat message it was opened from (≤ 8000), the
+                                       // chat context read with it (≤ 12 000) and {chat, message, root} ids; a sub-task
+                                       // inherits them. Its first message shows them under "--- Where it came from ---"
+                                       // (≤ 4000 characters; `said` left out when the assignment repeats it), and
+                                       // `ticket/<id>/source` reads them whole
   threads: string[],                   // Thread keys it is subscribed to (its origin's, when it has one)
   reports: { at, status: 'progress' | 'done' | 'blocked' | 'question', text }[],  // newest 200, each ≤ 20 000 characters
   createdAt, updatedAt, startedAt?,
@@ -463,7 +481,7 @@ TicketRow = { id, title, botId, stage, requester: { kind: 'bot', botId } | { kin
   lastReport?: { status, preview /* ≤ 200 characters */ },
   activity?: Activity /* while its Session runs (see State) */ }
 TicketView = TicketRow & {
-  text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who?, replyTo? },
+  text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who?, replyTo?, said?, context?, ids? },
   startedAt?, ended?, error?, archivedAt?, nudgedAt?, stalledAt?, retries? /* when not 0 */,
   reports: { at, status, text }[],
   threads: { key, kind, label }[],
@@ -628,7 +646,7 @@ and has someone paired. Only from a bot's home: refused in a task Session and in
 |---|---|
 | `tickets` | `{ ref, items: Card[], total, next_offset? }`, open tasks first, then failed, then ended, archived last; newest first within each |
 | `ticket/<id>` | `{ ref, card: Card, text /* ≤ 200 characters of the assignment */, chars?, more: string[] }` |
-| `ticket/<id>/text`, `ticket/<id>/reports`, `ticket/<id>/transcript` | `{ ref, text, offset, chars, next_offset? }`: the assignment, every report (newest first), the task Session's conversation |
+| `ticket/<id>/text`, `ticket/<id>/source`, `ticket/<id>/reports`, `ticket/<id>/transcript` | `{ ref, text, offset, chars, next_offset? }`: the assignment, the chat message it came from (the person's words, the chat context read with them, the chat app's ids), every report (newest first), the task Session's conversation |
 | `thread/<key>` | `{ ref, thread: { key, kind, label, last_at }, items: Card[], total, next_offset?, recent?: { at, who, text }[] }` |
 | `bot/<handle>` | `{ ref, bot: { handle, name, bio, dispatcher? }, items: Card[], total, next_offset? }` |
 

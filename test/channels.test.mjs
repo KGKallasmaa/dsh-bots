@@ -10,6 +10,7 @@ import {
   SECRET_MASK,
   channelEntry,
   channelIssue,
+  contextText,
   createChannels,
   hintOf,
   maskBot,
@@ -324,7 +325,7 @@ test('a paired person reaches the owning bot, or the one named by @handle; typin
   assert.deepEqual(s.delivered.at(-1), { bot: 'atlas', header: '[Telegram · Kada · Team]', body: 'status?' });
   s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada · Team]\nstatus?');
   // A Telegram group without topics is one Thread: the whole chat.
-  assert.deepEqual(s.hub.targetOf('session-atlas'), { threadKey: 'telegram:atlas/tg:-100', key: 'atlas/tg', appKey: 'atlas/tg', kind: 'telegram', chatId: '-100', replyTo: status.messageId, who: 'Kada', chatTitle: 'Team', origin: 'chat' });
+  assert.deepEqual(s.hub.targetOf('session-atlas'), { threadKey: 'telegram:atlas/tg:-100', key: 'atlas/tg', appKey: 'atlas/tg', kind: 'telegram', chatId: '-100', replyTo: status.messageId, who: 'Kada', chatTitle: 'Team', origin: 'chat', messageId: status.messageId, said: 'status?' });
   // /start from a paired person is a greeting, not a task.
   s.c.emit(dm('/start'));
   await flush();
@@ -752,5 +753,93 @@ test('Threads: a teammate\'s DM in a later turn answers where the last human inp
   s.hub.noteTurnEnd('session-a');
   s.hub.noteUserMessage('session-a', atlas, 'agent-message', 'Report from @forge on task t…', { report: true });
   assert.equal(s.hub.replyPlan('session-a').mode, 'panel');
+  await s.hub.stopAll();
+});
+
+test('contextText: the chain or topic, then the message replied to, then a forward; nothing without items', () => {
+  assert.equal(contextText('feishu', []), '');
+  assert.equal(contextText('feishu', [{ kind: 'unknown', who: 'May', text: 'x' }, { kind: 'quoted', who: 'May', text: '  ' }]), '');
+  assert.equal(
+    contextText('feishu', [
+      { kind: 'quoted', who: 'May', text: 'the Q3 sheet\nrow 2 is wrong' },
+      { kind: 'topic', who: 'Kada', text: 'ship Friday?' },
+      { kind: 'forwarded', who: '', text: '[image]' },
+    ]),
+    [
+      '[Chat context, read from Feishu with this message]',
+      'Earlier in this topic:',
+      '- Kada: ship Friday?',
+      'The message they reply to:',
+      '- May: the Q3 sheet',
+      '  row 2 is wrong',
+      'The chat history they forwarded:',
+      '- someone: [image]',
+    ].join('\n'),
+  );
+});
+
+test('a message with chat context: the bot reads it after the message, a task opened from it keeps it, the next message does not', async () => {
+  const s = await paired();
+  const quoted = dm('summarize this', { context: [{ kind: 'quoted', who: 'May', text: 'the Q3 numbers are in' }] });
+  s.c.emit(quoted);
+  await flush();
+  const context = '[Chat context, read from Telegram with this message]\nThe message they reply to:\n- May: the Q3 numbers are in';
+  assert.deepEqual(s.delivered.at(-1), { bot: 'atlas', header: '[Telegram · Kada]', body: 'summarize this', context });
+  // The conversation shows the three blocks joined; claimed by text, the origin carries the words and the context.
+  const origin = s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', `[Telegram · Kada]\nsummarize this\n${context}`);
+  assert.equal(origin.said, 'summarize this');
+  assert.equal(origin.context, context);
+  assert.equal(origin.messageId, quoted.messageId);
+  assert.equal(s.hub.targetOf('session-atlas').context, context);
+  s.hub.noteTurnEnd('session-atlas');
+  // The next message in that chat brings its own words, and no context it does not have.
+  s.c.emit(dm('thanks'));
+  await flush();
+  assert.equal(s.delivered.at(-1).context, undefined);
+  const next = s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada]\nthanks');
+  assert.equal(next.said, 'thanks');
+  assert.equal(next.context, undefined);
+  assert.equal(s.hub.targetOf('session-atlas').context, undefined);
+  await s.hub.stopAll();
+});
+
+test('forwarded history on its own goes with the next message that asks about it, and only that one', async () => {
+  const clock = { t: 1_000_000 };
+  const s = setup({ clock });
+  s.hub.sync();
+  await flush();
+  const c = s.fakes.made[0];
+  c.emit(dm(s.hub.view(s.roster[0]).tg.code.code));
+  await flush();
+  const history = [{ kind: 'forwarded', who: 'May', text: 'can we move the launch?' }];
+  const fwd = dm('[Forwarded chat history]', { forwarded: true, context: history });
+  c.emit(fwd);
+  await flush();
+  const context = s.delivered.at(-1).context;
+  assert.match(context, /The chat history they forwarded:\n- May: can we move the launch\?/);
+  s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', `[Telegram · Kada]\n[Forwarded chat history]\n${context}`);
+  s.hub.noteTurnEnd('session-atlas');
+  // The request comes in its own turn: not shown again, but its origin (what a task keeps) has the history.
+  c.emit(dm('summarize this'));
+  await flush();
+  assert.equal(s.delivered.at(-1).context, undefined);
+  const asked = s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada]\nsummarize this');
+  assert.equal(asked.said, 'summarize this');
+  assert.equal(asked.context, context);
+  s.hub.noteTurnEnd('session-atlas');
+  // Once only.
+  c.emit(dm('thanks'));
+  await flush();
+  assert.equal(s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada]\nthanks').context, undefined);
+  s.hub.noteTurnEnd('session-atlas');
+  // And not after ten minutes.
+  c.emit(dm('[Forwarded chat history]', { forwarded: true, context: history }));
+  await flush();
+  s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', `[Telegram · Kada]\n[Forwarded chat history]\n${context}`);
+  s.hub.noteTurnEnd('session-atlas');
+  clock.t += 10 * 60_000 + 1;
+  c.emit(dm('what was that about?'));
+  await flush();
+  assert.equal(s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada]\nwhat was that about?').context, undefined);
   await s.hub.stopAll();
 });

@@ -729,9 +729,12 @@ test('router mode: a delegation from a Telegram turn takes that chat as its orig
   const r = await hh.tools_call('bot_send_message', { to: '@forge', text: 'Ship the login fix today.' }, atlasNow.sessionId);
   const t = capi.tickets.get(r.ticket.id);
   const key = `telegram:${atlas.id}/${appId}:42`;
-  assert.deepEqual(t.origin, { threadKey: key, via: 'telegram', who: 'Kada' });
+  // The person's own words and the chat's ids go with it: the dispatcher hands work out in its own words.
+  assert.deepEqual(t.origin, { threadKey: key, via: 'telegram', who: 'Kada', said: 'Ship the fix today', ids: { chat: '42', message: '2' } });
   assert.deepEqual(t.threads, [key]);
   assert.equal(capi.tickets.thread(key).label, 'Telegram · Kada');
+  const assignment = hh.agentsById.get(t.sessionId).inbox[0].content[0].text;
+  assert.match(assignment, /--- Where it came from ---\nWhat Kada wrote in Telegram:\n> Ship the fix today\n\nTelegram ids, for its own tools .*: chat 42, message 2\./);
   assert.equal(r.ticket.via, 'telegram');
   assert.match(hh.agentsById.get(t.sessionId).inbox[0].content[0].text, /It started with Kada in Telegram · Kada \(telegram\)\./);
   // The worker's plain text stays in its Session: nothing to the chat, nothing in the timeline.
@@ -759,6 +762,49 @@ test('router mode: a delegation from a Telegram turn takes that chat as its orig
   assert.ok(!capi.state().attention.some((x) => x.id === own.id));
   for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
   await settle();
+});
+
+test('router mode: a chat message read with its chat context — the dispatcher sees it, its task and a sub-task keep it', async () => {
+  const fake = fakeChannelModule();
+  const { hh, api: capi } = channelHarness(fake.load);
+  const atlas = capi.store.find('atlas');
+  const forge = capi.store.save({ name: 'Forge' });
+  const scout = capi.store.save({ name: 'Scout' });
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ template: 'telegram', name: 'Telegram', serverName: 'telegram', enabled: true, values: { token: TG_TOKEN } }] } });
+  await settle();
+  const c = fake.made[0];
+  const appId = capi.store.get(atlas.id).apps[0].id;
+  const code = (await capi.routes['channels/code'].post({ botId: atlas.id, appId })).code;
+  c.emit({ chatId: '42', messageId: '1', userId: '42', userName: 'Kada', text: `/start ${code}`, isDirect: true, mentioned: true });
+  await settle();
+  const quoted = [{ kind: 'quoted', who: 'May', text: 'Churn went up 4% in October, mostly annual plans.' }];
+  c.emit({ chatId: '42', messageId: '2', userId: '42', userName: 'Kada', text: 'look into this', isDirect: true, mentioned: true, context: quoted });
+  await settle();
+  const atlasNow = capi.store.get(atlas.id);
+  const home = seeInbox(hh, atlasNow);
+  const context = '[Chat context, read from Telegram with this message]\nThe message they reply to:\n- May: Churn went up 4% in October, mostly annual plans.';
+  const blocks = home.inbox.at(-1).content.map((b) => b.text.trim());
+  assert.deepEqual(blocks.slice(-2), ['look into this', context], 'the dispatcher reads the context right after the message');
+  // The dispatcher hands it out in its own words; the task keeps what the person wrote and its context.
+  const r = await hh.tools_call('bot_send_message', { to: '@forge', text: 'Find out why churn rose.' }, atlasNow.sessionId);
+  const t = capi.tickets.get(r.ticket.id);
+  assert.equal(t.origin.said, 'look into this');
+  assert.equal(t.origin.context, context);
+  const assignment = hh.agentsById.get(t.sessionId).inbox[0].content[0].text;
+  assert.match(assignment, /Find out why churn rose\.\n\n--- Where it came from ---\nWhat Kada wrote in Telegram:\n> look into this\n\n\[Chat context, read from Telegram with this message\]\nThe message they reply to:\n- May: Churn went up 4% in October, mostly annual plans\./);
+  // bot_recall reads it whole.
+  const src = await hh.tools_call('bot_recall', { ref: `ticket/${t.id}/source` }, t.sessionId);
+  assert.match(JSON.stringify(src), /Churn went up 4%/);
+  // A sub-task the worker opens keeps it too.
+  hh.emit('session/event', { id: t.sessionId }, { type: 'user/message', data: hh.agentsById.get(t.sessionId).inbox[0] });
+  const sub = await hh.tools_call('bot_send_message', { to: '@scout', text: 'Pull the October cancellations.' }, t.sessionId);
+  const st = capi.tickets.get(sub.ticket.id);
+  assert.equal(st.parentId ?? st.requester?.ticketId, t.id);
+  assert.equal(st.origin.context, context);
+  assert.match(hh.agentsById.get(st.sessionId).inbox[0].content[0].text, /--- Where it came from ---[\s\S]*Churn went up 4%/);
+  for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
+  await settle();
+  void scout;
 });
 
 test('chat channels: deleting a bot stops its connector; the persona tells bots about the chat app', async () => {

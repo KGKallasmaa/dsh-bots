@@ -973,3 +973,143 @@ test('with the hub: pairing in a DM, a stranger ignored, Markdown replies, a gro
   assert.equal(everything.includes(SECRET), false);
   assert.equal(everything.includes(TICKET), false);
 });
+
+// --- chat context ---------------------------------------------------------------------
+
+/** A message as the Open API returns it (`GET /open-apis/im/v1/messages/…`). */
+const apiMsg = (id, { type = 'text', text = '', content, from = MAY, senderType = 'user', time = 1_700_000_000_000, upper, mentions } = {}) => ({
+  message_id: id,
+  msg_type: type,
+  create_time: String(time),
+  chat_id: 'oc_grp',
+  sender: { id: from, id_type: senderType === 'user' ? 'open_id' : 'app_id', sender_type: senderType, tenant_key: 'tenant1' },
+  body: { content: content ?? JSON.stringify({ text }) },
+  ...(upper ? { upper_message_id: upper } : {}),
+  ...(mentions ? { mentions } : {}),
+});
+const items = (...list) => reply(200, { code: 0, data: { items: list, has_more: false } });
+
+test('messageText: every message type reads as text or a placeholder; cards give their words', () => {
+  assert.equal(feishu.messageText(apiMsg('a', { text: '@_user_1 look at this', mentions: [{ key: '@_user_1', name: 'May' }] })), '@May look at this');
+  assert.equal(feishu.messageText(apiMsg('b', { type: 'post', content: JSON.stringify({ title: 'Q3', content: [[{ tag: 'text', text: 'numbers ' }, { tag: 'a', text: 'doc', href: 'https://x.feishu.cn/docx/abc' }]] }) })), 'Q3\nnumbers doc (https://x.feishu.cn/docx/abc)');
+  const card = { title: 'Build failed', elements: [[{ tag: 'text', text: 'main #42' }], [{ tag: 'a', text: 'logs', href: 'https://ci' }]] };
+  assert.equal(feishu.messageText(apiMsg('c', { type: 'interactive', content: JSON.stringify(card) })), 'Build failed\nmain #42\nlogs');
+  assert.equal(feishu.messageText(apiMsg('d', { type: 'file', content: JSON.stringify({ file_key: 'k', file_name: 'plan.pdf' }) })), '[file: plan.pdf]');
+  assert.equal(feishu.messageText(apiMsg('e', { type: 'image', content: JSON.stringify({ image_key: 'img' }) })), '[image]');
+  assert.equal(feishu.messageText({ ...apiMsg('f', { text: 'gone' }), deleted: true }), '[recalled]');
+  assert.equal(feishu.messageText(apiMsg('g', { type: 'merge_forward', content: '"Merged and Forwarded Message"' })), feishu.FORWARDED_TEXT);
+  assert.equal(feishu.messageText(apiMsg('h', { type: 'system', content: '{}' })), '');
+});
+
+test('chat context: the message a person replies to and the start of its chain are read, with names', async () => {
+  const platform = fakePlatform({
+    routes: {
+      'GET /open-apis/im/v1/messages/om_quoted': () => items(apiMsg('om_quoted', { text: 'the Q3 numbers are in the sheet', from: MAY })),
+      'GET /open-apis/im/v1/messages/om_start': () => items(apiMsg('om_start', { text: 'build failed on main', senderType: 'app', from: 'cli_other' })),
+    },
+  });
+  const h = harness({ platform });
+  await online(h);
+  const at = [mention(1, BOT, 'Acme Team', 'bot')];
+  h.last().push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: '@_user_1 summarize this', mentions: at, id: 'om_ask', parent: 'om_quoted', root: 'om_start' })));
+  await flush(40);
+  assert.equal(h.messages[0].text, 'summarize this');
+  assert.deepEqual(h.messages[0].context, [
+    { kind: 'root', who: 'a bot', text: 'build failed on main' },
+    { kind: 'quoted', who: 'May', text: 'the Q3 numbers are in the sheet' },
+  ]);
+  // a message that answers nothing reads nothing
+  const before = platform.of('GET', /^\/open-apis\/im\/v1\/messages/).length;
+  h.last().push(eventFrame(receive({ text: 'hello' })));
+  await flush(30);
+  assert.equal(h.messages[1].context, undefined);
+  assert.equal(platform.of('GET', /^\/open-apis\/im\/v1\/messages/).length, before);
+  // nor does a group message that is not for the bot
+  h.last().push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: 'among ourselves', parent: 'om_quoted' })));
+  await flush(30);
+  assert.equal(platform.of('GET', /^\/open-apis\/im\/v1\/messages/).length, before);
+  await h.c.stop();
+});
+
+test('chat context: a message in a topic comes with the topic\'s start and its earlier messages, oldest first', async () => {
+  const platform = fakePlatform({
+    routes: {
+      'GET /open-apis/im/v1/messages/om_root': () => items(apiMsg('om_root', { text: 'should we ship Friday?', from: KADA, time: 1_700_000_000_001 })),
+      'GET /open-apis/im/v1/messages': (call) => {
+        const q = new URLSearchParams(call.search);
+        assert.equal(q.get('container_id_type'), 'thread');
+        assert.equal(q.get('container_id'), 'omt_7');
+        assert.equal(q.get('sort_type'), 'ByCreateTimeDesc');
+        return items(
+          apiMsg('om_later', { text: 'written after', time: 1_700_000_009_999 }),
+          apiMsg('om_now', { text: 'the message itself', from: KADA, time: 1_700_000_000_500 }),
+          apiMsg('om_2', { text: 'QA is still on it', time: 1_700_000_000_003 }),
+          apiMsg('om_1', { text: 'the migration is done', time: 1_700_000_000_002 }),
+        );
+      },
+    },
+  });
+  const h = harness({ platform });
+  await online(h);
+  const at = [mention(1, BOT, 'Acme Team', 'bot')];
+  h.last().push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: '@_user_1 what do you think?', mentions: at, id: 'om_now', parent: 'om_root', root: 'om_root', thread: 'omt_7', time: 1_700_000_000_500 })));
+  await flush(40);
+  assert.deepEqual(h.messages[0].context, [
+    { kind: 'topic', who: 'Kada Liao', text: 'should we ship Friday?' },
+    { kind: 'topic', who: 'May', text: 'the migration is done' },
+    { kind: 'topic', who: 'May', text: 'QA is still on it' },
+  ]);
+  await h.c.stop();
+});
+
+test('chat context: chat history forwarded to the bot is read, and stands as the message', async () => {
+  const platform = fakePlatform({
+    routes: {
+      'GET /open-apis/im/v1/messages/om_fwd': () =>
+        items(
+          apiMsg('om_fwd', { type: 'merge_forward', content: '"Merged and Forwarded Message"', from: KADA }),
+          apiMsg('om_c1', { text: 'can we move the launch?', upper: 'om_fwd' }),
+          apiMsg('om_c2', { type: 'file', content: JSON.stringify({ file_name: 'timeline.xlsx' }), from: KADA, upper: 'om_fwd' }),
+        ),
+    },
+  });
+  const h = harness({ platform });
+  await online(h);
+  h.last().push(eventFrame(receive({ type: 'merge_forward', content: '"Merged and Forwarded Message"', id: 'om_fwd' })));
+  await flush(40);
+  assert.equal(h.messages[0].text, feishu.FORWARDED_TEXT);
+  assert.equal(h.messages[0].forwarded, true);
+  assert.deepEqual(h.messages[0].context, [
+    { kind: 'forwarded', who: 'May', text: 'can we move the launch?' },
+    { kind: 'forwarded', who: 'Kada Liao', text: '[file: timeline.xlsx]' },
+  ]);
+  await h.c.stop();
+});
+
+test('chat context without the permission: the message goes on without it, the advice is logged once, and it stops asking', async () => {
+  const platform = fakePlatform({
+    routes: { 'GET /open-apis/im/v1/messages/*': () => reply(400, { code: 99991672, msg: 'Access denied. One of the following scopes is required: [im:message:readonly]' }) },
+  });
+  const h = harness({ platform });
+  await online(h);
+  h.last().push(eventFrame(receive({ text: 'about this', parent: 'om_q1', root: 'om_q1' })));
+  h.last().push(eventFrame(receive({ text: 'and this', parent: 'om_q2', root: 'om_q2' })));
+  await flush(40);
+  assert.deepEqual(h.messages.map((m) => [m.text, m.context]), [['about this', undefined], ['and this', undefined]]);
+  assert.equal(platform.of('GET', /^\/open-apis\/im\/v1\/messages\//).length, 1, 'a missing permission stops the look-ups');
+  assert.equal(h.logs.filter((l) => /im:message:readonly/.test(l) && /no chat context/.test(l)).length, 1);
+  assertNoSecrets(h);
+  await h.c.stop();
+});
+
+test('chat context that is slow does not hold the message up', async () => {
+  const platform = fakePlatform({ routes: { 'GET /open-apis/im/v1/messages/om_slow': () => new Promise(() => {}) } });
+  const h = harness({ platform });
+  await online(h);
+  h.last().push(eventFrame(receive({ text: 'about that', parent: 'om_slow', root: 'om_slow' })));
+  await flush(30);
+  assert.equal(h.messages.length, 0);
+  await h.clock.tick(6000);
+  assert.deepEqual(h.messages.map((m) => [m.text, m.context]), [['about that', undefined]]);
+  await h.c.stop();
+});

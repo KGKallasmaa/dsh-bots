@@ -284,6 +284,11 @@ a Telegram topic, or the panel.
   question there and is still waiting for the answer: then that task takes it. With two or more waiting, it goes to
   the dispatcher, which works out which one it answers.
 - A message that starts with `@handle` still goes to that bot's own conversation.
+- **A task keeps the message it came from.** The dispatcher hands work out in its own words, so a task opened from a
+  chat message also keeps your own words, the chat context read with them (Feishu: the message you reply to, the
+  topic or reply chain, chat history you forwarded; see [Feishu / Lark](#feishu--lark)) and the chat's ids. The bot
+  doing it reads them under "Where it came from" in its first message, a lead's sub-tasks get them too, and
+  `bot_recall` reads them as `ticket/<id>/source`.
 
 ### The watchdog
 
@@ -501,7 +506,9 @@ address. The same steps work for Lark; the panel finds out which one your app be
 3. **Permissions & Scopes** (**Batch import/export scopes** accepts the JSON below):
    - required: `im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`, `im:message:send_as_bot`
    - optional: `contact:contact.base:readonly` + `contact:user.base:readonly` (sender names),
-     `im:message.reactions:write_only` (a "Typing" reaction while the team works), `im:chat:readonly` (group names)
+     `im:message.reactions:write_only` (a "Typing" reaction while the team works), `im:chat:readonly` (group names),
+     `im:message:readonly` (the chat context below: the message you reply to, chat history you forward),
+     `im:message.group_msg` (the earlier messages of a topic; a sensitive scope an admin approves)
 4. Copy the **App ID** and **App Secret** from **Credentials & Basic Info** into the bot's **Apps** →
    **Feishu / Lark**, and save. The long connection comes up. If the panel asks you to turn on the bot,
    that only means no version is published yet; the connection is already online.
@@ -517,8 +524,17 @@ address. The same steps work for Lark; the panel finds out which one your app be
 Use an app made for this team only: when several programs connect with the same App ID, Feishu hands each
 message to just one of them.
 
+**Chat context.** When your message replies to another one, sits in a topic or reply chain, or is chat
+history you forwarded to the bot, the channel reads that from Feishu before the team sees your message:
+the message you reply to, the start of the chain or the topic's last ten messages, and up to thirty
+forwarded messages (files and images by name). The dispatcher reads them with your message, and the task
+it opens keeps your own words and that context, with the chat's ids for a bot that has the Feishu / Lark
+Open Platform app, so the bot doing the work knows what "this" means. Chat history you forward on its own also goes with
+the task you open from your next message ("summarize this"), sent within ten minutes. Without the permissions above
+the message goes on as before, and the Harness log says which permission to add.
+
 ```json
-{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly"],"user":[]}}
+{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly","im:message:readonly"],"user":[]}}
 ```
 
 ### Slack
@@ -648,7 +664,9 @@ and the team takes it:
   the gateway for Discord, Socket Mode for Slack, the long connection for Feishu), starts and stops it as you add, change, switch off or remove the
   app, and hands paired people's messages to the bot as user prompts headed
   `[Telegram · Name] (thread <key>)`, or to the tasks or the own conversation of that thread (see
-  [Chats and threads](#chats-and-threads)). The thread key is what `bot_reply` names. GitHub Issues polls instead:
+  [Chats and threads](#chats-and-threads)). The thread key is what `bot_reply` names. The chat context a
+  connector reads with a message (Feishu does) follows it as one more block, `[Chat context, read from Feishu with
+  this message]`. GitHub Issues polls instead:
   each repository is a chat, each issue a thread, and its cursors are kept in `channels.json`.
 
 ## Open Computer Use
@@ -662,8 +680,8 @@ permission and restart it.
 - `~/.dsh/cache/bots/` (`bots.json`, `channels.json` and `tickets.json` are readable by your user only):
   `bots.json` (bots, including keys and chat bot tokens entered for apps),
   `messages.jsonl` (timeline), `channels.json` (paired people per chat app, and the last message handled
-  per chat), `tickets.json` (tasks, with what was asked and their reports, and the chat threads they came
-  from; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
+  per chat), `tickets.json` (tasks, with what was asked and their reports, the chat threads they came
+  from, and the chat message that started each, with the chat context read with it; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
   `memory/` (notes — each bot's, the shared ones and each project's —, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
   kept 400 days), `topics.json`, `discussions.json` (threads, where each message sits in its conversation, threads
   you have read), `needs.json` (your requests: the cards on the board, with your words and descriptions) and
@@ -678,7 +696,8 @@ permission and restart it.
   memory passes (a run's or a task's transcript and the bot's notes, to the bot's model or the memory model), the
   LiteLLM price list (downloaded from GitHub weekly), the apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
   Feishu / Lark, Telegram, Slack or Discord API when you connect a chat app (the bots' replies to paired
-  people, typing indicators, and the one-line note to strangers), and the GitHub API with GitHub Issues (reading the
+  people, typing indicators, and the one-line note to strangers; Feishu is also asked for the messages a paired
+  person's message replies to, the topic it is in, or the chat history they forwarded to the bot), and the GitHub API with GitHub Issues (reading the
   watched repositories' labelled issues and comments, and posting the bots' answers as comments).
 
 ## Install
@@ -701,6 +720,15 @@ Without Discover, paste the package name into the plugin manager:
 For the latest unreleased code, use the Git spec `git+https://github.com/kadaliao/dsh-bots.git#main` instead.
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
+
+## Upgrading from 0.16.1
+
+- **Feishu messages come with their chat context.** To use it, add the permission `im:message:readonly` to your Feishu
+  app (and `im:message.group_msg` for the earlier messages of a topic, a sensitive scope an admin approves), then
+  publish a new version of the app in the developer console. Until then messages arrive as before, and the Harness log
+  says once which permission is missing. See [Feishu / Lark](#feishu--lark).
+- Chat history forwarded to the bot in a private chat is read now; it used to be dropped without a word.
+- Tasks opened from now on keep the chat message they came from (any chat app); tasks opened before stay as they were.
 
 ## Upgrading from 0.15
 

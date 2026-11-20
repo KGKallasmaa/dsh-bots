@@ -213,6 +213,9 @@ bot 默认用你说话的语言回答；中文提问就是中文协作。
   只有一个任务在这里提了问题、还在等回答时，这条消息才交给那个任务。有两个或更多任务在等回答时，消息仍交给调度员，
   由它判断是在回答哪一个。
 - 以 `@handle` 开头的消息，仍然直接进那个 bot 自己的会话。
+- **任务留着它来自的那条消息。** 调度员用自己的话把工作派出去，所以从聊天消息开出的任务，还会留着你的原话、和它一起读到的聊天上下文
+  （飞书：你回复的那条消息、所在的话题或回复串、你转发的聊天记录，见[飞书](#飞书)），以及这个聊天的 ID。做任务的 bot 在第一条消息的
+  「Where it came from」下面读到它们，负责人拆出去的子任务也有，`bot_recall` 用 `ticket/<id>/source` 能读全文。
 
 ### 看门狗
 
@@ -387,7 +390,9 @@ bot 知道的事靠记忆延续。下面几种情况会开新话题：
 3. 「权限管理」开通权限（可用「批量导入/导出权限」粘贴下方 JSON）：
    - 必需：`im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message:send_as_bot`
    - 可选：`contact:contact.base:readonly` + `contact:user.base:readonly`（显示姓名），
-     `im:message.reactions:write_only`（处理中显示表情），`im:chat:readonly`（显示群名）
+     `im:message.reactions:write_only`（处理中显示表情），`im:chat:readonly`（显示群名），
+     `im:message:readonly`（读取下文说的聊天上下文：你回复的那条消息、转发给 Bot 的聊天记录），
+     `im:message.group_msg`（读取话题里前面的消息；敏感权限，需管理员审核）
 4. 在「凭证与基础信息」复制 App ID 和 App Secret，填到 Bot 的「应用 → 飞书」并保存。长连接会上线；
    如果提示开启机器人，说明还没发布版本，长连接此时已在线，不影响下一步。
 5. 保持 Harness 运行，到「事件与回调」→「事件配置」把订阅方式改为「使用长连接接收事件」并保存（必须有长连接在线才能保存）。
@@ -397,8 +402,10 @@ bot 知道的事靠记忆延续。下面几种情况会开新话题：
 
 请用专门给这个团队新建的应用：同一个 App ID 有多个程序连着时，每条消息只会交给其中一个。
 
+**聊天上下文。** 你的消息如果回复了另一条消息、发在话题或回复串里，或者是转发给 Bot 的聊天记录，频道会先从飞书读出这些内容，再交给团队：你回复的那条消息、回复串的第一条或话题里最近十条消息、最多三十条转发的消息（文件和图片只写名字）。调度员和你的消息一起读到它们；它开出的任务会留着你的原话和这段上下文，还有这个聊天的 ID，装了「飞书开放平台」应用的 Bot 可以接着往下查。这样干活的 Bot 知道你说的"这个"指什么。单独转发的聊天记录，也会跟着你十分钟内发的下一条消息（比如"总结一下"）进到它开出的任务里。没开上面的权限时，消息照常送达，Harness 日志会提示该开哪个权限。
+
 ```json
-{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly"],"user":[]}}
+{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly","im:message:readonly"],"user":[]}}
 ```
 
 ### Slack
@@ -499,6 +506,7 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 聊天应用不是 MCP 服务：Host 为每个聊天应用保持一个连接（Telegram 用长轮询，Discord 用 Gateway，Slack 用 Socket Mode，飞书用长连接），
   随你添加、修改、关闭或删除应用而启动和停止，并把配对者的消息作为用户提示交给 bot，开头标着 `[Telegram · 名字] (thread <key>)`；
   讨论串里的跟进则交给那个讨论串的任务或它自己的会话（见[聊天与讨论串](#聊天与讨论串)）。`bot_reply` 用的就是这个 key。
+  连接器和消息一起读到的聊天上下文（飞书会读）跟在消息后面，单独一段，开头是 `[Chat context, read from Feishu with this message]`。
   GitHub Issues 改用轮询：每个仓库是一个聊天，每个 issue 是一个讨论串，查到哪里的游标存在 `channels.json` 里。
 
 ## Open Computer Use
@@ -509,8 +517,8 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 ## 存储与外发
 
 - `~/.dsh/cache/bots/`（`bots.json`、`channels.json` 和 `tickets.json` 只有你自己的账户能读）：`bots.json`（bot，含应用里填的 Key 和聊天 Bot Token）、`messages.jsonl`（时间线）、
-  `channels.json`（每个聊天应用的配对者，以及每个聊天处理过的最后一条消息）、`tickets.json`（任务：交代的内容、汇报，
-  以及它们来自的聊天讨论串；已归档的任务保留最新的 500 个）、`avatars/`、`skills/`（从 GitHub 导入的技能）、
+  `channels.json`（每个聊天应用的配对者，以及每个聊天处理过的最后一条消息）、`tickets.json`（任务：交代的内容、汇报、
+  它们来自的聊天讨论串，以及开出任务的那条聊天消息和一起读到的聊天上下文；已归档的任务保留最新的 500 个）、`avatars/`、`skills/`（从 GitHub 导入的技能）、
   `memory/`（笔记——每个 bot 的、共享的和每个项目的——、工作日志、每日摘要）、`usage.jsonl` 和 `tasks.jsonl`（每次调用和每个回合的 tokens，保留 400 天）、
   `topics.json`、`discussions.json`（讨论串、每条消息在会话里的位置、看过的讨论串）、`needs.json`（你的需求，也就是看板上的卡片，
   含你的原话和描述）和 `projects.json`（项目，含目录和简介），这两个只有你自己的账户能读，`settings.json`、`price-catalog.json`。`tickets.json` 读不出来（比如权限不对）时，Bots 不会启动，
@@ -518,7 +526,7 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 自定义端点和借用的 Codex 登录写在 Harness 自己的模型设置（`llm-pi-ai`）和凭据库里。使用 Codex 登录时，
   Harness 刷新得到的令牌会写回 `~/.codex/auth.json`。
 - 除了 bot 自身会话（你配置的模型）、记忆整理（把回合或任务的过程和 bot 的笔记发给 bot 的模型或记忆模型）、LiteLLM 价格表（每周从 GitHub 下载一次）、你连接的应用、生成头像时的图片模型、导入技能时访问 GitHub，
-  以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），
+  以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示；飞书还会被问到配对者的消息所回复的那条、所在的话题，或转发给 bot 的聊天记录），
   和使用 GitHub Issues 时访问 GitHub API（读取所关注仓库里带标签的 issue 和评论，把 bot 的回复发成评论），不向外发送任何内容。
 
 ## 安装
@@ -541,6 +549,13 @@ https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 想用还没发布的最新代码，改用 Git spec `git+https://github.com/kadaliao/dsh-bots.git#main`。
 
 安装后刷新一次页面。想要 AI 头像，再装上[图片插件](https://github.com/kadaliao/dsh-images)。
+
+## 从 0.16.1 升级
+
+- **飞书消息会带上聊天上下文。** 要用上它，给飞书应用开通 `im:message:readonly` 权限（想读话题里前面的消息，再开 `im:message.group_msg`，
+  这是敏感权限，需管理员审核），然后在开发者后台发布一个新版本。在那之前消息照常送达，Harness 日志会提示一次缺哪个权限。见[飞书](#飞书)。
+- 在私聊里转发给 bot 的聊天记录现在会被读取；以前会被直接丢掉，什么也不说。
+- 从现在起开出的任务都会留着它来自的那条聊天消息（任何聊天应用）；之前开的任务不变。
 
 ## 从 0.15 升级
 
