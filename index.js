@@ -732,16 +732,22 @@ export function apply(ctx, config, deps = {}) {
   /**
    * One model call outside any conversation (memory summaries): the text of the
    * answer and its token usage. `deps.complete` stands in for tests.
+   *
+   * It always names a session: a provider that routes by conversation (OpenCode Go reads
+   * x-opencode-session, which pi-ai only sends for a session id) answers 400 MissingSessionID to a
+   * call without one. A call made outside any conversation (the nightly consolidation) names a
+   * stable one of its own, `sessionId`, else its purpose.
    */
   async function complete(sel, system, prompt, { purpose = 'bots-memory', sessionId, maxTokens = 2000, timeoutMs = 120_000 } = {}) {
-    if (deps.complete) return deps.complete({ ...sel, system, prompt, purpose, maxTokens });
+    sessionId = String(sessionId || purpose);
+    if (deps.complete) return deps.complete({ ...sel, system, prompt, purpose, sessionId, maxTokens });
     const llm = service(ctx, 'llm');
     if (!llm?.stream) throw new Error('no model service in this Harness');
     const signal = AbortSignal.timeout(timeoutMs);
     const parts = new Map();
     let usage;
     let failure;
-    for await (const c of llm.stream({ provider: sel.provider, model: sel.model, system, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens, purpose, signal, ...(sessionId ? { sessionId } : {}) })) {
+    for await (const c of llm.stream({ provider: sel.provider, model: sel.model, system, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens, purpose, signal, sessionId })) {
       if (c?.type === 'text-delta') parts.set(c.index, (parts.get(c.index) ?? '') + c.text);
       else if (c?.type === 'usage') usage = c.usage;
       else if (c?.type === 'finish' && (c.reason?.kind === 'error' || c.reason?.kind === 'aborted')) failure = c.reason.failure?.message ?? c.reason.kind;
@@ -999,7 +1005,7 @@ export function apply(ctx, config, deps = {}) {
         if (!sel) continue;
         try {
           const p = dreamBotPrompt({ bot, notes, journal, tz, language, today });
-          const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
+          const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', sessionId: `bots-dream-${bot.id}`, maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
           ledger.record(usageRow({ botId: bot.id, kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
           const parsed = parseJsonReply(r.text);
           if (!parsed) throw new Error('the model did not answer with JSON');
@@ -1018,7 +1024,7 @@ export function apply(ctx, config, deps = {}) {
             // Every project, so that a team note about one can move there (Bots 0.16).
             const projs = projects.list().map((x) => ({ id: x.id, key: x.key, name: x.name, notes: memory.notes(x.id) }));
             const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz, language, projects: projs, today });
-            const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
+            const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', sessionId: 'bots-dream-team', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
             ledger.record(usageRow({ botId: lead?.id ?? 'team', kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
             const parsed = parseJsonReply(r.text);
             if (!parsed) throw new Error('the model did not answer with JSON');

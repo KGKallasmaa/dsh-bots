@@ -209,6 +209,7 @@ test('a task is tracked from its prompt to idle: usage rows, a task row, a memor
   assert.ok(rows.filter((r) => r.r === 'chat').every((r) => r.k === taskRows[0].id));
   assert.equal(calls.length, 1, 'one memory call');
   assert.equal(calls[0].provider, 'magpie');
+  assert.equal(calls[0].sessionId, sessionId, "the task's summary runs under the bot's session");
   assert.match(calls[0].prompt, /\[user\] Write the launch post for Acme/);
   assert.match(calls[0].prompt, /\[tool\] web_search/);
   assert.ok(rows.some((r) => r.r === 'memory' && r.k === taskRows[0].id));
@@ -415,6 +416,10 @@ test('dreaming consolidates each bot and writes the team digest once a day', asy
   const dreams = calls.filter((c) => c.purpose === 'bots-dream');
   assert.ok(dreams.length >= 2);
   for (const c of dreams) assert.match(c.system, /in English, the language the user writes to the bots in/);
+  // Outside any conversation, each call still names a session of its own: a provider that routes by
+  // conversation (OpenCode Go) answers 400 MissingSessionID to a call without one (#3).
+  assert.ok(dreams.some((c) => c.sessionId === `bots-dream-${atlas().id}`), 'a bot is consolidated under a session of its own');
+  assert.ok(dreams.some((c) => c.sessionId === 'bots-dream-team'), 'the team under its own');
   const team = get('memory', { bot: 'team' });
   assert.equal(team.digests[0].text.startsWith('## Today'), true);
   assert.ok(team.dream.lastDate);
