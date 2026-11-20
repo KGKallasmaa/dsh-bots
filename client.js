@@ -628,6 +628,7 @@ window.__ModuleLoader__.load({
       trash: (s = 13) => svg(s, ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13h10l1-13']),
       check: (s = 13) => svg(s, ['M5 12.5l4.5 4.5L19 7']),
       upload: (s = 14) => svg(s, ['M12 16V4', 'M7 9l5-5 5 5', 'M4 20h16']),
+      image: (s = 15) => svg(s, ['M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z', 'M9 10.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z', 'M20 15l-5-5L5 20']),
       open: (s = 14) => svg(s, ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5']),
       star: (s = 14) => svg(s, ['M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9L12 3z']),
       puzzle: (s = 14) => svg(s, ['M10 4a2 2 0 1 1 4 0v2h4v4h-2a2 2 0 1 0 0 4h2v4h-4v-2a2 2 0 1 0-4 0v2H6v-4h2a2 2 0 1 0 0-4H6V6h4V4z']),
@@ -833,6 +834,24 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
 @keyframes dshb-breathe{0%{box-shadow:0 0 0 0 ${tint(C.ok, 45)}}70%{box-shadow:0 0 0 5px ${tint(C.ok, 0)}}100%{box-shadow:0 0 0 0 ${tint(C.ok, 0)}}}
 @keyframes dshb-pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}70%{box-shadow:0 0 0 5px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
 @keyframes dshb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.dshb-composer[data-drop=true]{border-color:${C.label};box-shadow:0 0 0 3px ${tint(C.label, 18)}}
+.dshb-attach{display:flex;flex-wrap:wrap;gap:6px;padding:2px 2px 0}
+.dshb-attach-item{position:relative;width:56px;height:56px;border-radius:9px;overflow:hidden;background:${C.layer2};border:1px solid ${C.border1};flex:none}
+.dshb-attach-item[data-status=error]{border-color:${C.error}}
+.dshb-attach-item img{width:100%;height:100%;object-fit:cover;display:block}
+.dshb-attach-item[data-status=uploading] img{opacity:.45}
+.dshb-attach-spin{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:2px solid ${tint(C.label, 25)};border-top-color:${C.label};animation:dshb-spin 1s linear infinite}
+.dshb-attach-x{position:absolute;top:2px;right:2px;width:18px;height:18px;padding:0;border:none;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.dshb-attach-bad{position:absolute;inset:auto 0 0 0;padding:1px 3px;font-size:10px;line-height:1.3;color:#fff;background:${C.error};text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dshb-imgs{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.dshb-img{display:block;padding:0;border:1px solid ${C.border1};border-radius:10px;overflow:hidden;background:${C.layer2};cursor:zoom-in;flex:none}
+.dshb-img img{display:block;width:100%;height:100%;object-fit:cover}
+.dshb-img:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
+.dshb-lightbox{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.82);cursor:zoom-out}
+.dshb-lightbox img{max-width:92vw;max-height:86vh;object-fit:contain;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.5);cursor:default}
+.dshb-lightbox-bar{position:absolute;left:0;right:0;bottom:18px;display:flex;justify-content:center;align-items:center;gap:12px;color:#fff;font-size:12.5px}
+.dshb-lightbox-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border:none;border-radius:50%;background:rgba(255,255,255,.14);color:#fff;cursor:pointer}
+.dshb-lightbox-btn:hover{background:rgba(255,255,255,.26)}
 @keyframes dshb-blink{0%,100%{opacity:.25}50%{opacity:1}}
 @keyframes dshb-spin{to{transform:rotate(360deg)}}
 `;
@@ -1647,6 +1666,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             { className: 'dshb-tbody' },
             delegation ? h(TaskCard, { t, id: ticketId, botId: m.to, title: firstLine(m.text) }) : null,
             h(Clamp, { t, text: m.text, lines: 6, style: { fontSize: SMALL } }),
+            h(MessageImages, { t, images: imagesOf(m), max: 96 }),
             h(LinkCards, { t, text: m.text }),
           ),
         );
@@ -1677,6 +1697,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           timeEl,
         ),
         short ? h('div', { className: 'dshb-tbody dshb-clamp2', 'data-dsh-bots-short': true }, str(m.text).trim()) : null,
+        // The images a bot passed on (Bots 0.17), small, in every level but the one-line one.
+        level !== 'line' && imagesOf(m).length ? h('div', { className: 'dshb-tbody' }, h(MessageImages, { t, images: imagesOf(m), max: 56 })) : null,
       );
     }
 
@@ -1740,6 +1762,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       if (between || m.kind === 'system') return h(BotTraffic, { t, items: [m], level: botMessagesLevel() });
       if (mine) {
         const state = m.pending || m.failed ? h(SendState, { t, m, onRetry }) : null;
+        // Images sent with it (Bots 0.17) go above its words, as a chat app shows them; a message may be images alone.
+        const imgs = imagesOf(m);
+        const worded = str(m.text).trim() !== '' || Boolean(quote);
         // A card started from the board (Bots 0.12): its reference opens it there.
         const card = m.card && typeof m.card === 'object' && typeof m.card.id === 'string' ? m.card : null;
         return h(
@@ -1757,17 +1782,27 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 // A message from a chat that went straight to the task it follows up on.
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, title: m.via ? t('followUpHint') : undefined, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t(m.via ? 'followUpTask' : 'openTask')) : null,
               ),
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, width: '100%', minWidth: 0 } },
-            h(ReplyAction, { t, m, onReply }),
-            h(
-              'div',
-              { style: { maxWidth: '78%', minWidth: 0, padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT, opacity: m.local && !m.failed ? 0.8 : 1, boxShadow: m.failed ? `0 0 0 2px ${C.error}` : undefined } },
-              quote ? h('div', { style: { marginBottom: 5 } }, h(QuoteLine, { t, q: quote, light: true, onOpen: onQuote ? () => onQuote(m) : null })) : null,
-              h(Clamp, { t, text: m.text, lines: 14, light: true }),
-            ),
-          ),
+          imgs.length
+            ? h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, width: '100%', minWidth: 0, opacity: m.local && !m.failed ? 0.8 : 1 } },
+                worded ? null : h(ReplyAction, { t, m, onReply }),
+                h('div', { style: { maxWidth: '78%', minWidth: 0, display: 'flex', justifyContent: 'flex-end' } }, h(MessageImages, { t, images: imgs, align: 'flex-end' })),
+              )
+            : null,
+          worded
+            ? h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, width: '100%', minWidth: 0 } },
+                h(ReplyAction, { t, m, onReply }),
+                h(
+                  'div',
+                  { style: { maxWidth: '78%', minWidth: 0, padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT, opacity: m.local && !m.failed ? 0.8 : 1, boxShadow: m.failed ? `0 0 0 2px ${C.error}` : undefined } },
+                  quote ? h('div', { style: { marginBottom: 5 } }, h(QuoteLine, { t, q: quote, light: true, onOpen: onQuote ? () => onQuote(m) : null })) : null,
+                  h(Clamp, { t, text: m.text, lines: 14, light: true }),
+                ),
+              )
+            : null,
           state,
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
         );
@@ -1813,6 +1848,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, str(m.text)),
               )
             : h('div', { className: 'dshb-reply', 'data-dsh-bots-reply-text': true }, h(Clamp, { t, text: m.text, lines: 24, variant: 'body' })),
+          h(MessageImages, { t, images: imagesOf(m) }),
           choices.length
             ? h(
                 'div',
@@ -2728,6 +2764,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [open, setOpen] = useState('');
       const [quote, setQuote] = useState(null);
       const input = useRef(null);
+      // Images attached to the next message (Bots 0.17): picked, pasted or dropped.
+      const att = useAttachments(t, toast);
+      const dropper = useImageDrop(att);
       // The quick poll may know before the state does that it started or stopped.
       const live = liveBot(bot);
       const running = live.status === 'running' || Boolean(live.activity);
@@ -2789,15 +2828,15 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
        * it shows at once as queued, the Host's copy replaces it, and a failure stays with a way to send
        * again. Resolves `{ok, topic}` (the thread it went into, '' for the chat).
        */
-      const sendText = (body, replyTo = '', again = '', root = '') => {
+      const sendText = (body, replyTo = '', again = '', root = '', imgs = []) => {
         const id = again || `local-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         const target = replyTo ? index.byId.get(replyTo) : null;
         // The thread it goes into (the Host says for sure): the pane's own, else the thread of the message it answers, else that message's.
         const topic = replyTo ? root || (target ? threadOfMsg(target) || target.id : replyTo) : '';
         const quoted = target ? { id: target.id, from: target.from, text: str(target.text), ...(str(target.who) ? { who: str(target.who) } : {}) } : null;
-        const row = { id, local: true, pending: true, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, at: Date.now(), ...(topic ? { topic } : {}), ...(replyTo && replyTo !== topic ? { replyTo } : {}), ...(quoted ? { quote: quoted } : {}) };
+        const row = { id, local: true, pending: true, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, at: Date.now(), ...(topic ? { topic } : {}), ...(replyTo && replyTo !== topic ? { replyTo } : {}), ...(quoted ? { quote: quoted } : {}), ...(imgs.length ? { images: imgs } : {}) };
         setLocal((list) => [...list.filter((m) => m.id !== id), row]);
-        return postJson('send', { to: bot.id, text: body, ...(replyTo ? { replyTo } : {}) }).then((r) => {
+        return postJson('send', { to: bot.id, text: body, ...(replyTo ? { replyTo } : {}), ...(imgs.length ? { images: imgs.map((i) => i.id) } : {}) }).then((r) => {
           if (r?.ok) {
             const msg = r.message && typeof r.message === 'object' && r.message.id != null ? r.message : null;
             setLocal((list) => list.flatMap((m) => (m.id !== id ? [m] : msg ? [{ ...msg, pending: msg.pending ?? true, chat: msg.chat ?? bot.id }] : [])));
@@ -2813,16 +2852,19 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const retry = (m) => {
         if (!m?.local) return;
         const root = threadOfMsg(m);
-        void sendText(str(m.text), root ? str(m.replyTo) || root : '', m.id, root);
+        void sendText(str(m.text), root ? str(m.replyTo) || root : '', m.id, root, imagesOf(m));
       };
+      const canSend = (text.trim() !== '' || att.images.length > 0) && !att.busy;
       const send = () => {
         const body = text.trim();
-        if (!body) return;
+        if (!canSend) return;
+        const imgs = att.images;
         const to = quote?.id ?? '';
         setText('');
         setQuote(null);
+        att.clear();
         thread.stick();
-        void sendText(body, to).then(() => thread.stick());
+        void sendText(body, to, '', '', imgs).then(() => thread.stick());
       };
       // A pasted link previews above the composer, as it will in the thread.
       const previewUrl = linksIn(useDebounced(text, 400))[0] ?? '';
@@ -2872,11 +2914,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               previewUrl ? h('div', { 'data-dsh-bots-composer-preview': previewUrl, style: { marginBottom: 8, maxHeight: 260, overflow: 'auto' } }, h(LinkCard, { t, url: previewUrl })) : null,
               h(
                 'div',
-                { className: 'dshb-composer' },
+                { className: 'dshb-composer', 'data-dsh-bots-composer-box': true, ...dropper.box },
                 quote ? h(QuoteBar, { t, m: quote, onCancel: () => setQuote(null) }) : null,
+                h(AttachStrip, { t, att }),
                 h(
                   'div',
                   { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+                  h(AttachButton, { t, att, attr: 'chat' }),
                   h('textarea', {
                     'data-dsh-bots-composer': true,
                     ref: input,
@@ -2884,6 +2928,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     rows: Math.min(8, Math.max(1, text.split('\n').length)),
                     placeholder: t('composer', { handle: bot.handle }),
                     onChange: (e) => setText(e.target.value),
+                    onPaste: dropper.onPaste,
                     onKeyDown: (e) => {
                       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
                         e.preventDefault();
@@ -2895,7 +2940,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     },
                     style: { flex: 1, minWidth: 0, minHeight: 32, maxHeight: 200, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '6px 8px' },
                   }),
-                  h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !text.trim(), onClick: send, style: { borderRadius: 10, width: 34, height: 34 } }),
+                  h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !canSend, onClick: send, 'data-dsh-bots-send': true, style: { borderRadius: 10, width: 34, height: 34 } }),
                 ),
               ),
               h(
@@ -2923,6 +2968,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               onClose: () => setOpen(''),
               onSend: sendText,
               onRetry: retry,
+              toast,
               onSeen: () => void reload(),
               onListed: dropListed,
             })
@@ -2936,10 +2982,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
      * its messages; a thread has no threads of its own. It polls the thread on its own, starting from
      * what the chat already knows, and tells the Host when its new replies have been read.
      */
-    function ThreadPane({ t, bot, rootId, base, local, onClose, onSend, onRetry, onSeen, onListed }) {
+    function ThreadPane({ t, bot, rootId, base, local, onClose, onSend, onRetry, onSeen, onListed, toast }) {
       const { items, threads, reload } = useMessages(bot.id, true, rootId);
       const [text, setText] = useState('');
       const [quote, setQuote] = useState(null);
+      const att = useAttachments(t, toast);
+      const dropper = useImageDrop(att);
       const seenAsked = useRef('');
       const known = base.roots.get(rootId);
       const fromBase = [base.byId.get(rootId), ...(known?.replies ?? [])].filter(Boolean);
@@ -2966,14 +3014,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           onSeen?.();
         });
       }, [seenKey, items === null]);
+      const canSend = (text.trim() !== '' || att.images.length > 0) && !att.busy;
       const send = () => {
         const body = text.trim();
-        if (!body) return;
+        if (!canSend) return;
+        const imgs = att.images;
         const replyTo = quote?.id ?? rootId;
         setText('');
         setQuote(null);
+        att.clear();
         stick.stick();
-        void onSend(body, replyTo, '', rootId).then(() => {
+        void onSend(body, replyTo, '', rootId, imgs).then(() => {
           stick.stick();
           void reload();
         });
@@ -3043,17 +3094,20 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           { style: { padding: '8px 12px 12px', borderTop: `1px solid ${C.border1}` } },
           h(
             'div',
-            { className: 'dshb-composer' },
+            { className: 'dshb-composer', ...dropper.box },
             quote ? h(QuoteBar, { t, m: quote, onCancel: () => setQuote(null), attr: 'data-dsh-bots-thread-quote' }) : null,
+            h(AttachStrip, { t, att }),
             h(
               'div',
               { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+              h(AttachButton, { t, att, attr: 'thread', size: 32 }),
               h('textarea', {
                 'data-dsh-bots-thread-composer': rootId,
                 value: text,
                 rows: Math.min(6, Math.max(1, text.split('\n').length)),
                 placeholder: t('threadComposer'),
                 onChange: (e) => setText(e.target.value),
+                onPaste: dropper.onPaste,
                 onKeyDown: (e) => {
                   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
                     e.preventDefault();
@@ -3065,7 +3119,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 },
                 style: { flex: 1, minWidth: 0, minHeight: 30, maxHeight: 160, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '5px 8px' },
               }),
-              h(Btn, { kind: 'primary', icon: Icon.send(14), title: t('send'), disabled: !text.trim(), onClick: send, 'data-dsh-bots-thread-send': rootId, style: { borderRadius: 9, width: 32, height: 32 } }),
+              h(Btn, { kind: 'primary', icon: Icon.send(14), title: t('send'), disabled: !canSend, onClick: send, 'data-dsh-bots-thread-send': rootId, style: { borderRadius: 9, width: 32, height: 32 } }),
             ),
           ),
         ),
@@ -4288,6 +4342,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [busy, setBusy] = useState('');
       const [text, setText] = useState('');
       const [sending, setSending] = useState(false);
+      const att = useAttachments(t, toast);
+      const dropper = useImageDrop(att);
       const v = ticketViewOf(data);
       const back = h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-tasks-back': true, onClick: onBack, style: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: SMALL } }, Icon.back(12), t('allTasks'));
       if (!v) {
@@ -4322,13 +4378,18 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           .then((r) => void after(r, t(`taskDid_${action}`)))
           .finally(() => setBusy(''));
       };
+      const canSend = (text.trim() !== '' || att.images.length > 0) && !att.busy && !sending;
       const send = () => {
         const body = text.trim();
-        if (!body || sending) return;
+        if (!canSend) return;
+        const imgs = att.images;
         setSending(true);
-        postJson(`tickets/${encodeURIComponent(id)}/message`, { text: body })
+        postJson(`tickets/${encodeURIComponent(id)}/message`, { text: body, ...(imgs.length ? { images: imgs.map((i) => i.id) } : {}) })
           .then((r) => {
-            if (after(r, t('taskMessageSent', { name }))) setText('');
+            if (after(r, t('taskMessageSent', { name }))) {
+              setText('');
+              att.clear();
+            }
           })
           .finally(() => setSending(false));
       };
@@ -4419,7 +4480,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
               fact(t('taskFactFrom'), fromValue, 'from'),
               fact(t('taskFactUpdated'), h('span', { title: fmtDate(toMs(v.updatedAt)) }, fmtAgo(t, v.updatedAt)), 'updated'),
             ),
-            str(v.text).trim() ? h(Section, { title: t('taskAsked') }, h('div', { className: 'dshb-card', 'data-dsh-bots-ticket-text': true }, h(Clamp, { t, text: v.text, lines: 8, style: { fontSize: SMALL } }))) : null,
+            str(v.text).trim() ? h(Section, { title: t('taskAsked') }, h('div', { className: 'dshb-card', 'data-dsh-bots-ticket-text': true, style: { display: 'flex', flexDirection: 'column', gap: 8 } }, h(Clamp, { t, text: v.text, lines: 8, style: { fontSize: SMALL } }), h(MessageImages, { t, images: imagesOf(v), max: 120 }))) : null,
             h(
               Section,
               { title: t('taskReports') },
@@ -4482,7 +4543,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 h(AskCards, { t, sessionId: v.sessionId, env, onAnswered: () => void reload() }),
                 h(
                   'div',
-                  { style: { display: 'flex', alignItems: 'flex-end', gap: 8, padding: 6, borderRadius: 14, border: `1px solid ${C.border}`, background: C.layer1 } },
+                  { className: 'dshb-composer', ...dropper.box },
+                  h(AttachStrip, { t, att }),
+                  h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+                  h(AttachButton, { t, att, attr: 'ticket' }),
                   h('textarea', {
                     'data-dsh-bots-ticket-composer': id,
                     value: text,
@@ -4490,6 +4556,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     'aria-label': t('taskMessageLabel'),
                     placeholder: stage === 'question' ? t('taskAnswerPlaceholder', { name }) : t('taskMessagePlaceholder'),
                     onChange: (e) => setText(e.target.value),
+                    onPaste: dropper.onPaste,
                     onKeyDown: (e) => {
                       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
                         e.preventDefault();
@@ -4498,7 +4565,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     },
                     style: { flex: 1, minHeight: 32, maxHeight: 160, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '6px 8px' },
                   }),
-                  h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !text.trim() || sending, onClick: send, 'data-dsh-bots-ticket-send': id, style: { borderRadius: 10, width: 34, height: 34 } }),
+                  h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !canSend, onClick: send, 'data-dsh-bots-ticket-send': id, style: { borderRadius: 10, width: 34, height: 34 } }),
+                  ),
                 ),
                 h('div', { style: { marginTop: 7, fontSize: TINY, color: C.faint } }, t('taskMessageHint', { name })),
               ),
@@ -4657,6 +4725,228 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             { style: { display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' } },
             h(Btn, { size: 'sm', kind: 'primary', disabled: busy, onClick: add, 'data-dsh-bots-lead-offer-add': offer.team }, busy ? t('leadOfferAdding') : t('leadOfferAdd', { name })),
             h(Btn, { size: 'sm', disabled: busy, onClick: () => void dismiss(), 'data-dsh-bots-lead-offer-dismiss': offer.team }, t('leadOfferDismiss')),
+          ),
+        ),
+      );
+    }
+
+    // --- images in messages (Bots 0.17) --------------------------------------------------
+
+    const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
+    /** Images one message carries at most (the Host's limit too). */
+    const MAX_ATTACH = 10;
+    /** The image files among `files` (a FileList or an array): PNG, JPEG, WebP, GIF. */
+    const imageFiles = (files) => Array.from(files ?? []).filter((f) => f && /^image\/(png|jpeg|webp|gif)$/.test(String(f.type)));
+    /** Whether a drag carries files (an image dropped on the composer). */
+    const dragsFiles = (e) => Array.from(e?.dataTransfer?.types ?? []).includes('Files');
+    const objectUrl = (file) => {
+      try {
+        return URL.createObjectURL(file);
+      } catch {
+        return '';
+      }
+    };
+    const dropUrl = (url) => {
+      try {
+        if (url) URL.revokeObjectURL(url);
+      } catch {
+        // Freed with the page.
+      }
+    };
+    /** The images of a message the Host listed (`{id, url, width, height, name?}`). */
+    const imagesOf = (m) => (Array.isArray(m?.images) ? m.images.filter((i) => i && typeof i.url === 'string' && i.url.startsWith(R)) : []);
+
+    /**
+     * The images attached to a message being written. Each is stored by the Host as soon as it is attached
+     * (picked, pasted or dropped), so sending only names them. `{list, add(files), remove(key), clear(), images, busy}`:
+     * `images` are the stored ones, `busy` while one is still on its way.
+     */
+    function useAttachments(t, toast) {
+      const [list, setList] = useState([]);
+      const live = useRef(list);
+      live.current = list;
+      const add = (files) => {
+        const picked = imageFiles(files);
+        if (!picked.length) return false;
+        const room = MAX_ATTACH - live.current.length;
+        if (picked.length > room) toast?.(t('imagesMax', { n: MAX_ATTACH }), 'error');
+        const rows = picked.slice(0, Math.max(0, room)).map((file, i) => ({ key: `a${Date.now().toString(36)}${i}${Math.random().toString(36).slice(2, 6)}`, file, name: str(file.name), preview: objectUrl(file), status: 'uploading' }));
+        if (!rows.length) return true;
+        live.current = [...live.current, ...rows];
+        setList(live.current);
+        for (const row of rows) {
+          const settle = (patch) => setList((l) => l.map((a) => (a.key === row.key ? { ...a, ...patch } : a)));
+          readDataUrl(row.file)
+            .then((data) => postJson('images', { mediaType: row.file.type, data, name: row.name }))
+            .then((r) => settle(r?.ok && r.image && typeof r.image.id === 'string' ? { status: 'ready', image: r.image } : { status: 'error', reason: str(r?.reason) || t('imageFailed') }))
+            .catch((e) => settle({ status: 'error', reason: str(e?.message) || t('imageFailed') }));
+        }
+        return true;
+      };
+      const remove = (key) =>
+        setList((l) => {
+          dropUrl(l.find((a) => a.key === key)?.preview);
+          return l.filter((a) => a.key !== key);
+        });
+      const clear = () =>
+        setList((l) => {
+          for (const a of l) dropUrl(a.preview);
+          return [];
+        });
+      return { list, add, remove, clear, images: list.filter((a) => a.status === 'ready').map((a) => a.image), busy: list.some((a) => a.status === 'uploading') };
+    }
+
+    /** The composer's handlers for images: pasted (a screenshot) or dropped on it. `drop` says one is being dragged over it. */
+    function useImageDrop(att) {
+      const [drop, setDrop] = useState(false);
+      return {
+        drop,
+        onPaste: (e) => {
+          const files = imageFiles(e?.clipboardData?.files);
+          if (!files.length) return;
+          e.preventDefault?.();
+          att.add(files);
+        },
+        box: {
+          'data-drop': drop || undefined,
+          onDragOver: (e) => {
+            if (!dragsFiles(e)) return;
+            e.preventDefault?.();
+            if (!drop) setDrop(true);
+          },
+          onDragLeave: (e) => {
+            if (e?.currentTarget?.contains?.(e.relatedTarget)) return;
+            setDrop(false);
+          },
+          onDrop: (e) => {
+            if (!dragsFiles(e)) return;
+            e.preventDefault?.();
+            setDrop(false);
+            // Files that are no images are left out: the composer takes text and images.
+            att.add(e.dataTransfer.files);
+          },
+        },
+      };
+    }
+
+    /** The "attach an image" button of a composer, with its hidden file picker. */
+    function AttachButton({ t, att, attr, size = 34 }) {
+      const input = useRef(null);
+      return h(
+        'span',
+        { style: { display: 'inline-flex', flex: 'none' } },
+        h('input', {
+          ref: input,
+          type: 'file',
+          accept: IMAGE_ACCEPT,
+          multiple: true,
+          style: { display: 'none' },
+          'data-dsh-bots-attach-input': attr,
+          onChange: (e) => {
+            att.add(e.target.files);
+            try {
+              e.target.value = '';
+            } catch {
+              // Picking the same file again is a nicety.
+            }
+          },
+        }),
+        h(Btn, { kind: 'ghost', icon: Icon.image(16), title: t('attachImage'), disabled: att.list.length >= MAX_ATTACH, onClick: () => input.current?.click?.(), 'data-dsh-bots-attach': attr, style: { width: size, height: size, borderRadius: 9 } }),
+      );
+    }
+
+    /** The images attached to a message being written: a thumbnail each, uploading, stored or refused, with a remove button. */
+    function AttachStrip({ t, att }) {
+      if (!att.list.length) return null;
+      return h(
+        'div',
+        { className: 'dshb-attach', 'data-dsh-bots-attached': att.list.length },
+        att.list.map((a) =>
+          h(
+            'div',
+            { key: a.key, className: 'dshb-attach-item', 'data-status': a.status, 'data-dsh-bots-attached-item': a.status, title: a.status === 'error' ? a.reason : a.name },
+            a.preview || a.image?.url ? h('img', { src: a.preview || a.image.url, alt: a.name }) : null,
+            a.status === 'uploading' ? h('span', { className: 'dshb-attach-spin' }) : null,
+            a.status === 'error' ? h('span', { className: 'dshb-attach-bad' }, t('imageRefused')) : null,
+            h('button', { type: 'button', className: 'dshb-attach-x', title: t('removeImage'), 'aria-label': t('removeImage'), 'data-dsh-bots-attached-remove': a.key, onClick: () => att.remove(a.key) }, Icon.close(10)),
+          ),
+        ),
+      );
+    }
+
+    /** The size a thumbnail of `img` takes: its shape kept, within `max` (a lone image is shown larger). */
+    function thumbSize(img, max) {
+      const w = Number(img?.width) || max;
+      const hgt = Number(img?.height) || max;
+      const k = Math.min(1, max / Math.max(w, hgt));
+      return { width: Math.max(40, Math.round(w * k)), height: Math.max(40, Math.round(hgt * k)) };
+    }
+
+    /** A message's images: thumbnails that open the image large. */
+    function MessageImages({ t, images, align = 'flex-start', max }) {
+      const [open, setOpen] = useState(-1);
+      const list = Array.isArray(images) ? images.filter((i) => i && typeof i.url === 'string') : [];
+      if (!list.length) return null;
+      const edge = max ?? (list.length === 1 ? 240 : 120);
+      return h(
+        'div',
+        { className: 'dshb-imgs', 'data-dsh-bots-msg-images': list.length, style: { justifyContent: align } },
+        list.map((img, i) =>
+          h(
+            'button',
+            {
+              key: img.id ?? i,
+              type: 'button',
+              className: 'dshb-img',
+              title: img.name || t('openImage'),
+              'aria-label': img.name || t('openImage'),
+              'data-dsh-bots-msg-image': img.id ?? i,
+              onClick: (e) => {
+                e?.stopPropagation?.();
+                setOpen(i);
+              },
+              style: thumbSize(img, edge),
+            },
+            h('img', { src: img.url, alt: img.name || '', loading: 'lazy' }),
+          ),
+        ),
+        open >= 0 ? h(Lightbox, { t, images: list, at: open, onClose: () => setOpen(-1), onMove: setOpen }) : null,
+      );
+    }
+
+    /** An image shown large over the page; Esc or a click outside closes it, the arrow keys go through the message's images. */
+    function Lightbox({ t, images, at, onClose, onMove }) {
+      const img = images[Math.max(0, Math.min(images.length - 1, at))];
+      const many = images.length > 1;
+      const go = (d) => onMove((at + d + images.length) % images.length);
+      useEffect(() => {
+        const onKey = (e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation?.();
+            onClose();
+          } else if (many && e.key === 'ArrowRight') go(1);
+          else if (many && e.key === 'ArrowLeft') go(-1);
+        };
+        try {
+          window.addEventListener('keydown', onKey, true);
+        } catch {
+          return undefined;
+        }
+        return () => window.removeEventListener('keydown', onKey, true);
+      }, [at, images.length]);
+      return portal(
+        h(
+          'div',
+          { className: 'dshb-lightbox', role: 'dialog', 'aria-label': img.name || t('openImage'), 'data-dsh-bots-lightbox': img.id ?? at, onClick: onClose },
+          h('img', { src: img.url, alt: img.name || '', onClick: (e) => e.stopPropagation?.() }),
+          h(
+            'div',
+            { className: 'dshb-lightbox-bar', onClick: (e) => e.stopPropagation?.() },
+            many ? h('button', { type: 'button', className: 'dshb-lightbox-btn', title: t('prevImage'), 'aria-label': t('prevImage'), onClick: () => go(-1) }, Icon.back(14)) : null,
+            many ? h('span', null, `${at + 1} / ${images.length}`) : img.name ? h('span', null, img.name) : null,
+            many ? h('button', { type: 'button', className: 'dshb-lightbox-btn', title: t('nextImage'), 'aria-label': t('nextImage'), onClick: () => go(1) }, Icon.arrow(14)) : null,
+            h('a', { className: 'dshb-lightbox-btn', href: img.url, target: '_blank', rel: 'noreferrer', title: t('openImageNew'), 'aria-label': t('openImageNew') }, Icon.open(14)),
+            h('button', { type: 'button', className: 'dshb-lightbox-btn', title: t('close'), 'aria-label': t('close'), onClick: onClose }, Icon.close(14)),
           ),
         ),
       );
@@ -8974,7 +9264,16 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         act_office: 'Working on a document',
         act_tool: 'Using {detail}',
         composer: 'Message @{handle}',
-        composerHint: 'Enter to send · Shift+Enter for a new line',
+        composerHint: 'Enter to send · Shift+Enter for a new line · paste or drop images',
+        attachImage: 'Attach images (or paste / drop them here)',
+        removeImage: 'Remove this image',
+        imageFailed: 'The image could not be stored',
+        imageRefused: 'Not sent',
+        imagesMax: 'A message takes at most {n} images',
+        openImage: 'Open the image',
+        openImageNew: 'Open in a new window',
+        prevImage: 'Previous image',
+        nextImage: 'Next image',
         replyAction: 'Reply',
         replyingTo: 'Replying to {name}',
         cancelReply: 'Cancel the reply',
@@ -10023,7 +10322,16 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         act_office: '处理文档',
         act_tool: '使用 {detail}',
         composer: '给 @{handle} 发消息',
-        composerHint: 'Enter 发送 · Shift+Enter 换行',
+        composerHint: 'Enter 发送 · Shift+Enter 换行 · 可粘贴或拖入图片',
+        attachImage: '添加图片（也可以直接粘贴、拖进来）',
+        removeImage: '移除这张图片',
+        imageFailed: '图片没能保存',
+        imageRefused: '无法发送',
+        imagesMax: '一条消息最多带 {n} 张图片',
+        openImage: '查看大图',
+        openImageNew: '在新窗口打开',
+        prevImage: '上一张',
+        nextImage: '下一张',
         replyAction: '回复',
         replyingTo: '回复 {name}',
         cancelReply: '取消回复',

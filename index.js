@@ -59,6 +59,7 @@ import { checkTickets, isEmptyResponse, isTransient, requesterReminders, retryDe
 import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
 import { cleanDay, createMemory, dreamBotPrompt, dreamTeamPrompt, isProjectScope, KINDS as MEMORY_KINDS, languageOf, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
 import { createTopics, rotationReason } from './lib/topics.mjs';
+import { createImages, IMAGE_TYPES, idList, imageId, imageNoteText, imageView, MAX_MESSAGE_IMAGES, refsInContent } from './lib/images.mjs';
 import { chatMessageRef, createDiscussions, forkPoint, messageRef, seqByTime } from './lib/discussions.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
 
@@ -123,6 +124,9 @@ export const TRANSIENT = /\b(408|409|429|500|502|503|504|520|522|524)\b|connecti
 export const TOOL_NAMES = ['bot_list', 'bot_create', 'bot_update', 'bot_delete', 'bot_send_message', 'bot_reply', 'bot_recall', 'bot_ticket', 'bot_need', 'bot_schedule', 'memory_save', 'memory_forget', 'memory_search'];
 /** Message ids of the plugin's own deliveries start with this, so a retry can tell it already delivered one. */
 const MESSAGE_PREFIX = 'bots:';
+/** The largest request body a route takes; an image upload (base64, Bots 0.17) may be larger. */
+const MAX_BODY = 4 * 1024 * 1024;
+const MAX_IMAGE_UPLOAD = 40 * 1024 * 1024;
 /**
  * Relays about a ticket, by the kind in their message id (`bots:<kind>:<ticketId>:…`). These are
  * inputs of the requester's turn: the ticket's origin Thread joins it (replies to the person go there).
@@ -246,6 +250,8 @@ export function apply(ctx, config, deps = {}) {
   const needs = createNeeds(dir, { now: nowMs });
   // Replies to one message talked over in a forked Session of their own (Bots 0.10).
   const discussions = createDiscussions(dir, { now: nowMs });
+  // Images in messages (Bots 0.17): references into Harness's attachment store, by id.
+  const images = createImages(dir);
   // A tasks file that is there but cannot be read stops the plugin now, before anything writes over it.
   try {
     tickets.open();
@@ -1329,9 +1335,9 @@ export function apply(ctx, config, deps = {}) {
    * and (0.10.1) a teammate's message to the router dispatcher. One sent from a task names it, so the
    * answer goes to that task. Its id (`bots:dm:…`) keeps it a message, not a report on the sender's task.
    */
-  async function deliver(sender, target, text, senderSessionId) {
+  async function deliver(sender, target, text, senderSessionId, refs = []) {
     const body = String(text ?? '').trim();
-    if (body === '') throw new Error('text must not be empty');
+    if (body === '' && !refs.length) throw new Error('text must not be empty');
     if (sender && sender.id === target.id) throw new Error('a bot cannot message itself');
     if (sender && !admitPair(sender.id, target.id)) throw pairRefusal(sender, target);
     // A teammate's message may answer this bot's own question: only a long quiet starts a new topic here.
@@ -1341,13 +1347,14 @@ export function apply(ctx, config, deps = {}) {
     await sendTo(agent, {
       content: [
         { type: 'text', text: dmHeader(sender, fromTask) },
-        { type: 'text', text: dmBody(body, sender, fromTask) },
+        { type: 'text', text: dmBody(body || '(images)', sender, fromTask) },
+        ...imageBlocks(refs),
       ],
       source: senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' },
       mode: homeMode(target),
       key: `dm:${randomUUID()}`,
     });
-    store.log({ from: sender ? sender.id : 'user', to: target.id, text: body, kind: 'dm' });
+    store.log({ from: sender ? sender.id : 'user', to: target.id, text: body, kind: 'dm', ...imageIdsOf(refs) });
     return agent.session.id;
   }
 
@@ -1551,8 +1558,48 @@ export function apply(ctx, config, deps = {}) {
   /** One line of a message, for a discussion's title. */
   const titleOf = (text) => clip(String(text ?? '').replace(/\s+/g, ' ').trim(), 40).text;
   /** A timeline message as the panel reads it: `pending` while no model has taken it yet; internal fields left out. */
+  // --- images (Bots 0.17) ------------------------------------------------------------------------
+  const attachmentStore = () => service(ctx, 'attachments');
+  /**
+   * One image the person attached in the panel, stored by Harness's attachment store (which checks
+   * the bytes against the type, normalizes the image and keeps it): its reference. Base64 bytes.
+   */
+  async function admitImage({ mediaType, data, name } = {}) {
+    const att = attachmentStore();
+    if (typeof att?.admitPromptContent !== 'function') throw new Error('sending images needs a Harness with attachments (the Web profile)');
+    const type = String(mediaType ?? '').toLowerCase();
+    if (!IMAGE_TYPES.includes(type)) throw new Error('send a PNG, JPEG, WebP or GIF image');
+    const b64 = String(data ?? '').replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
+    if (!b64) throw new Error('the image is empty');
+    const label = String(name ?? '').split(/[\\/]/).pop().trim().slice(0, 200);
+    const [part] = await att.admitPromptContent([{ type: 'image', mediaType: type, data: b64, ...(label ? { name: label } : {}) }]);
+    const [ref] = images.remember([part?.attachment]);
+    if (!ref) throw new Error('the image was not stored');
+    return ref;
+  }
+  /** The references of the images (attachment ids) a message names; an unknown one is refused by its id. */
+  function imageRefs(ids) {
+    const list = idList(ids);
+    if (list.length > MAX_MESSAGE_IMAGES) throw new Error(`a message carries at most ${MAX_MESSAGE_IMAGES} images`);
+    return list.map((id) => {
+      const ref = images.get(id);
+      if (!ref) throw new Error(`no image ${id}: name an image of a message you were sent, by the id after it`);
+      return ref;
+    });
+  }
+  /** A message's images as content blocks: each image, then a line with their ids (a bot names them to pass them on). */
+  const imageBlocks = (refs) => (refs?.length ? [...refs.map((ref) => ({ type: 'image', attachment: ref })), { type: 'text', text: imageNoteText(refs) }] : []);
+  /** The images a task's assignment carries, as content blocks (those whose reference is still known). */
+  const ticketImageBlocks = (t) => imageBlocks(idList(t?.images).map((id) => images.get(id)).filter(Boolean));
+  /** What a logged message or a task keeps of its images: their ids. */
+  const imageIdsOf = (refs) => (refs?.length ? { images: refs.map((r) => r.attachmentId) } : {});
+  /** The images of a logged message or a task, as the panel shows them (those whose reference is still known). */
+  const imageViews = (ids) => idList(ids).map((id) => images.get(id)).filter(Boolean).map((ref) => imageView(ref, R));
+
   function messageView(m) {
-    const { sid, ...base } = m;
+    const { sid, images: imgs, ...plain } = m;
+    const shown = Array.isArray(imgs) && imgs.length ? imageViews(imgs) : [];
+    const base = shown.length ? { ...plain, images: shown } : plain;
     // A card started from the board (Bots 0.12): the chat links it, by its reference on the board.
     const n = m.need ? needs.get(m.need) : undefined;
     const rest = n ? { ...base, card: { id: n.id, title: n.title, ...(cardRefOf(n) ? { ref: cardRefOf(n) } : {}) } } : base;
@@ -1602,13 +1649,14 @@ export function apply(ctx, config, deps = {}) {
    * dispatcher hears of it without waking. Returns `{sessionId, message?}`, or null when the task did
    * not take it (the dispatcher does then).
    */
-  async function cardFollowUp(bot, body, { need, ticket }, { key, chat = null, messageKey = '' } = {}) {
+  async function cardFollowUp(bot, body, { need, ticket }, { key, chat = null, messageKey = '', images: refs = [] } = {}) {
     const id = chat ? '' : newPanelId();
-    if (!chat) store.log({ id, from: 'user', to: ticket.botId, chat: bot.id, kind: 'user', text: body, thread: key, ticket: ticket.id, need: need.id });
+    if (!chat) store.log({ id, from: 'user', to: ticket.botId, chat: bot.id, kind: 'user', text: body, thread: key, ticket: ticket.id, need: need.id, ...imageIdsOf(refs) });
     let next;
     try {
       next = await appendToTicket(tickets.get(ticket.id) ?? ticket, body, {
         human: true,
+        images: refs,
         ...(chat ? { chat, header: chat.header, ...(chat.context ? { context: chat.context } : {}) } : { logged: true }),
         key: chat ? (messageKey ? `${messageKey}:${ticket.id}` : '') : `panel:${id}:${ticket.id}`,
       });
@@ -1774,17 +1822,17 @@ export function apply(ctx, config, deps = {}) {
    * header; other homes take it as a turn of its own). With `replyTo` it is a reply in the thread
    * of that message (Bots 0.10, `threadSend`). Returns `{sessionId, message?}`.
    */
-  async function userSend(target, text, { replyTo = '', card = null, cardAfter = [] } = {}) {
+  async function userSend(target, text, { replyTo = '', card = null, cardAfter = [], images: refs = [] } = {}) {
     let body = String(text ?? '').trim();
-    if (body === '') throw new Error('text must not be empty');
+    if (body === '' && !refs.length) throw new Error('text must not be empty');
     const ref = String(replyTo ?? '').trim();
-    if (ref) return threadSend(store.get(target.id) ?? target, body, ref);
+    if (ref) return threadSend(store.get(target.id) ?? target, body, ref, refs);
     // A card started from the board (Bots 0.12) is a request, never a command.
     const cmd = card ? null : TOPIC_COMMAND.exec(body);
     if (cmd) {
       const sessionId = await newTopic(target, 'manual');
       body = body.slice(cmd[0].length).trim();
-      if (!body) return { sessionId };
+      if (!body && !refs.length) return { sessionId };
     } else await autoTopic(store.get(target.id) ?? target, 'user');
     const bot = store.get(target.id) ?? target;
     const agent = await agentOf(bot);
@@ -1792,18 +1840,18 @@ export function apply(ctx, config, deps = {}) {
     // A message to the dispatcher that starts with a card's reference goes to that card's task (Bots 0.13).
     const lead = !card && isRouterHome(bot, sid) ? leadingCard(body) : null;
     if (lead) {
-      const went = await cardFollowUp(bot, body, lead, { key: panelThreadKey(sid) });
+      const went = await cardFollowUp(bot, body, lead, { key: panelThreadKey(sid), images: refs });
       if (went) return went;
     }
     const id = newPanelId();
-    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: panelThreadKey(sid), sid, ...(card ? { need: card.id } : {}) });
+    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: panelThreadKey(sid), sid, ...(card ? { need: card.id } : {}), ...imageIdsOf(refs) });
     // The panel shows thread replies in the chat: what the person read there since, the main conversation hears first.
     const news = threadNewsFor(bot, sid);
     // The router reads which tasks a message may continue, and the person's open requests (Bots 0.11); a card, what it is (0.12).
     const router = isRouterHome(bot, sid);
     const header = [...(router ? [panelHeaderText({ open: openTasksOf(bot) }, cardCtx()), openNeedsLine(bot), card ? '' : cardsNamedLine(body)] : []), card ? cardHeaderText(card, router, cardAfter) : ''].filter(Boolean).join('\n');
     try {
-      await sendTo(agent, { content: [news.text, header, body].filter(Boolean).map((text) => ({ type: 'text', text })), source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
+      await sendTo(agent, { content: [...[news.text, header, body].filter(Boolean).map((text) => ({ type: 'text', text })), ...imageBlocks(refs)], source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
     } catch (error) {
       // Not handed over: it leaves the chat (the panel keeps its own copy to send again).
       store.patchMessage(id, { hidden: true });
@@ -1820,7 +1868,7 @@ export function apply(ctx, config, deps = {}) {
    * bot's conversation forked at the replied message, so it sees what came before and nothing the
    * main chat said since. Returns `{sessionId, message}`.
    */
-  async function threadSend(bot, body, ref) {
+  async function threadSend(bot, body, ref, refs = []) {
     if (TOPIC_COMMAND.test(body)) throw new Error('a thread has no new topic: send /new in the main chat');
     const quoted = store.message(ref);
     if (!quoted || !inChat(quoted, bot.id)) throw new Error('that message is not in this chat');
@@ -1833,7 +1881,7 @@ export function apply(ctx, config, deps = {}) {
     const key = topicKeyOf(root, rootId) || discussions.byRoot(rootId)?.key || said?.thread || panelThreadKey(homeSid || bot.sessionId || 'panel', rootId);
     const id = newPanelId();
     const aside = quoted.id !== rootId ? quoted : null;
-    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: key, topic: rootId, ...(aside ? { replyTo: aside.id } : {}) });
+    store.log({ id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: key, topic: rootId, ...(aside ? { replyTo: aside.id } : {}), ...imageIdsOf(refs) });
     // A task's thread (opened on the task's own message, or a 0.9 topic it follows): the person's words go to the task.
     // In a discussion they go to its bot, who has the tasks it opened there report back into it.
     const talking = discussions.get(key);
@@ -1847,7 +1895,7 @@ export function apply(ctx, config, deps = {}) {
     }
     if (live.length) {
       try {
-        const sessions = await toTopicTasks(bot, live, body, { key, root: rootId, id, quoted });
+        const sessions = await toTopicTasks(bot, live, body, { key, root: rootId, id, quoted, images: refs });
         return { sessionId: sessions[0] ?? bot.sessionId, message: messageView(store.message(id)) };
       } catch (error) {
         // No task took it (one ended meanwhile, say): a discussion does.
@@ -1874,7 +1922,7 @@ export function apply(ctx, config, deps = {}) {
         : '';
     store.patchMessage(id, { sid: agent.session.id });
     try {
-      await sendTo(agent, { content: header ? [{ type: 'text', text: header }, { type: 'text', text: body }] : [{ type: 'text', text: body }], source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
+      await sendTo(agent, { content: [...[header, body].filter(Boolean).map((text) => ({ type: 'text', text })), ...imageBlocks(refs)], source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
     } catch (error) {
       store.patchMessage(id, { hidden: true });
       if (first) discussions.patch(key, { noted: null });
@@ -1889,14 +1937,14 @@ export function apply(ctx, config, deps = {}) {
    * message (a done one opens again; it may take the extra slot), and the chat's bot hears of it
    * without waking. Returns the task Sessions; throws when no task took it.
    */
-  async function toTopicTasks(bot, list, body, { key, root, id, quoted }) {
+  async function toTopicTasks(bot, list, body, { key, root, id, quoted, images: refs = [] }) {
     const reached = [];
     let lastError = null;
     const header = quoted && quoted.id !== root ? panelHeaderText({ replyTo: { who: writerOf(quoted), text: quoted.text } }) : '';
     for (const t of list) {
       const cur = tickets.get(t.id) ?? t;
       try {
-        reached.push(await appendToTicket(cur, body, { human: true, logged: true, header, key: `panel:${id}:${cur.id}` }));
+        reached.push(await appendToTicket(cur, body, { human: true, logged: true, header, key: `panel:${id}:${cur.id}`, images: refs }));
       } catch (error) {
         lastError = error;
         ctx.logger?.warn?.(`bots: a panel reply did not reach task ${cur.id}: ${error?.message ?? error}`);
@@ -1981,6 +2029,7 @@ export function apply(ctx, config, deps = {}) {
     return {
       ...ticketRow(t),
       text: t.text,
+      ...(t.images?.length ? { images: imageViews(t.images) } : {}),
       ...(t.parentId ? { parentId: t.parentId } : {}),
       children: tickets.children(t.id).map((c) => c.id),
       requesterSessionId: t.requester?.sessionId ?? null,
@@ -2473,7 +2522,7 @@ export function apply(ctx, config, deps = {}) {
         return false;
       }
       const started = tickets.start(t.id, { sessionId: agent.session.id });
-      await sendTo(agent, { content: [{ type: 'text', text: assignmentText(started, cardCtx()) }], source: sourceFrom(started.requester), mode: 'steer', key: `assign:${t.id}` });
+      await sendTo(agent, { content: [{ type: 'text', text: assignmentText(started, cardCtx()) }, ...ticketImageBlocks(started)], source: sourceFrom(started.requester), mode: 'steer', key: `assign:${t.id}` });
       return true;
     } catch (error) {
       const reason = String(error?.message ?? error);
@@ -2645,9 +2694,9 @@ export function apply(ctx, config, deps = {}) {
    * take the extra one); until then it waits on the ticket. A message whose `key` was delivered (or
    * parked) already changes nothing: a replay after a restart neither reopens nor wakes the ticket.
    */
-  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', context = '', chat = null, key = '', logged = false } = {}) {
+  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', context = '', chat = null, key = '', logged = false, images: refs = [] } = {}) {
     const body = String(text ?? '').trim();
-    if (body === '') throw new Error('text must not be empty');
+    if (body === '' && !refs.length) throw new Error('text must not be empty');
     if (t.archivedAt) throw new Error(`task ${t.id} is archived; open a new task instead`);
     if (key && t.sessionId) {
       await loadHistory(t.sessionId);
@@ -2676,31 +2725,38 @@ export function apply(ctx, config, deps = {}) {
     }
     const who = sender ? `@${sender.handle} (${sender.name})` : 'the user';
     if (!cur.startedAt) {
-      cur = tickets.patch(cur.id, { text: `${cur.text}\n\n--- Added by ${who} ---\n${body}${context ? `\n\n${context}` : ''}` }) ?? cur;
+      // Images go with the task's assignment, after those it had.
+      const more = refs.length ? { images: idList([...(cur.images ?? []), ...refs.map((r) => r.attachmentId)]).slice(-MAX_MESSAGE_IMAGES) } : {};
+      cur = tickets.patch(cur.id, { text: `${cur.text}\n\n--- Added by ${who} ---\n${body || '(images)'}${context ? `\n\n${context}` : ''}`, ...more }) ?? cur;
       void pump();
       return cur;
     }
-    const content = sender
-      ? [
-          { type: 'text', text: `Bot message from ${who} about task ${cur.id}:` },
-          { type: 'text', text: `${body}\n\n(Answer in a report: bot_send_message with a status, without "to".)` },
-        ]
-      : header
+    const content = [
+      ...(sender
         ? [
-            { type: 'text', text: header },
-            { type: 'text', text: body },
-            // What the person answers or the topic they write in, read from the chat app.
-            ...(context ? [{ type: 'text', text: context }] : []),
+            { type: 'text', text: `Bot message from ${who} about task ${cur.id}:` },
+            { type: 'text', text: `${body || '(images)'}\n\n(Answer in a report: bot_send_message with a status, without "to".)` },
           ]
-        : [{ type: 'text', text: body }];
+        : header
+          ? [
+              { type: 'text', text: header },
+              ...(body ? [{ type: 'text', text: body }] : []),
+              // What the person answers or the topic they write in, read from the chat app.
+              ...(context ? [{ type: 'text', text: context }] : []),
+            ]
+          : body
+            ? [{ type: 'text', text: body }]
+            : []),
+      ...imageBlocks(refs),
+    ];
     // A person's follow-up may take the extra slot (new work cannot crowd it out); a bot's may not.
     await toTicket(cur, { content, source: sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' }, key: key || `msg:${cur.id}:${randomUUID()}`, human: human && !sender });
     // A panel message is in the timeline already (logged when it was sent).
     if (logged) return tickets.get(cur.id) ?? cur;
     store.log(
       chat
-        ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id }
-        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id, ...topicFieldsOf(cur) },
+        ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id, ...imageIdsOf(refs) }
+        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id, ...topicFieldsOf(cur), ...imageIdsOf(refs) },
     );
     return tickets.get(cur.id) ?? cur;
   }
@@ -2712,7 +2768,7 @@ export function apply(ctx, config, deps = {}) {
    * once the ticket exists and before it starts (the dispatcher counts it toward a need there, which
    * may file it under a project).
    */
-  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen, relay = false, projectId = '', onCreate = null } = {}) {
+  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen, relay = false, projectId = '', onCreate = null, images: refs = [] } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     // The dispatcher only hands out (Bots 0.10; 0.9 let it hand work to itself): the work goes to a teammate.
@@ -2738,8 +2794,9 @@ export function apply(ctx, config, deps = {}) {
       threads: thread ? [thread] : [],
       relay,
       projectId: parent?.projectId || projectId,
+      images: refs.map((r) => r.attachmentId),
     });
-    store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id, ...topicFieldsOf(t) });
+    store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id, ...topicFieldsOf(t), ...imageIdsOf(refs) });
     if (onCreate) {
       try {
         onCreate(t);
@@ -3084,9 +3141,9 @@ export function apply(ctx, config, deps = {}) {
         // own id keeps one still in the inbox from doubling.
         const neverTook = Array.isArray(events) && events.length < HISTORY_TAIL && !events.some((e) => e?.type === 'user/message');
         if (info.created) {
-          await sendTo(agent, { content: [{ type: 'text', text: `${recoveryNoteText(cur)}\n\n${assignmentText(cur, cardCtx())}` }], source: sourceFrom(cur.requester), mode: 'steer', key: `recover:${cur.id}:new` });
+          await sendTo(agent, { content: [{ type: 'text', text: `${recoveryNoteText(cur)}\n\n${assignmentText(cur, cardCtx())}` }, ...ticketImageBlocks(cur)], source: sourceFrom(cur.requester), mode: 'steer', key: `recover:${cur.id}:new` });
         } else if (neverTook) {
-          await sendTo(agent, { content: [{ type: 'text', text: assignmentText(cur, cardCtx()) }], source: sourceFrom(cur.requester), mode: 'steer', key: `assign:${cur.id}` });
+          await sendTo(agent, { content: [{ type: 'text', text: assignmentText(cur, cardCtx()) }, ...ticketImageBlocks(cur)], source: sourceFrom(cur.requester), mode: 'steer', key: `assign:${cur.id}` });
         } else if (interrupted !== null || pending) {
           const mark = interrupted !== null ? `t${interrupted}` : `p${lastEnd}`;
           await sendTo(agent, { content: [{ type: 'text', text: recoveryNoteText(cur) }], source: sourceFrom(cur.requester), mode: 'steer', key: `recover:${cur.id}:${mark}` });
@@ -3423,6 +3480,8 @@ export function apply(ctx, config, deps = {}) {
         if (event.type === 'user/message') {
           kind = event.data?.source?.kind;
           trigger.set(session.id, kind);
+          // Its images can be passed on by id (Bots 0.17).
+          images.remember(refsInContent(event.data?.content));
         } else if (event.type === 'turn/end') {
           channels.noteTurnEnd(session.id);
           // A turn that went through ends a run of temporary errors.
@@ -3449,6 +3508,9 @@ export function apply(ctx, config, deps = {}) {
           else if (kind !== 'schedule-notice') st.other = true;
           st.answers = new Set();
           st.acted = false;
+          // The images that came with this turn's messages (Bots 0.17): the work it hands out carries them.
+          const seen = images.remember(refsInContent(event.data?.content));
+          if (seen.length && !isReport) st.images = idList([...(st.images ?? []), ...seen.map((r) => r.attachmentId)]).slice(-MAX_MESSAGE_IMAGES);
           turnState.set(session.id, st);
           // The router's list of open needs before a chat message is context, not what the person said.
           let said = kind === 'user' ? withoutNeedsLine(textOf(event.data.content)) : textOf(event.data.content);
@@ -4405,6 +4467,7 @@ export function apply(ctx, config, deps = {}) {
         '- To add to an open task you asked for (an answer to its question, a change, a message of the person\'s that continues it): `ticket` (its id) and `text`.',
         '- In a task conversation, to report to whoever asked: leave out `to`, give `text` and a `status` (progress, done, blocked, question).',
         '- The dispatcher names the person\'s request a task serves with `need`: a short restatement for a new request, or the id of a need already open; and, for a new request that belongs to one of the projects, that project with `project`.',
+        '- Images: a new task or message carries the images that came with this turn (or with the task this conversation works on) by itself. To send other images you were sent, or only some, name their ids in `images`; `images: []` sends none.',
       ].join('\n'),
       parameters: {
         to: { type: 'string', description: '@handle (or id / name) of the bot. Leave it out to report on your own task.' },
@@ -4416,6 +4479,7 @@ export function apply(ctx, config, deps = {}) {
         report_to: { type: 'string', enum: ['thread', 'me'], description: 'For a new task: "thread" (default) — its bot answers the person in the topic or chat the request came from; "me" — its reports come back to you.' },
         need: { type: 'string', description: 'Dispatcher only: the person\'s request this task serves. For a new request, restate it for the person in one short line in their language, saying what they get (not who does it); tasks for the same request pass the same line or the need id the first call returned. For more work on an open need ("Open needs: …"), its id (n…) or its card (OPC-12).' },
         project: { type: 'string', description: 'Dispatcher only: the key of the project a new request belongs to (as "## Projects" lists them, e.g. OPC). Its tasks then work in the project\'s folder. Leave it out when no project clearly fits.' },
+        images: { type: 'array', items: { type: 'string' }, description: 'Ids of images you were sent (as the line after them names them) that the other bot should see. Left out: the images of this turn go along by themselves. [] sends none. Not for reports.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ to: v.to, from: v.from, ...(v.ticket ? { ticket: v.ticket } : {}) }) },
       isConcurrencySafe: () => true,
@@ -4451,6 +4515,10 @@ export function apply(ctx, config, deps = {}) {
         if (status) throw new Error(mine ? `\`status\` is for reports to whoever asked for task ${mine.id} (leave out "to"); to ask @${named?.handle ?? 'a bot'} for help, leave out \`status\`` : '`status` is only for reports from a task conversation; leave it out here');
 
         const chosen = typeof args.thread === 'string' && args.thread.trim() !== '' ? threadRef(args.thread, sessionId) : '';
+        // The images it carries (Bots 0.17): those named, else the ones that came with this turn (or with this task).
+        const namedImages = args.images !== undefined && args.images !== null;
+        const ownImages = namedImages ? imageRefs(args.images) : idList(mine ? mine.images : turnState.get(sessionId)?.images).map((id) => images.get(id)).filter(Boolean);
+        const carries = (refs) => (refs.length ? ` It carries ${refs.length === 1 ? 'an image' : `${refs.length} images`}.` : '');
         // The person's request it serves (Bots 0.11): only the dispatcher's own conversation names one.
         const routing = Boolean(sender) && !mine && isRouterHome(sender, sessionId);
         let needArg = routing ? String(args.need ?? '').trim().replace(/^need\//, '') : '';
@@ -4497,7 +4565,9 @@ export function apply(ctx, config, deps = {}) {
           if (named && named.id !== t.botId) throw new Error(`task ${t.id} belongs to ${handleOf(t.botId)}, not @${named.handle}; leave out "to" or name its bot`);
           if (!mayAppend(t, sender, sessionId)) throw new Error(`task ${t.id} was not asked for from this conversation; message its bot with a new task instead`);
           if (!needOfTicket(t)) checkCardTurn();
-          let next = await appendToTicket(t, args.text, { sender: sender ?? null, senderSessionId: sessionId });
+          // A task has the images it was given already; from its own conversation, only those named go along.
+          const added = (namedImages || !mine ? ownImages : []).filter((r) => !(t.images ?? []).includes(r.attachmentId));
+          let next = await appendToTicket(t, args.text, { sender: sender ?? null, senderSessionId: sessionId, images: added });
           // Carried on from a thread (Bots 0.10): the task follows the thread, and its reports show there.
           const here = !mine ? discussions.bySession(sessionId) : undefined;
           if (here && reportsGoDirect(next) && (next.showIn ?? next.origin?.threadKey) !== here.key) {
@@ -4508,17 +4578,17 @@ export function apply(ctx, config, deps = {}) {
           const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
           const after = reportsGoDirect(next) ? `${handleOf(next.botId)} answers the person ${isPanelThread(next.showIn ?? next.origin?.threadKey) ? 'in the panel' : 'in the chat'} itself` : `${handleOf(next.botId)}'s report will arrive here by itself`;
           const need = routing ? needOf(next) : undefined;
-          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
+          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}).${carries(added)} ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
 
         // A teammate's message to the router dispatcher (0.10.1): no task for it (it does no work itself),
         // the text goes into its own conversation, where its router limits hold and it routes it.
         if (sender && named.id !== sender.id && isRouter(named)) {
-          await deliver(sender, named, args.text, sessionId);
+          await deliver(sender, named, args.text, sessionId, ownImages);
           return {
             ok: true,
-            text: `Delivered to @${named.handle}, the dispatcher, in its own conversation: it does no work itself, so this opens no task. It tells the person what they should know; if it answers you, the answer ${mine ? 'arrives here' : 'reaches you'} by itself (do not wait for it). Work you need done goes to the teammate who does it.`,
+            text: `Delivered to @${named.handle}, the dispatcher, in its own conversation:${carries(ownImages)} it does no work itself, so this opens no task. It tells the person what they should know; if it answers you, the answer ${mine ? 'arrives here' : 'reaches you'} by itself (do not wait for it). Work you need done goes to the teammate who does it.`,
             to: face(named),
             from: face(sender),
           };
@@ -4545,7 +4615,7 @@ export function apply(ctx, config, deps = {}) {
             const pid = need?.projectId ?? projectArg?.id;
             if (pid && made.projectId !== pid) tickets.patch(made.id, { projectId: pid });
           };
-          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay, projectId: projectArg?.id ?? '', onCreate });
+          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay, projectId: projectArg?.id ?? '', onCreate, images: ownImages });
           if (need) need = needs.get(need.id) ?? need;
           const stage = stageOf(t);
           const who = named.id === sender.id ? 'yourself' : `@${named.handle}`;
@@ -4555,13 +4625,13 @@ export function apply(ctx, config, deps = {}) {
           const said =
             stage === 'failed'
               ? `Task ${t.id} for ${who} could not start: ${t.error ?? 'unknown error'}.`
-              : `Opened task ${t.id} for ${who} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}). ${answer}${needText(need)}`;
+              : `Opened task ${t.id} for ${who} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}).${carries(ownImages)} ${answer}${needText(need)}`;
           return { ok: stage !== 'failed', text: said, ticket: row(t), stage, ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(named), from: face(sender) };
         }
         // Into the other bot's home: the user, from a conversation that belongs to no bot.
         if (chosen) throw new Error('`thread` is for opening a task; this message goes to the bot\'s own conversation, so leave it out');
-        await deliver(sender ?? null, named, args.text, sessionId);
-        return { ok: true, text: `Delivered to @${named.handle}. Its answer will arrive as a new message; continue with other work or end your turn.`, to: face(named), from: face(sender) };
+        await deliver(sender ?? null, named, args.text, sessionId, ownImages);
+        return { ok: true, text: `Delivered to @${named.handle}.${carries(ownImages)} Its answer will arrive as a new message; continue with other work or end your turn.`, to: face(named), from: face(sender) };
       },
     }),
     defineTool({
@@ -5849,9 +5919,14 @@ export function apply(ctx, config, deps = {}) {
       post: async (body) => {
         const bot = store.get(String(body.to ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
-        const sent = await userSend(bot, body.text, { replyTo: String(body.replyTo ?? '') });
+        const sent = await userSend(bot, body.text, { replyTo: String(body.replyTo ?? ''), images: imageRefs(body.images) });
         return { ok: true, sessionId: sent.sessionId, ...(sent.message ? { message: sent.message } : {}) };
       },
+    },
+    // An image the person attached in the panel (Bots 0.17), stored before the message that carries it is sent.
+    images: {
+      limit: MAX_IMAGE_UPLOAD,
+      post: async (body) => ({ ok: true, image: imageView(await admitImage(body), R) }),
     },
     avatar: {
       post: (body) => {
@@ -6188,7 +6263,7 @@ export function apply(ctx, config, deps = {}) {
           case 'retry':
             return { ok: true, ...ticketView(await retryTicket(t)) };
           case 'message':
-            return { ok: true, ...ticketView(await appendToTicket(t, body.text, { human: true, force: true })) };
+            return { ok: true, ...ticketView(await appendToTicket(t, body.text, { human: true, force: true, images: imageRefs(body.images) })) };
           default:
             throw new Error('no such route');
         }
@@ -6252,7 +6327,7 @@ export function apply(ctx, config, deps = {}) {
           handler: (req, res) => {
             const url = new URL(req.url ?? '/', 'http://localhost');
             if (req.method === 'GET' && route.get) return serveJson(res, () => route.get(url));
-            if (route.post) return postJson(req, res, route.post);
+            if (route.post) return postJson(req, res, route.post, route.limit);
             res.statusCode = 405;
             res.end();
           },
@@ -6260,10 +6335,38 @@ export function apply(ctx, config, deps = {}) {
       );
     }
     scope.effect(() => web.register({ kind: 'prefix', path: `${R}/avatar`, handler: (req, res) => serveAvatar(dir, req, res) }));
+    scope.effect(() => web.register({ kind: 'prefix', path: `${R}/image`, handler: (req, res) => serveImage(req, res) }));
     scope.effect(() => web.register({ kind: 'prefix', path: `${R}/logo`, handler: (req, res) => serveLogo(req, res) }));
   };
   if (typeof ctx.inject === 'function') ctx.inject(['webServer'], mountRoutes);
   else if (ctx.webServer) mountRoutes({ webServer: ctx.webServer, effect: (fn) => ctx.effect(fn) });
+
+  /**
+   * `${R}/image/<attachment id>`: an image of a message (Bots 0.17), read from Harness's attachment store,
+   * which verifies the bytes against the reference. Only images a message here named are served.
+   */
+  async function serveImage(req, res) {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const ref = images.get(decodeURIComponent(url.pathname.slice(`${R}/image/`.length)));
+    const att = attachmentStore();
+    let data;
+    try {
+      if (!ref || typeof att?.readImage !== 'function') throw new Error('no such image');
+      data = (await att.readImage(ref)).data;
+    } catch {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', ref.mediaType);
+    res.setHeader('content-length', String(data.byteLength));
+    // An attachment never changes under its id.
+    res.setHeader('cache-control', 'private, max-age=31536000, immutable');
+    res.setHeader('x-content-type-options', 'nosniff');
+    if (req.method === 'HEAD') return void res.end();
+    res.end(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+  }
 
   /** For tests: which per-Session records this process still keeps for `sessionId`. */
   const tracked = (sessionId) => ({ trigger: trigger.has(sessionId), answered: answered.has(sessionId), turn: turnState.has(sessionId), delivered: deliveredIds.has(sessionId), history: historyRead.has(sessionId) });
@@ -6333,7 +6436,7 @@ function readSmall(path) {
   }
 }
 
-function postJson(req, res, produce) {
+function postJson(req, res, produce, limit = MAX_BODY) {
   const type = String(req.headers?.['content-type'] ?? '');
   if (req.method !== 'POST' || !/^application\/json\b/i.test(type)) {
     res.statusCode = req.method === 'POST' ? 415 : 405;
@@ -6344,11 +6447,11 @@ function postJson(req, res, produce) {
   let size = 0;
   req.on('data', (chunk) => {
     size += chunk.length;
-    if (size <= 4 * 1024 * 1024) chunks.push(chunk);
+    if (size <= limit) chunks.push(chunk);
   });
   req.on('end', () => {
     serveJson(res, () => {
-      if (size > 4 * 1024 * 1024) return { ok: false, reason: 'request too large' };
+      if (size > limit) return { ok: false, reason: limit > MAX_BODY ? 'the image is too large' : 'request too large' };
       let body;
       try {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');

@@ -508,6 +508,84 @@ test('the panel lists bots, shows the dispatcher and the chat thread, and sends 
   hooks.runCleanups();
 });
 
+test('images (0.17): one attached is stored at once and the message names it; a message shows its images, which open large', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const posts = mockFetch();
+  const base = globalThis.fetch;
+  // The Host stores the image and answers with its id; the page reads the file and previews it.
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/images') && init?.method === 'POST') {
+      const body = JSON.parse(init.body);
+      posts.push({ path: String(url), body });
+      return { ok: true, json: async () => ({ ok: true, image: { id: 'att000000001', url: '/__dsh_bots/image/att000000001', width: 800, height: 600, name: body.name } }) };
+    }
+    return base(url, init);
+  };
+  const saved = { FileReader: globalThis.FileReader, createObjectURL: URL.createObjectURL };
+  globalThis.FileReader = class {
+    readAsDataURL(file) {
+      this.result = `data:${file.type};base64,iVBORw0KGgo=`;
+      setTimeout(() => this.onload?.(), 0);
+    }
+  };
+  URL.createObjectURL = () => 'blob:preview';
+  MESSAGES.push({ id: 'm9', from: 'user', to: 'bot-a', text: '', at: Date.now() - 5_000, kind: 'user', images: [{ id: 'att000000009', url: '/__dsh_bots/image/att000000009', width: 1200, height: 900, name: 'error.png' }] });
+  try {
+    const panel = seen.slots.find((s) => s.options.name === 'main').component;
+    let tree = await renderSettled(panel, {}, hooks);
+    // A message of images alone shows them, without an empty bubble.
+    const [thumb] = findAll(tree, (n) => n.props['data-dsh-bots-msg-image'] === 'att000000009');
+    assert.ok(thumb, 'the image of the message');
+    assert.equal(findAll(thumb, (n) => n.type === 'img')[0].props.src, '/__dsh_bots/image/att000000009');
+    thumb.props.onClick({ stopPropagation() {} });
+    hooks.rewind();
+    tree = panel({});
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-lightbox'] === 'att000000009').length, 1, 'opened large');
+
+    // Attach one: it is stored at once; the send button takes it without words.
+    const file = { name: 'shot.png', type: 'image/png' };
+    const [input] = findAll(tree, (n) => n.props['data-dsh-bots-attach-input'] === 'chat');
+    input.props.onChange({ target: { files: [file, { name: 'notes.txt', type: 'text/plain' }] } });
+    for (let i = 0; i < 3; i += 1) await flush();
+    await new Promise((r) => setTimeout(r, 5));
+    await flush();
+    hooks.rewind();
+    tree = panel({});
+    const upload = posts.find((p) => p.path.endsWith('/images'));
+    assert.deepEqual(upload.body, { mediaType: 'image/png', data: 'data:image/png;base64,iVBORw0KGgo=', name: 'shot.png' });
+    assert.equal(posts.filter((p) => p.path.endsWith('/images')).length, 1, 'only the image');
+    assert.deepEqual(findAll(tree, (n) => n.props['data-dsh-bots-attached-item']).map((n) => n.props['data-dsh-bots-attached-item']), ['ready']);
+    const [sendBtn] = findAll(tree, (n) => n.props['data-dsh-bots-send']);
+    assert.equal(sendBtn.props.disabled, false);
+    sendBtn.props.onClick();
+    await flush();
+    assert.deepEqual(posts.find((p) => p.path.endsWith('/send'))?.body, { to: 'bot-a', text: '', images: ['att000000001'] });
+    hooks.rewind();
+    tree = panel({});
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-attached']).length, 0, 'the composer is clear again');
+
+    // A pasted screenshot is attached too.
+    const [box] = findAll(tree, (n) => n.props['data-dsh-bots-composer']);
+    let prevented = false;
+    box.props.onPaste({ clipboardData: { files: [{ name: 'image.png', type: 'image/png' }] }, preventDefault: () => (prevented = true) });
+    assert.equal(prevented, true);
+    await new Promise((r) => setTimeout(r, 5));
+    await flush();
+    hooks.rewind();
+    tree = panel({});
+    assert.deepEqual(findAll(tree, (n) => n.props['data-dsh-bots-attached-item']).map((n) => n.props['data-dsh-bots-attached-item']), ['ready']);
+    assert.equal(posts.filter((p) => p.path.endsWith('/images')).at(-1).body.name, 'image.png');
+    hooks.runCleanups();
+  } finally {
+    MESSAGES.pop();
+    globalThis.FileReader = saved.FileReader;
+    URL.createObjectURL = saved.createObjectURL;
+    globalThis.fetch = base;
+  }
+});
+
 test('each tab renders: profile, skills, schedules, apps, and the activity view', async () => {
   const { exports, hooks } = await loadClient();
   const { ctx, seen } = fakeContext();
