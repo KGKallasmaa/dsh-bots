@@ -529,7 +529,11 @@ history you forwarded to the bot, the channel reads that from Feishu before the 
 the message you reply to, the start of the chain or the topic's last ten messages, and up to thirty
 forwarded messages (files and images by name). The dispatcher reads them with your message, and the task
 it opens keeps your own words and that context, with the chat's ids for a bot that has the Feishu / Lark
-Open Platform app, so the bot doing the work knows what "this" means. Chat history you forward on its own also goes with
+Open Platform app, so the bot doing the work knows what "this" means. Those messages are often written by people
+you did not pair (colleagues in the group): what they wrote then goes to the bots' model and into `tickets.json`,
+as it would if you pasted it in yourself. It is only read when a paired person's message points at it (a reply, a
+topic, a forward); the permissions are the switch, so leave `im:message:readonly` off to keep it out, and let the
+people in a group with the bot know. Chat history you forward on its own also goes with
 the task you open from your next message ("summarize this"), sent within ten minutes. Without the permissions above
 the message goes on as before, and the Harness log says which permission to add.
 
@@ -697,7 +701,8 @@ permission and restart it.
   LiteLLM price list (downloaded from GitHub weekly), the apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
   Feishu / Lark, Telegram, Slack or Discord API when you connect a chat app (the bots' replies to paired
   people, typing indicators, and the one-line note to strangers; Feishu is also asked for the messages a paired
-  person's message replies to, the topic it is in, or the chat history they forwarded to the bot), and the GitHub API with GitHub Issues (reading the
+  person's message replies to, the topic it is in, or the chat history they forwarded to the bot; those may be other
+  people's words, unpaired ones too, and they go to the bots' model with the request and are kept with its task), and the GitHub API with GitHub Issues (reading the
   watched repositories' labelled issues and comments, and posting the bots' answers as comments).
 
 ## Install
