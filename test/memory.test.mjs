@@ -226,6 +226,22 @@ test('settings default, clamp and save', () => {
   assert.equal(again.memory.dreamTime, '04:30');
 });
 
+test('0.17: settings keep the teams of your own and your words for hired ones; a save replaces them whole', async () => {
+  const { teamIdFor } = await import('../lib/teams.mjs');
+  const s = normalizeSettings({ teams: { 'amazon-us': { name: '  Amazon   US ', tagline: 'Runs it', color: '#10B981', custom: true, at: 5 }, dev: { color: 'green', name: 'Builders' }, nameless: { custom: true }, 'Bad Id': { name: 'x' }, empty: {} } });
+  assert.deepEqual(s.teams, { 'amazon-us': { name: 'Amazon US', tagline: 'Runs it', color: '#10b981', custom: true, at: 5 }, dev: { name: 'Builders' } });
+  const store = createSettings(tmp());
+  store.save({ teams: { a: { name: 'A', custom: true }, b: { name: 'B', custom: true } } });
+  store.save({ teams: { a: { name: 'A', custom: true } } });
+  assert.deepEqual(Object.keys(store.get().teams), ['a']);
+  assert.equal(teamIdFor('Amazon US!', new Set()), 'amazon-us');
+  assert.equal(teamIdFor('Amazon US', new Set(['amazon-us', 'amazon-us-2'])), 'amazon-us-3');
+  assert.equal(teamIdFor('供应链', new Set()), 'team');
+  assert.equal(teamIdFor('供应链', new Set(['team'])), 'team-2');
+  assert.equal(teamIdFor('Café', new Set()), 'cafe');
+  assert.equal(teamIdFor('x', new Set()), 'team-x');
+});
+
 // --- prices and usage ---------------------------------------------------------------------------
 
 test('LiteLLM rows compact to text prices, and lookups try suffixes, overrides and prefixes', () => {

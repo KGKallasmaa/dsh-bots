@@ -341,6 +341,7 @@ function mockFetch(posts = []) {
       const body = JSON.parse(init.body);
       posts.push({ path, body });
       if (path.endsWith('/open')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-a' }) };
+      if (path.endsWith('/teams/create') || path.endsWith('/teams/update')) return { ok: true, json: async () => ({ ok: true, team: { id: body.id ?? 'supply-chain', name: { en: body.name, zh: body.name }, tagline: { en: body.tagline, zh: body.tagline }, color: body.color, custom: true, members: body.members ?? [], lead: body.lead ?? null } }) };
       if (path.endsWith('/teams/hire')) return { ok: true, json: async () => ({ ok: true, team: body.id, bots: [BOTS[1]], dispatcherId: 'bot-a', kickoff: 'Hi, introduce the team.', skipped: [{ bot: 'echo', kind: 'skill', name: 'morning' }] }) };
       if (path.endsWith('/skills/github')) return { ok: true, json: async () => GITHUB };
       if (path.endsWith('/skills/local')) return { ok: true, json: async () => LOCAL };
@@ -1084,6 +1085,67 @@ test('0.16.1: a team folds to one line in the rail (its faces, who is at work, i
   } finally {
     if (before) Object.defineProperty(globalThis, 'localStorage', before);
     else delete globalThis.localStorage;
+  }
+});
+
+test('0.17: teams of your own — the rail shows them in their colour with an edit button, the New menu makes one, the gallery lists them, one of yours is deleted', async () => {
+  const savedTeams = STATE.teams;
+  STATE.teams = [
+    { id: 'opc', name: { en: 'Amazon US', zh: 'Amazon US' }, tagline: { en: 'Runs the store', zh: 'Runs the store' }, color: '#10b981', template: 'opc', renamed: true, members: ['bot-b'], lead: null },
+    { id: 'supply', name: { en: 'Supply', zh: 'Supply' }, tagline: { en: '', zh: '' }, color: '#64748b', custom: true, members: [], lead: null },
+  ];
+  try {
+    await withRoster([BOTS[0], { ...BOTS[1], team: 'opc' }, BOTS[2]], async () => {
+      const v = await mountPanel();
+      // The rail: your name over the template's, its colour, and a team of yours with no bots yet.
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-group']).map((n) => n.props['data-dsh-bots-group']), ['desk', 'opc', 'supply', 'other']);
+      const text = collect(v.tree).join(' ');
+      assert.match(text, /Amazon US/);
+      assert.doesNotMatch(text, /One-person company/);
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-group-color'] === '#10b981').length, 1);
+      // Renamed from the rail; a hired team has no Delete.
+      click(v.tree, 'data-dsh-bots-team-edit', 'opc');
+      await v.rerender();
+      const nameField = () => findAll(v.tree, (n) => n.props['data-dsh-bots-field'] === 'team-name')[0];
+      assert.equal(nameField().props.value, 'Amazon US');
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-team-delete']).length, 0);
+      nameField().props.onChange({ target: { value: 'Amazon US store' } });
+      await v.rerender();
+      click(v.tree, 'data-dsh-bots-team-save', 'opc');
+      await v.rerender();
+      assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/update')).body, { id: 'opc', name: 'Amazon US store', tagline: 'Runs the store', color: '#10b981' });
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-team-save']).length, 0, 'closed once saved');
+      // A new team from the New menu: its name, a bot in it, and that bot as its lead.
+      click(v.tree, 'data-dsh-bots-new');
+      await v.rerender();
+      findAll(v.tree, (n) => n.props.role === 'menuitem' && collect(n).join(' ').includes('New team'))[0].props.onClick();
+      await v.rerender();
+      nameField().props.onChange({ target: { value: 'Supply chain' } });
+      await v.rerender();
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-team-member']).map((n) => n.props['data-dsh-bots-team-member']), ['bot-b', 'bot-c'], 'never the dispatcher');
+      findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-team-member'] === 'bot-c')[0], (n) => n.props.type === 'checkbox')[0].props.onChange();
+      await v.rerender();
+      findAll(v.tree, (n) => n.props['data-dsh-bots-team-lead'])[0].props.onChange({ target: { value: 'bot-c' } });
+      click(v.tree, 'data-dsh-bots-team-color', '#ef4444');
+      await v.rerender();
+      click(v.tree, 'data-dsh-bots-team-save', 'new');
+      await v.rerender();
+      assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/create')).body, { name: 'Supply chain', tagline: '', color: '#ef4444', members: ['bot-c'], lead: 'bot-c' });
+      // The gallery lists your teams above the templates; one of yours is deleted after a confirmation.
+      click(v.tree, 'data-dsh-bots-teams-entry');
+      await v.rerender();
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-your-team']).map((n) => n.props['data-dsh-bots-your-team']), ['opc', 'supply']);
+      click(v.tree, 'data-dsh-bots-your-team-edit', 'supply');
+      await v.rerender();
+      click(v.tree, 'data-dsh-bots-team-delete', 'supply');
+      await v.rerender();
+      confirmButton(v.tree).props.onClick();
+      await v.rerender();
+      assert.deepEqual(v.posts.find((p) => p.path.endsWith('/teams/delete')).body, { id: 'supply' });
+      v.hooks.runCleanups();
+    });
+  } finally {
+    STATE.teams = savedTeams;
   }
 });
 

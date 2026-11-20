@@ -40,7 +40,7 @@ import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SK
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
 import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
-import { ADDED_LEADS, OLD_LEADS, TEAMS, namesBot, teamTiming, teamView } from './lib/teams.mjs';
+import { ADDED_LEADS, OLD_LEADS, TEAMS, namesBot, ownTeamView, teamIdFor, teamTiming, teamView } from './lib/teams.mjs';
 import { deskTasksOfLead, planLeadMigration, planTeamMigration } from './lib/team-migration.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
@@ -48,7 +48,7 @@ import { isLogoName, withLogo } from './lib/logos.mjs';
 import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, turnFailedText, unmaskApps } from './lib/channels.mjs';
 import { clipLine, createActivity, scrub } from './lib/activity.mjs';
 import { describeTiming, dmBody, dmHeader, isNoReply, NO_REPLY, noWaitReason, personaText, reportsGoDirect, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
-import { createSettings } from './lib/settings.mjs';
+import { MAX_TEAMS, createSettings, normalizeTeamMeta } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
 import { createLedger, promptTokens, report, ticketUsage, todayByBot, usageRow } from './lib/usage.mjs';
 import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
@@ -62,9 +62,6 @@ import { createTopics, rotationReason } from './lib/topics.mjs';
 import { createImages, IMAGE_TYPES, idList, imageId, imageNoteText, imageView, MAX_MESSAGE_IMAGES, refsInContent } from './lib/images.mjs';
 import { chatMessageRef, createDiscussions, forkPoint, messageRef, seqByTime } from './lib/discussions.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
-
-/** Team id → English name, for the roster bots read. */
-const TEAM_NAMES = Object.freeze(Object.fromEntries(TEAMS.map((t) => [t.id, t.name.en])));
 
 /**
  * Import one Harness package: by bare name when this directory resolves it,
@@ -512,7 +509,7 @@ export function apply(ctx, config, deps = {}) {
               const roster = store.list();
               const ticket = ticketId ? tickets.get(ticketId) : undefined;
               return now
-                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, teamNames: TEAM_NAMES, ...projectsForPersona(ticket), ...(ticket ? { ticket } : {}) })
+                ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster), dispatcher: routerActive() ? 'router' : 'hands-on', tickets: true, teamNames: teamNamesForPrompt(), ...projectsForPersona(ticket), ...(ticket ? { ticket } : {}) })
                 : '';
             },
           }),
@@ -4354,7 +4351,7 @@ export function apply(ctx, config, deps = {}) {
           const ts = tasks.filter((t) => t.botId === b.id).map((t) => `${t.title} (${t.describe}${t.status !== 'active' ? `, ${t.status}` : ''})`);
           const open = tickets.list({ botId: b.id, open: true }).length;
           // Its team (0.16), by id and name, as bot_create and bot_update take it.
-          const team = b.team && b.role !== 'primary' ? TEAMS.find((x) => x.id === b.team) : undefined;
+          const team = b.team && b.role !== 'primary' ? teamsHere().find((x) => x.id === b.team) : undefined;
           const on = team ? `, team ${team.id} (${team.name.en})${b.lead ? ', lead' : ''}` : '';
           return [`${card(b)} [${botStatus(b)}${on}${open ? `, ${open} open task${open === 1 ? '' : 's'}` : ''}]${b.bio ? `: ${b.bio}` : ''}`, sk.length ? `  skills: ${sk.join(', ')}` : '', ap.length ? `  apps: ${ap.join(', ')}` : '', ts.length ? `  scheduled: ${ts.join('; ')}` : ''].filter(Boolean).join('\n');
         });
@@ -4373,7 +4370,7 @@ export function apply(ctx, config, deps = {}) {
         color: { type: 'string', description: 'Avatar background colour, CSS hex.' },
         ...AVATAR_PARAMS,
         skills: { ...skillInput, description: 'Skills to give it.' },
-        team: { type: 'string', description: 'A hired team it joins (its id or name, as bot_list shows them); leave it out for none. Its work then comes through the team\'s lead, if it has one.' },
+        team: { type: 'string', description: 'A team it joins (its id or name, as bot_list shows them: a hired one or one the person made); leave it out for none. Its work then comes through the team\'s lead, if it has one.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bot: v.bot }) },
       execute: async (args, exec) => {
@@ -4412,7 +4409,7 @@ export function apply(ctx, config, deps = {}) {
         add_skills: { ...skillInput, description: `Skills to add (a skill with the same name is replaced). At most ${MAX_SKILLS_ON} can be on at once; past that they are added switched off.` },
         remove_skills: { type: 'array', items: { type: 'string' }, description: 'Names of skills to remove.' },
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
-        team: { type: 'string', description: "Move it to a hired team (its id or name), or 'none' to take it out of its team. A lead that moves no longer leads." },
+        team: { type: 'string', description: "Move it to a team here (its id or name, as bot_list shows them), or 'none' to take it out of its team. A lead that moves no longer leads." },
         lead: { type: 'boolean', description: "Only for a bot that is part of a team: true to make it the team's lead (the dispatcher hands the team's work to it, and it brings in its teammates), false to take that away (the dispatcher then hands each member its work)." },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => lossless({ bot: v.bot }) },
@@ -4599,7 +4596,7 @@ export function apply(ctx, config, deps = {}) {
         if (routing) {
           const lead = leadOf(named);
           if (lead && lead.id !== named.id && !turnAsks.some((a) => namesBot(a.text, named))) {
-            throw new Error(`@${named.handle} is on ${TEAM_NAMES[named.team] ?? named.team}, which @${lead.handle} leads: hand the team's work to @${lead.handle}, which plans it and brings in @${named.handle} and the others when they are needed. Hand it to @${named.handle} directly only when the person names @${named.handle} themselves.`);
+            throw new Error(`@${named.handle} is on ${teamNamesNow()[named.team] ?? named.team}, which @${lead.handle} leads: hand the team's work to @${lead.handle}, which plans it and brings in @${named.handle} and the others when they are needed. Hand it to @${named.handle} directly only when the person names @${named.handle} themselves.`);
           }
         }
 
@@ -5431,6 +5428,8 @@ export function apply(ctx, config, deps = {}) {
       oldLeads: s.leadNotice === 'dismissed' ? [] : oldLeads().map((b) => ({ id: b.id, name: b.name, handle: b.handle, team: b.team })),
       // Teams hired before their template had a lead of its own (0.16): offered once.
       leadOffers: leadOffers().map(leadOfferView),
+      // The teams here (Bots 0.17): hired template teams and the person's own, with their own names.
+      teams: teamsHere(),
       // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
       attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
       asks: waiting.sort((a, b) => a.at - b.at).map(askView),
@@ -5554,19 +5553,142 @@ export function apply(ctx, config, deps = {}) {
     return { ...plan, leads };
   }
 
-  /** Teams hired here: a team template one of whose bots, not the dispatcher, belongs to it. */
-  const hiredTeams = () => TEAMS.filter((t) => store.list().some((b) => b.team === t.id && b.role !== 'primary'));
+  // --- teams here (Bots 0.17): hired template teams, and teams of the person's own ----------------
+  const teamMetas = () => settings.get().teams ?? {};
+  const templateOf = (id) => TEAMS.find((t) => t.id === id);
+  /**
+   * The teams here: a template team one of whose bots, not the dispatcher, belongs to it (hired), then the
+   * teams the person made (with or without bots yet), each with the person's own name, description and
+   * colour over the template's (`ownTeamView`).
+   */
+  function teamsHere() {
+    const metas = teamMetas();
+    const bots = store.list();
+    const members = (id) => bots.filter((b) => b.team === id && b.role !== 'primary');
+    const out = [];
+    for (const t of TEAMS) {
+      const m = members(t.id);
+      if (m.length) out.push(ownTeamView(t.id, t, metas[t.id], m));
+    }
+    for (const [id, meta] of Object.entries(metas)) if (meta.custom && !templateOf(id)) out.push(ownTeamView(id, null, meta, members(id)));
+    return out;
+  }
+  /** Team id → its name as the bots read it: the person's own, else the template's English one. */
+  function teamNamesNow() {
+    const out = Object.fromEntries(TEAMS.map((t) => [t.id, t.name.en]));
+    for (const [id, meta] of Object.entries(teamMetas())) if (meta.name && (meta.custom || templateOf(id))) out[id] = meta.name;
+    return out;
+  }
+  /** The names the roster in a bot's prompt groups bots under, with the description the person wrote for a team, if any. */
+  function teamNamesForPrompt() {
+    const out = teamNamesNow();
+    for (const [id, meta] of Object.entries(teamMetas())) if (meta.tagline && out[id]) out[id] = `${out[id]} (${meta.tagline.replace(/\s+/g, ' ')})`;
+    return out;
+  }
   /**
    * The team a bot is put in (Bots 0.16), from its id or its name in either language (any case): '' for none.
-   * Only a hired team, and never for the dispatcher, which hands out the work of all of them.
+   * Only a team here (hired, or made by the person: 0.17), and never for the dispatcher, which hands out the work of all of them.
    */
   function teamArg(value, { primary = false } = {}) {
     const v = String(value ?? '').trim().toLowerCase();
     if (!v || v === 'none') return '';
     if (primary) throw new Error('the dispatcher belongs to no team: it hands out the work of all of them');
-    const team = TEAMS.find((t) => t.id === v || [t.name.en, t.name.zh].some((n) => String(n).toLowerCase() === v));
-    if (!team || !hiredTeams().includes(team)) throw new Error(`no team "${value}" is hired here${hiredTeams().length ? `; the teams are ${hiredTeams().map((t) => `${t.id} (${t.name.en})`).join(', ')}` : ''}`);
+    const here = teamsHere();
+    const names = (t) => [t.name.en, t.name.zh, templateOf(t.id)?.name.en, templateOf(t.id)?.name.zh].filter(Boolean).map((n) => String(n).toLowerCase());
+    const team = here.find((t) => t.id === v) ?? here.find((t) => names(t).includes(v));
+    if (!team) throw new Error(`no team "${value}" is hired or made here${here.length ? `; the teams are ${here.map((t) => `${t.id} (${t.name.en})`).join(', ')}` : ''}. A new team is made in the panel (Bots → Teams)`);
     return team.id;
+  }
+  /** One team here by id, or an error naming it. */
+  function teamHere(id) {
+    const team = teamsHere().find((t) => t.id === String(id ?? ''));
+    if (!team) throw new Error(`no team "${id}" here`);
+    return team;
+  }
+  /** The bots `list` names (ids or @handles), for a team: the dispatcher belongs to none. */
+  function teamMembersArg(list) {
+    if (list === undefined || list === null) return [];
+    if (!Array.isArray(list)) throw new Error('`members` is a list of bot ids or handles');
+    return [...new Set(list.map((x) => resolve(String(x)).id))].map((id) => {
+      const b = store.get(id);
+      if (b.role === 'primary') throw new Error('the dispatcher belongs to no team: it hands out the work of all of them');
+      return b;
+    });
+  }
+  /** Settings' own words for team `id`, merged with `fields` (an empty string drops one); null drops them all. */
+  function saveTeamMeta(id, fields) {
+    const metas = { ...teamMetas() };
+    if (fields === null) delete metas[id];
+    else {
+      const next = { ...(metas[id] ?? {}) };
+      for (const k of ['name', 'tagline', 'color']) {
+        if (fields[k] === undefined) continue;
+        const v = String(fields[k] ?? '').trim();
+        if (v) next[k] = v;
+        else delete next[k];
+      }
+      if (fields.custom) next.custom = true;
+      next.at ??= nowMs();
+      const meta = normalizeTeamMeta(next);
+      if (meta) metas[id] = meta;
+      else delete metas[id];
+    }
+    // The bots read the roster with its team names as their next step's prompt is assembled.
+    settings.save({ teams: metas });
+  }
+  /** What a team route gets of a name, description (`tagline`, or `description`) and colour: strings, checked. */
+  function teamFields(body, { custom }) {
+    const out = {};
+    for (const k of ['name', 'tagline', 'color']) if (body?.[k] !== undefined && body[k] !== null) out[k] = String(body[k]).trim();
+    if (body?.description !== undefined && body.description !== null && out.tagline === undefined) out.tagline = String(body.description).trim();
+    if (out.color && !/^#[0-9a-f]{6}$/i.test(out.color)) throw new Error('`color` is a CSS hex colour like #3b82f6');
+    if (custom && out.name !== undefined && !out.name) throw new Error('a team of your own needs a name');
+    return out;
+  }
+  /** Whether another team here than `id` is called `name` (either language, any case). */
+  const nameTaken = (name, id = '') => {
+    const lower = String(name).toLowerCase();
+    return teamsHere().some((t) => t.id !== id && [t.name.en, t.name.zh].some((n) => String(n).toLowerCase() === lower));
+  };
+  /**
+   * A team of the person's own (Bots 0.17): a name, a description, a colour, and the bots it starts with
+   * (`members`; `lead`, one of them, leads it). Bots already in a team move to it.
+   */
+  function createTeam(body) {
+    const fields = teamFields(body, { custom: true });
+    if (!fields.name) throw new Error('a team of your own needs a name');
+    const metas = teamMetas();
+    if (Object.values(metas).filter((m) => m.custom).length >= MAX_TEAMS) throw new Error(`at most ${MAX_TEAMS} teams`);
+    if (nameTaken(fields.name)) throw new Error(`a team here is called "${fields.name}" already`);
+    const members = teamMembersArg(body?.members);
+    const leadId = body?.lead ? resolve(String(body.lead)).id : '';
+    if (leadId && !members.some((b) => b.id === leadId)) throw new Error('`lead` must be one of `members`');
+    const id = teamIdFor(fields.name, new Set([...TEAMS.map((t) => t.id), ...Object.keys(metas), ...store.list().map((b) => b.team).filter(Boolean)]));
+    saveTeamMeta(id, { ...fields, custom: true });
+    for (const b of members) store.save({ id: b.id, team: id, ...(b.id === leadId ? { lead: true } : {}) });
+    return teamHere(id);
+  }
+  /** A team's name, description or colour (Bots 0.17); for a hired template team an empty value goes back to the template's. */
+  function updateTeam(body) {
+    const team = teamHere(body?.id);
+    const fields = teamFields(body, { custom: Boolean(team.custom) });
+    if (fields.name && nameTaken(fields.name, team.id)) throw new Error(`a team here is called "${fields.name}" already`);
+    saveTeamMeta(team.id, fields);
+    return teamHere(team.id);
+  }
+  /**
+   * A team of the person's own goes (Bots 0.17): its bots stay, in no team (its lead no longer leads).
+   * A hired template team is not deleted: its bots leave it one by one, and `teams/update` with empty
+   * values gives it back the template's name. Returns the ids of the bots that were in it.
+   */
+  function deleteTeam(body) {
+    const id = String(body?.id ?? '');
+    if (templateOf(id)) throw new Error("a hired team is not deleted: move its bots out of it, or give it back the template's name");
+    if (!teamMetas()[id]?.custom) throw new Error(`no team "${id}" here`);
+    const unteamed = store.list().filter((b) => b.team === id);
+    for (const b of unteamed) store.save({ id: b.id, team: '' });
+    saveTeamMeta(id, null);
+    return unteamed.map((b) => b.id);
   }
 
   /** The bot that leads `bot`'s team (Bots 0.15; itself when it leads), or null for a team without one (its lead removed) or a bot of no team. */
@@ -5761,8 +5883,21 @@ export function apply(ctx, config, deps = {}) {
     },
     'teams/hire': {
       post: async (body) => {
+        // The person's own name, description or colour for it, given with the hire (Bots 0.17): checked before anything is made.
+        const own = teamFields(body, { custom: false });
+        const named = Object.values(own).some(Boolean);
         const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en');
-        return { ok: true, ...r, bots: r.bots.map(publicBot) };
+        if (named) saveTeamMeta(r.team, own);
+        return { ok: true, ...r, bots: r.bots.map(publicBot), ...(named ? { teamView: teamHere(r.team) } : {}) };
+      },
+    },
+    // Teams of the person's own (Bots 0.17), and their own words for a hired one.
+    'teams/create': { post: (body) => ({ ok: true, team: createTeam(body ?? {}), teams: teamsHere() }) },
+    'teams/update': { post: (body) => ({ ok: true, team: updateTeam(body ?? {}), teams: teamsHere() }) },
+    'teams/delete': {
+      post: (body) => {
+        const unteamed = deleteTeam(body ?? {});
+        return { ok: true, unteamed, teams: teamsHere() };
       },
     },
     // A team hired before its template had a lead (0.16): the lead joins it, or the offer goes away.
@@ -6011,6 +6146,8 @@ export function apply(ctx, config, deps = {}) {
         const patch = body.patch && typeof body.patch === 'object' ? { ...body.patch } : {};
         delete patch.codex;
         delete patch.prices;
+        // Teams change through their own routes (Bots 0.17).
+        delete patch.teams;
         // The dispatcher always routes (0.11): there is no mode to pick.
         delete patch.dispatcher;
         const saved = settings.save(patch);

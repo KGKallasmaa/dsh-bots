@@ -478,14 +478,14 @@ test('0.16: a bot is put in a hired team when it is made, moved later, and a lea
   const made = api.routes.save.post({ bot: { name: 'Pulse', handle: 'pulse', team: 'opc' } });
   assert.equal(made.ok, true);
   assert.equal(api.store.get(made.bot.id).team, 'opc');
-  assert.match(api.routes.save.post({ bot: { name: 'Nope', handle: 'nope', team: 'dev' } }).reason, /no team "dev" is hired here; the teams are opc \(One-person company\), research \(Research desk\)/);
+  assert.match(api.routes.save.post({ bot: { name: 'Nope', handle: 'nope', team: 'dev' } }).reason, /no team "dev" is hired or made here; the teams are opc \(One-person company\), research \(Research desk\)/);
   assert.match(api.routes.save.post({ bot: { id: api.store.primary().id, team: 'opc' } }).reason, /the dispatcher belongs to no team/);
   // A tool names the team by id or by name, in either language.
   const sid = api.store.primary().sessionId;
   const quill = await call('bot_create', { name: 'Brief', handle: 'brief', team: '研究台' }, sid);
   assert.equal(api.store.find('brief').team, 'research');
   void quill;
-  await assert.rejects(call('bot_create', { name: 'X', team: 'nowhere' }, sid), /no team "nowhere" is hired here/);
+  await assert.rejects(call('bot_create', { name: 'X', team: 'nowhere' }, sid), /no team "nowhere" is hired or made here/);
   const listed = await call('bot_list', {}, sid);
   assert.match(listed.text, /@brief — Brief \[[a-z]+, team research \(Research desk\)\]/);
   assert.match(listed.text, /@memo — Memo[^\n]*team research \(Research desk\), lead/);
@@ -505,6 +505,67 @@ test('0.16: a bot is put in a hired team when it is made, moved later, and a lea
   api.routes.save.post({ bot: { id: memo.id, team: 'research', lead: true } });
   assert.equal(api.store.get(memo.id).lead, true);
   for (const h of ['pulse', 'brief']) await api.routes.delete.post({ id: api.store.find(h).id });
+});
+
+test('0.17: a team of your own is made with its bots and lead, named by tools and the roster, renamed and deleted; a hired team takes your own name', async () => {
+  const sid = api.store.primary().sessionId;
+  const ops = api.routes.save.post({ bot: { name: 'Ops', handle: 'us-ops' } }).bot;
+  const sourcing = api.routes.save.post({ bot: { name: 'Sourcing', handle: 'us-sourcing' } }).bot;
+  const made = api.routes['teams/create'].post({ name: 'Amazon US', tagline: 'Runs the US store', color: '#10B981', members: [ops.id, '@us-sourcing'], lead: ops.id });
+  assert.equal(made.ok, true);
+  const team = made.team;
+  assert.equal(team.id, 'amazon-us');
+  assert.deepEqual([team.name, team.tagline.en, team.color, team.custom, team.lead, team.members], [{ en: 'Amazon US', zh: 'Amazon US' }, 'Runs the US store', '#10b981', true, ops.id, [ops.id, sourcing.id]]);
+  assert.deepEqual([api.store.get(ops.id).team, api.store.get(ops.id).lead, api.store.get(sourcing.id).team], ['amazon-us', true, 'amazon-us']);
+  assert.ok(api.state().teams.some((t) => t.id === 'amazon-us' && t.custom));
+  // Refused: a name taken (any case), none at all, the dispatcher as a member, a lead from outside.
+  assert.throws(() => api.routes['teams/create'].post({ name: 'amazon us' }), /called "amazon us" already/);
+  assert.throws(() => api.routes['teams/create'].post({ name: ' ' }), /needs a name/);
+  assert.throws(() => api.routes['teams/create'].post({ name: 'X', members: [api.store.primary().id] }), /dispatcher belongs to no team/);
+  assert.throws(() => api.routes['teams/create'].post({ name: 'X', members: [ops.id], lead: sourcing.id }), /`lead` must be one of `members`/);
+  assert.throws(() => api.routes['teams/create'].post({ name: 'X', color: 'green' }), /CSS hex colour/);
+  // A team with no bots yet is a team too; a name with no Latin letters gets an id of its own.
+  const empty = api.routes['teams/create'].post({ name: '供应链' }).team;
+  assert.match(empty.id, /^team(-\d+)?$/);
+  assert.deepEqual(empty.members, []);
+  // Tools put a bot in it by id or name; bot_list and the dispatcher's roster name it, with its description.
+  await call('bot_update', { bot: '@us-sourcing', team: '供应链' }, sid);
+  assert.equal(api.store.get(sourcing.id).team, empty.id);
+  await call('bot_update', { bot: '@us-sourcing', team: 'amazon-us' }, sid);
+  const listed = await call('bot_list', {}, sid);
+  assert.match(listed.text, /@us-ops — Ops[^\n]*team amazon-us \(Amazon US\), lead/);
+  const roster = () => h.agentsById.get(sid).sections.get('bots:persona').text();
+  assert.match(roster(), /- Amazon US \(Runs the US store\), led by @us-ops:/);
+  // Its lead gets its work, as in a hired team: the dispatcher may not hand it past the lead.
+  await assert.rejects(call('bot_send_message', { to: '@us-sourcing', text: 'Find a supplier for mugs', need: 'Mugs' }, sid), /@us-sourcing is on Amazon US, which @us-ops leads/);
+  // Renamed: the bots read the new name at their next step.
+  const renamed = api.routes['teams/update'].post({ id: 'amazon-us', name: 'Amazon US store', color: '#3b82f6' }).team;
+  assert.deepEqual([renamed.name.en, renamed.tagline.en, renamed.color], ['Amazon US store', 'Runs the US store', '#3b82f6']);
+  assert.match(roster(), /- Amazon US store \(Runs the US store\), led by @us-ops:/);
+  assert.throws(() => api.routes['teams/update'].post({ id: 'amazon-us', name: '' }), /needs a name/);
+  assert.throws(() => api.routes['teams/update'].post({ id: 'amazon-us', name: '供应链' }), /called "供应链" already/);
+  assert.throws(() => api.routes['teams/update'].post({ id: 'nowhere', name: 'x' }), /no team "nowhere" here/);
+  // A hired team takes your own name and description over the template's; empty values give the template's back.
+  const research = api.routes['teams/update'].post({ id: 'research', name: 'Market intel', description: 'Watches competitors' }).team;
+  assert.deepEqual([research.name.en, research.tagline.en, research.template, research.renamed], ['Market intel', 'Watches competitors', 'research', true]);
+  assert.match((await call('bot_list', {}, sid)).text, /team research \(Market intel\)/);
+  await call('bot_update', { bot: '@us-ops', team: 'Market intel' }, sid);
+  assert.equal(api.store.get(ops.id).team, 'research');
+  await call('bot_update', { bot: '@us-ops', team: 'Amazon US store', lead: true }, sid);
+  assert.throws(() => api.routes['teams/delete'].post({ id: 'research' }), /a hired team is not deleted/);
+  const back = api.routes['teams/update'].post({ id: 'research', name: '', tagline: '' }).team;
+  assert.deepEqual([back.name.en, back.renamed], ['Research desk', undefined]);
+  // The settings route does not touch teams.
+  api.routes.settings.post({ patch: { teams: {} } });
+  assert.ok(api.state().teams.some((t) => t.id === 'amazon-us'));
+  // Deleted: its bots stay, in no team, and the lead no longer leads.
+  const gone = api.routes['teams/delete'].post({ id: 'amazon-us' });
+  assert.deepEqual(gone.unteamed.sort(), [ops.id, sourcing.id].sort());
+  assert.deepEqual([api.store.get(ops.id).team, api.store.get(ops.id).lead, api.store.get(sourcing.id).team], [undefined, undefined, undefined]);
+  assert.ok(!api.state().teams.some((t) => t.id === 'amazon-us'));
+  assert.throws(() => api.routes['teams/delete'].post({ id: 'amazon-us' }), /no team "amazon-us" here/);
+  api.routes['teams/delete'].post({ id: empty.id });
+  for (const b of [ops, sourcing]) await api.routes.delete.post({ id: b.id });
 });
 
 test('external MCP servers are found in Codex and Claude configs', async () => {

@@ -339,10 +339,21 @@ window.__ModuleLoader__.load({
     }
     const teamsOf = () => (Array.isArray(store.teams) ? store.teams : []);
     const botsOf = () => (Array.isArray(store.state?.bots) ? store.state.bots : []);
-    /** The teams hired here (Bots 0.16), with `also` (a bot's own team) kept in: `{id, name}` in `lang`, in the order they were hired. */
+    /**
+     * The teams here (Bots 0.17) as the Host lists them in the state: hired template teams and the person's own,
+     * with the person's own names and colours. Null from a Host before 0.17.
+     */
+    const teamsHereOf = () => (Array.isArray(store.state?.teams) ? store.state.teams : null);
+    const teamOf = (id) => teamsHereOf()?.find((x) => x.id === id) ?? teamsOf().find((x) => x.id === id) ?? null;
+    /** A team's name in `lang`: the person's own, else its template's, else its id. */
+    const teamNameOf = (id, lang) => (teamOf(id) ? pick(teamOf(id).name, lang) || id : id);
+    /** The teams a bot may join (Bots 0.16; the person's own too, 0.17), with `also` (a bot's own team) kept in: `{id, name}` in `lang`. */
     const hiredTeamsOf = (lang, also = '') => {
-      const ids = [...new Set([...botsOf().filter((b) => b.team && b.role !== 'primary').map((b) => b.team), ...(also ? [also] : [])])];
-      return ids.map((id) => ({ id, name: pick(teamsOf().find((x) => x.id === id)?.name ?? id, lang) }));
+      const here = teamsHereOf();
+      const ids = here
+        ? [...here.map((x) => x.id), ...(also && !here.some((x) => x.id === also) ? [also] : [])]
+        : [...new Set([...botsOf().filter((b) => b.team && b.role !== 'primary').map((b) => b.team), ...(also ? [also] : [])])];
+      return ids.map((id) => ({ id, name: teamNameOf(id, lang) }));
     };
     /** The team a bot is in (Bots 0.16): none, or one of the hired teams. */
     const TeamSelect = ({ t, value, teams, onChange, attr }) =>
@@ -701,6 +712,9 @@ select.dshb-input{padding-right:6px}
 .dshb-row[data-active=true]{background:${tint(C.label, 13)}}
 .dshb-navtile{padding:7px 9px;gap:7px;border-radius:8px;font-size:${SMALL}}
 .dshb-grouphead:hover{background:${C.hover};color:${C.muted}}
+.dshb-groupedit{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:2px;border:none;border-radius:6px;background:transparent;color:${C.faint};cursor:pointer;opacity:0;transition:opacity .1s}
+.dshb-grouprow:hover .dshb-groupedit,.dshb-groupedit:focus-visible{opacity:1}
+.dshb-groupedit:hover{background:${C.hover};color:${C.primary}}
 .dshb-tab{position:relative;height:38px;padding:0 2px;margin-right:18px;border:none;background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};font-weight:600;cursor:pointer}
 .dshb-tab:hover{color:${C.primary}}
 .dshb-tab[data-active=true]{color:${C.primary}}
@@ -1195,7 +1209,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
      * it belongs to no team, it hands out the work of all of them. Null when no bot has a team.
      */
     function groupByTeam(t, lang, bots) {
-      if (!bots.some((b) => b.team)) return null;
+      const own = (teamsHereOf() ?? []).filter((x) => x.custom);
+      if (!bots.some((b) => b.team) && !own.length) return null;
       const groups = [];
       for (const b of bots) {
         const id = b.role === 'primary' ? 'desk' : b.team || '';
@@ -1203,16 +1218,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         if (!g) groups.push((g = { id, bots: [] }));
         g.bots.push(b);
       }
+      // A team of your own with no bots yet shows too, so it can be found and filled (Bots 0.17).
+      for (const x of own) if (!groups.some((g) => g.id === x.id)) groups.push({ id: x.id, bots: [] });
       const label = (id) => {
         if (id === 'desk') return t('dispatcher');
         if (!id) return t('otherBots');
-        const team = teamsOf().find((x) => x.id === id);
-        return team ? pick(team.name, lang) : id;
+        return teamNameOf(id, lang);
       };
       const rank = (g) => (g.id === 'desk' ? 0 : g.id === '' ? 2 : 1);
       // A team's lead comes first in it (Bots 0.16); the others keep their order.
       const leadFirst = (list) => [...list.filter((b) => b.lead), ...list.filter((b) => !b.lead)];
-      return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, bots: leadFirst(g.bots), label: label(g.id) }));
+      return groups.sort((a, b) => rank(a) - rank(b)).map((g) => ({ ...g, bots: leadFirst(g.bots), label: label(g.id), ...(g.id && g.id !== 'desk' ? { team: true, color: str(teamOf(g.id)?.color) } : {}) }));
     }
 
     /** The tag of a team's lead (Bots 0.15): the dispatcher hands the team's work to it. */
@@ -1250,7 +1266,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         h('span', { style: { flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
         badge > 0 ? h(NeedsBadge, { n: badge, label: badgeLabel, attr: badgeAttr }) : count > 0 ? h('span', { 'data-dsh-bots-nav-count': count, style: { flex: 'none', fontSize: TINY, color: C.muted, fontVariantNumeric: 'tabular-nums' } }, count > 99 ? '99+' : String(count)) : null,
       );
-    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0, onNeeds, needCounts = {} }) {
+    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onNewTeam, onEditTeam, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0, onNeeds, needCounts = {} }) {
       const needsWaiting = Number(needCounts?.waiting) || 0;
       const needsWorking = Number(needCounts?.working) || 0;
       const lang = langOf(t);
@@ -1328,6 +1344,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   items: [
                     { id: 'blank', label: t('blankBot'), icon: Icon.plus(13), run: onNew },
                     { id: 'team', label: t('fromTeam'), icon: Icon.team(13), run: onTeams },
+                    // A team of your own (Bots 0.17).
+                    ...(onNewTeam ? [{ id: 'newteam', label: t('newTeam'), icon: Icon.layers(13), run: onNewTeam }] : []),
                   ],
                 })
               : null,
@@ -1356,6 +1374,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                   const busy = isFolded ? g.bots.filter((b) => liveOf(b).status === 'running').length : 0;
                   const label = [
                     foldable ? h('span', { key: 'c', style: { display: 'inline-flex', flex: 'none', transform: isFolded ? 'rotate(-90deg)' : 'none', transition: 'transform .12s' } }, Icon.chevron(11)) : null,
+                    // A team's own colour (Bots 0.17).
+                    g.color ? h('span', { key: 'd', 'data-dsh-bots-group-color': g.color, style: { width: 7, height: 7, borderRadius: '50%', background: g.color, flex: 'none' } }) : null,
                     h('span', { key: 'l', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, g.label),
                     h('span', { key: 'n', style: { fontWeight: 500, flex: 'none' } }, g.bots.length),
                     h('span', { key: 's', style: { flex: 1 } }),
@@ -1376,7 +1396,13 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                     'div',
                     { key: g.id || '-', 'data-dsh-bots-group': id, 'data-folded': isFolded || undefined, style: { display: 'flex', flexDirection: 'column', gap: 2 } },
                     foldable
-                      ? h('button', { type: 'button', className: 'dshb-grouphead', 'data-dsh-bots-group-toggle': id, 'aria-expanded': !isFolded, title: isFolded ? t('groupUnfold') : t('groupFold'), onClick: () => fold(id), style: { ...headStyle, border: 'none', background: 'transparent', font: 'inherit', textAlign: 'left', cursor: 'pointer', borderRadius: 8 } }, label)
+                      ? h(
+                          'div',
+                          { className: 'dshb-grouprow', style: { display: 'flex', alignItems: 'center', minWidth: 0 } },
+                          h('button', { type: 'button', className: 'dshb-grouphead', 'data-dsh-bots-group-toggle': id, 'aria-expanded': !isFolded, title: isFolded ? t('groupUnfold') : t('groupFold'), onClick: () => fold(id), style: { ...headStyle, flex: 1, minWidth: 0, border: 'none', background: 'transparent', font: 'inherit', textAlign: 'left', cursor: 'pointer', borderRadius: 8 } }, label),
+                          // A team's name, description and colour are yours to change (Bots 0.17).
+                          g.team && onEditTeam ? h('button', { type: 'button', className: 'dshb-groupedit', 'data-dsh-bots-team-edit': g.id, title: t('editTeam'), 'aria-label': t('editTeam'), onClick: () => onEditTeam(g.id) }, Icon.edit(12)) : null,
+                        )
                       : h('div', { style: headStyle }, label),
                     rows.map(row),
                   );
@@ -5262,7 +5288,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const routerBlocked = (names) => names.filter((x) => routerDeny.has(x) && !routerAllow.has(x));
       const inEffect = routing ? new Set([...draft.deny, ...routerBlocked([...routerDeny])]) : denied;
       const botLabel = draft.name || bot.name;
-      const teamLabel = draft.team ? pick(teamsOf().find((x) => x.id === draft.team)?.name ?? draft.team, lang) : '';
+      const teamLabel = draft.team ? teamNameOf(draft.team, lang) : '';
       const otherLead = draft.team ? botsOf().find((b) => b.id !== bot.id && b.team === draft.team && b.lead) : null;
       // The teams it may join (Bots 0.16); none to show while nothing is hired and it is in no team.
       const teamChoices = isPrimary ? [] : hiredTeamsOf(lang, str(bot.team));
@@ -8358,8 +8384,173 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
 
-    /** The four teams as cards; `hero` adds the big welcome above them. */
-    function TeamsGallery({ t, lang, teams, onHire, onDetail, hero, onBlank, busy }) {
+    /**
+     * A team's name, description and colour (Bots 0.17): a new team of your own (`id` empty, with the bots it starts
+     * with and its lead), or one here, hired from a template (an empty name gives back the template's) or your own
+     * (which can be deleted: its bots stay, in no team).
+     */
+    function TeamEditModal({ t, lang, id, toast, onClose }) {
+      const team = id ? teamOf(id) : null;
+      const template = team?.template ? teamsOf().find((x) => x.id === team.template) ?? null : null;
+      const shown = (v) => (team ? pick(v, lang) : '');
+      // Over a template, a value that is still the template's shows empty: saving it keeps following the template.
+      const ownOnly = (v, tv) => (template && [tv?.en, tv?.zh].includes(shown(v)) ? '' : shown(v));
+      const [name, setName] = useState(() => (team ? ownOnly(team.name, template?.name) : ''));
+      const [tagline, setTagline] = useState(() => (team ? ownOnly(team.tagline, template?.tagline) : ''));
+      const [color, setColor] = useState(() => str(team?.color) || COLORS[1]);
+      const candidates = botsOf().filter((b) => b.role !== 'primary' && b.id !== store.state?.primaryId);
+      const [members, setMembers] = useState([]);
+      const [lead, setLead] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [confirm, setConfirm] = useState(false);
+      const custom = !team || Boolean(team.custom);
+      const valid = custom ? name.trim() !== '' : true;
+      const label = team ? pick(team.name, lang) || id : '';
+      const toggle = (botId) => {
+        setMembers((cur) => (cur.includes(botId) ? cur.filter((x) => x !== botId) : [...cur, botId]));
+        if (lead === botId) setLead('');
+      };
+      const save = () => {
+        if (!valid || busy) return;
+        setBusy(true);
+        const fields = { name: name.trim(), tagline: tagline.trim(), color };
+        const req = team ? postJson('teams/update', { id: team.id, ...fields }) : postJson('teams/create', { ...fields, members, ...(lead ? { lead } : {}) });
+        Promise.resolve(req)
+          .then((r) => {
+            if (r?.ok && r.team) {
+              if (!team) toast(t('teamCreated', { team: pick(r.team.name, lang) }));
+              void refreshState();
+              onClose();
+            } else toast(r?.reason || t('saveFailed'), 'error');
+          })
+          .finally(() => setBusy(false));
+      };
+      const remove = () =>
+        Promise.resolve(postJson('teams/delete', { id: team.id })).then((r) => {
+          if (r?.ok) {
+            toast(t('teamDeleted', { team: label }));
+            void refreshState();
+            onClose();
+          } else toast(r?.reason || t('saveFailed'), 'error');
+        });
+      if (confirm) {
+        return h(Confirm, { t, title: t('deleteTeamTitle', { team: label }), body: t('deleteTeamBody', { n: (team?.members ?? []).length }), confirmLabel: t('deleteTeam'), onConfirm: remove, onClose: () => setConfirm(false) });
+      }
+      return h(
+        Modal,
+        {
+          title: team ? t('editTeamTitle', { team: label }) : t('newTeamTitle'),
+          closeLabel: t('close'),
+          width: 520,
+          onClose,
+          footer: [
+            team && custom ? h(Btn, { key: 'd', kind: 'ghost', className: 'dshb-btn dshb-btn-ghost dshb-btn-danger', icon: Icon.trash(13), onClick: () => setConfirm(true), style: { marginRight: 'auto' }, 'data-dsh-bots-team-delete': team.id }, t('deleteTeam')) : null,
+            h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
+            h(Btn, { key: 's', kind: 'primary', disabled: !valid || busy, onClick: save, 'data-dsh-bots-team-save': team?.id ?? 'new' }, busy ? t('saving') : team ? t('save') : t('createTeam')),
+          ],
+        },
+        h(
+          Field,
+          { label: t('teamName'), hint: template ? t('teamTemplateNameHint', { name: pick(template.name, lang) }) : '' },
+          h(Input, { value: name, autoFocus: true, maxLength: 60, placeholder: template ? pick(template.name, lang) : t('teamNamePlaceholder'), onChange: (e) => setName(e.target.value), 'data-dsh-bots-field': 'team-name' }),
+        ),
+        h(
+          Field,
+          { label: t('teamDescription'), hint: t('teamDescriptionHint') },
+          h(TextArea, { rows: 2, value: tagline, maxLength: 300, placeholder: template ? pick(template.tagline, lang) : '', onChange: (e) => setTagline(e.target.value), 'data-dsh-bots-field': 'team-tagline' }),
+        ),
+        h(
+          Field,
+          { label: t('teamColor') },
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            COLORS.map((c) => h('button', { key: c, type: 'button', className: 'dshb-swatch', 'data-active': color.toLowerCase() === c, 'data-dsh-bots-team-color': c, title: c, 'aria-label': c, onClick: () => setColor(c), style: { background: c } })),
+          ),
+        ),
+        !team && candidates.length
+          ? h(
+              Field,
+              { label: t('teamMembers'), hint: t('teamMembersHint') },
+              h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 220, overflow: 'auto', padding: 4, borderRadius: 10, border: `1px solid ${C.border1}` } },
+                candidates.map((b) =>
+                  h(
+                    'label',
+                    { key: b.id, className: 'dshb-row', 'data-dsh-bots-team-member': b.id, style: { padding: '5px 8px', gap: 8 } },
+                    h('input', { type: 'checkbox', checked: members.includes(b.id), onChange: () => toggle(b.id), style: { accentColor: 'var(--dsw-alias-brand-primary)' } }),
+                    h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 22 }),
+                    h('span', { style: { fontWeight: 600, flex: 'none' } }, b.name || `@${b.handle}`),
+                    h('span', { style: { color: C.faint, fontSize: TINY, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.team ? `@${b.handle} · ${teamNameOf(b.team, lang)}` : `@${b.handle}`),
+                  ),
+                ),
+              ),
+            )
+          : null,
+        !team && members.length
+          ? h(
+              Field,
+              { label: t('teamLeadPick'), hint: t('teamLeadPickHint') },
+              h(
+                'select',
+                { className: 'dshb-input', value: lead, onChange: (e) => setLead(e.target.value), 'data-dsh-bots-team-lead': true },
+                h('option', { value: '' }, t('teamNoLead')),
+                candidates.filter((b) => members.includes(b.id)).map((b) => h('option', { key: b.id, value: b.id }, b.name || `@${b.handle}`)),
+              ),
+            )
+          : null,
+      );
+    }
+
+    /** The teams here (Bots 0.17), above the templates: each with its colour, name, description and bots, to edit; and a new one. */
+    function YourTeams({ t, lang, onNewTeam, onEditTeam }) {
+      const here = teamsHereOf() ?? [];
+      return h(
+        Section,
+        { title: t('yourTeams'), hint: t('yourTeamsSub'), right: onNewTeam ? h(Btn, { size: 'sm', icon: Icon.plus(13), onClick: onNewTeam, 'data-dsh-bots-team-new': true }, t('newTeam')) : null },
+        here.length === 0
+          ? h('div', { style: { padding: '10px 2px', color: C.faint, fontSize: SMALL } }, t('noYourTeams'))
+          : h(
+              'div',
+              { 'data-dsh-bots-your-teams': here.length, style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 10 } },
+              here.map((team) => {
+                const color = str(team.color) || C.label;
+                const bots = (team.members ?? []).map(botById).filter(Boolean);
+                const template = team.template ? teamsOf().find((x) => x.id === team.template) : null;
+                return h(
+                  'div',
+                  { key: team.id, className: 'dshb-appcard', 'data-dsh-bots-your-team': team.id, style: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: '12px 12px 12px 14px', borderLeft: `3px solid ${color}` } },
+                  h(
+                    'div',
+                    { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 } },
+                    h(
+                      'div',
+                      { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+                      h('span', { style: { fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, pick(team.name, lang) || team.id),
+                      h(Badge, { color: C.muted }, team.custom ? t('teamOwn') : t('teamFromTemplate', { name: template ? pick(template.name, lang) : team.template })),
+                    ),
+                    pick(team.tagline, lang) ? h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.5 } }, pick(team.tagline, lang)) : null,
+                    h(
+                      'div',
+                      { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 } },
+                      h(
+                        'span',
+                        { style: { display: 'inline-flex' } },
+                        bots.slice(0, 6).map((b, i) => h('span', { key: b.id, style: { marginLeft: i ? -6 : 0, display: 'inline-flex', borderRadius: '50%', boxShadow: `0 0 0 1.5px ${C.layer1}` } }, h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 20, title: b.name || `@${b.handle}` }))),
+                      ),
+                      h('span', { style: { fontSize: TINY, color: C.faint } }, t('teamBotCount', { n: bots.length })),
+                    ),
+                  ),
+                  h(Btn, { kind: 'ghost', size: 'sm', icon: Icon.edit(13), title: t('editTeam'), onClick: () => onEditTeam(team.id), 'data-dsh-bots-your-team-edit': team.id }),
+                );
+              }),
+            ),
+      );
+    }
+
+    /** The four teams as cards; `hero` adds the big welcome above them. Not in the hero: your teams first (Bots 0.17). */
+    function TeamsGallery({ t, lang, teams, onHire, onDetail, hero, onBlank, busy, onNewTeam, onEditTeam }) {
       return h(
         'div',
         { className: 'dshb-scroll', 'data-dsh-bots-teams': hero ? 'hero' : 'list', style: { flex: 1, padding: hero ? '40px 32px 32px' : '22px 28px 28px' } },
@@ -8379,6 +8570,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                 { style: { display: 'flex', alignItems: 'flex-end', gap: 12 } },
                 h('div', { style: { flex: 1 } }, h('div', { style: { fontWeight: 700, fontSize: 18 } }, t('teamTemplates')), h('div', { style: { fontSize: SMALL, color: C.muted, marginTop: 3 } }, t('teamTemplatesSub'))),
               ),
+          !hero && onEditTeam ? h(YourTeams, { t, lang, onNewTeam, onEditTeam }) : null,
           teams === null
             ? h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, t('loading'))
             : teams.length === 0
@@ -8721,6 +8913,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const [creating, setCreating] = useState(false);
       const [detail, setDetail] = useState(null); // a team shown in the detail modal
       const [hire, setHire] = useState(null); // {team, phase: confirm|start|busy|done|error, primary, result?}
+      const [teamEdit, setTeamEdit] = useState(null); // {id} a team whose name, description and colour are edited; {} a new one (Bots 0.17)
       const [settings, setSettings] = useState(false);
       const [ticketId, setTicketId] = useState(null); // the task shown in the Tasks view
       const [needId, setNeedId] = useState(null); // the request shown in the Requests view
@@ -8790,7 +8983,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       } else if (shownView === 'memory') {
         main = h(TeamMemoryView, { t, toast: showToast, onSettings: () => setSettings(true) });
       } else if (shownView === 'hero' || shownView === 'teams' || !current) {
-        main = h(TeamsGallery, { t, lang, teams, hero: shownView !== 'teams', onHire: (team) => startHire(team), onDetail: (team) => setDetail(team), onBlank: () => setCreating(true), busy: Boolean(hire) });
+        main = h(TeamsGallery, { t, lang, teams, hero: shownView !== 'teams', onHire: (team) => startHire(team), onDetail: (team) => setDetail(team), onBlank: () => setCreating(true), busy: Boolean(hire), onNewTeam: () => setTeamEdit({}), onEditTeam: (id) => setTeamEdit({ id }) });
       } else {
         main = h(BotDetail, { t, bot: current, primaryId, env: env2, toast: showToast, catalog, tab, setTab, onDeleted: () => setSelected(null), onSettings: () => setSettings(true) });
       }
@@ -8810,6 +9003,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             setView('bot');
           },
           onNew: () => setCreating(true),
+          onNewTeam: () => setTeamEdit({}),
+          onEditTeam: (id) => setTeamEdit({ id }),
           onTeams: () => setView('teams'),
           onActivity: () => setView('activity'),
           onUsage: () => setView('usage'),
@@ -8889,6 +9084,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           : null,
         hire ? h(HireModal, { t, lang, hire, setHire, toast: showToast, catalog, onDone: openBotTab, onOpenBot: openBotTab }) : null,
         settings ? h(SettingsModal, { t, catalog, toast: showToast, onClose: () => setSettings(false) }) : null,
+        teamEdit ? h(TeamEditModal, { key: teamEdit.id ?? 'new', t, lang, id: teamEdit.id ?? '', toast: showToast, onClose: () => setTeamEdit(null) }) : null,
         h(Toast, { toast }),
       );
     }
@@ -9176,6 +9372,33 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         dispatcher: 'Dispatcher',
         teamLead: 'Lead',
         teamField: 'Team',
+        newTeam: 'New team',
+        editTeam: 'Edit team',
+        newTeamTitle: 'New team',
+        editTeamTitle: 'Edit {team}',
+        teamName: 'Name',
+        teamNamePlaceholder: 'e.g. Amazon US',
+        teamTemplateNameHint: "Leave it empty for the template's name ({name}).",
+        teamDescription: 'Description',
+        teamDescriptionHint: 'What the team does. The bots read it next to its name.',
+        teamColor: 'Colour',
+        teamMembers: 'Bots in it',
+        teamMembersHint: "A bot already in another team moves to this one. You can add more later in a bot's Profile.",
+        teamLeadPick: 'Lead',
+        teamNoLead: 'No lead',
+        teamLeadPickHint: "The dispatcher hands the team's work to its lead, which brings in the others.",
+        createTeam: 'Create team',
+        deleteTeam: 'Delete team',
+        deleteTeamTitle: 'Delete {team}?',
+        deleteTeamBody: 'Its bots ({n}) stay, in no team, and its lead no longer leads.',
+        teamCreated: 'Created {team}.',
+        teamDeleted: 'Deleted {team}.',
+        yourTeams: 'Your teams',
+        yourTeamsSub: 'Hired from a template or made yourself. Name them after your work.',
+        noYourTeams: 'No teams yet: hire one below, or make your own.',
+        teamOwn: 'Your own',
+        teamFromTemplate: 'Template: {name}',
+        teamBotCount: '{n} bots',
         teamFieldHint: 'The team it works in. In a team with a lead, the dispatcher hands its work to the lead, which brings this bot in.',
         noTeam: 'No team',
         teamLeadHint: 'Leads its team: the dispatcher hands the team\'s work to it',
@@ -10234,6 +10457,33 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         dispatcher: '调度者',
         teamLead: '负责人',
         teamField: '所属团队',
+        newTeam: '新建团队',
+        editTeam: '编辑团队',
+        newTeamTitle: '新建团队',
+        editTeamTitle: '编辑「{team}」',
+        teamName: '名称',
+        teamNamePlaceholder: '比如：亚马逊美国站',
+        teamTemplateNameHint: '留空就用模板的名字（{name}）。',
+        teamDescription: '简介',
+        teamDescriptionHint: '这个团队做什么。bot 会在团队名旁边看到它。',
+        teamColor: '颜色',
+        teamMembers: '成员',
+        teamMembersHint: '已在别的团队的 bot 会移到这个团队。之后也可以在 bot 的资料页里加入。',
+        teamLeadPick: '负责人',
+        teamNoLead: '不设负责人',
+        teamLeadPickHint: '调度员把团队的活交给负责人，由它叫其他成员来做。',
+        createTeam: '创建团队',
+        deleteTeam: '删除团队',
+        deleteTeamTitle: '删除「{team}」？',
+        deleteTeamBody: '它的 {n} 个 bot 会保留，但不再属于任何团队，负责人也不再负责。',
+        teamCreated: '已创建「{team}」。',
+        teamDeleted: '已删除「{team}」。',
+        yourTeams: '你的团队',
+        yourTeamsSub: '从模板雇来的，或者你自己建的。可以按你的业务改名。',
+        noYourTeams: '还没有团队：在下面雇一个模板，或者自己建一个。',
+        teamOwn: '自建',
+        teamFromTemplate: '模板：{name}',
+        teamBotCount: '{n} 个 bot',
         teamFieldHint: '它在哪个团队干活。团队有负责人时，调度员把活交给负责人，由负责人叫它来做。',
         noTeam: '不属于团队',
         teamLeadHint: '团队负责人：调度者把团队的活交给它',
