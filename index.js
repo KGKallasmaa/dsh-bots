@@ -3108,13 +3108,15 @@ export function apply(ctx, config, deps = {}) {
    */
   async function recoverTickets() {
     if (!service(ctx, 'sessionController')) return;
-    for (const t of tickets.open()) {
-      if (!t.startedAt || !t.sessionId || stageOf(t) !== 'working') continue;
+    for (const id of workingAtStartup) {
+      const t = tickets.get(id);
+      if (!t?.sessionId || stageOf(t) !== 'working') continue;
       try {
         const events = await readHistory(t.sessionId);
         const info = {};
         const agent = await ticketAgent(t, info);
-        const cur = tickets.get(t.id) ?? t;
+        const cur = tickets.get(t.id);
+        if (!cur || stageOf(cur) !== 'working') continue;
         const pending = pendingOf(agent).length > 0;
         // The first event of the latest turn that did not end cleanly: one the log ends inside, or one
         // Harness closed as `interrupted` with no turn after it (none: the log ends after a clean turn).
@@ -3192,9 +3194,9 @@ export function apply(ctx, config, deps = {}) {
     await pump();
   }
 
-  // After a restart: tickets that were working keep their slots and, once Harness is up, get their
-  // recovery notes; queued ones start then.
-  for (const t of tickets.open()) if (t.startedAt && stageOf(t) === 'working') slots.acquire(t.id);
+  // Only tickets already working at startup need recovery. New work can arrive before the timer fires.
+  const workingAtStartup = tickets.open().filter((t) => stageOf(t) === 'working').map((t) => t.id);
+  for (const id of workingAtStartup) slots.acquire(id);
   /** The startup pass, once: recovery notes, then the queue. Resolves when done (tests wait on it). */
   let startupDone = null;
   const startup = () => (startupDone ??= recoverTickets()

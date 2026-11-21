@@ -223,9 +223,8 @@ async function withTelegram(env) {
 }
 
 /** A team (Atlas the router, Forge, Scout) on Telegram, and one task delegated from each of the two chats (`relay`: asking for the reports, 0.8's way). */
-async function twoChats({ topic, relay = false } = {}) {
+async function twoChats({ topic, relay = false } = {}, env = boot()) {
   const back = relay ? { report_to: 'me' } : {};
-  const env = boot();
   const { h, api } = env;
   api.store.save({ name: 'Forge', bio: 'Engineer' });
   api.store.save({ name: 'Scout', bio: 'Researcher' });
@@ -1481,10 +1480,12 @@ test('without agent.inject a note that must not wake the Router is dropped, not 
 });
 
 test('a follow-up handed out again after a restart does not reopen the finished task it already reached', async () => {
-  const s = await twoChats({ topic: 't9' });
+  // Hold the startup timer until the new worker has received the follow-up.
+  const s = await twoChats({ topic: 't9' }, boot({ setTimeout: () => 0 }));
   const { api, h, tg, sid, ta, tb } = s;
   tg.say('43', 12, 'Mention the export button too', 't9');
   await settle();
+  await api.startup();
   const worker = h.agentsById.get(tb.sessionId);
   const followUpId = worker.deliveries.at(-1).message.id;
   assert.match(followUpId, new RegExp(`^bots:chat:.*:12:${tb.id}$`));
