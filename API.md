@@ -958,7 +958,7 @@ that is not JSON in this shape is set aside as `projects.json.corrupt-<ms>`.
 |---|---|---|---|
 | GET | `projects` | – | `{ items: ProjectView[] }`, by key |
 | POST | `projects/save` | `{ project: { id?, name, key?, brief?, dir? } }` (no id = create; only the fields given change) | `{ ok, project: ProjectView }`; errors: `a project needs a name`, `the key OPC is taken by another project`, `a project key is 2–6 capital letters…`, `there is no folder …`, `… is a file, not a folder`, `the folder must be a full path …` |
-| POST | `projects/delete` | `{ id }` | `{ ok, cards }`: its cards are filed under none (number dropped); tasks with a Session keep it, tasks not started yet lose `projectId` (they work in the Bots workspace) |
+| POST | `projects/delete` | `{ id }` | `{ ok, cards }`: its cards are filed under none (number dropped); tasks with a Session keep it, tasks not started yet lose `projectId` and use the folder for tasks without a project |
 
 ### Cards (needs)
 ```ts
@@ -1018,6 +1018,10 @@ need before it starts, so it gets the need's project then. The assignment adds `
 OPC (…).` after its origin line; the task's persona adds `## The project` (key, name, folder, brief).
 `TicketView += { need?: { id, title, ref? } }`; `TicketRow += { board?: true }` (the panel reads such a task as asked by
 the person, from the board).
+
+For a ticket without a `projectId`, the target bot's handle selects an existing folder from `bots.config.workdirs`.
+New home sessions use the same setting. Both fall back to the shared `workdir` if the handle has no usable folder.
+A ticket with a `projectId` whose project has no folder configured uses the shared `workdir`.
 
 ### Tools
 - `bot_send_message += { project? }` — router home only: a project key (or id) a new request belongs to; an unknown one

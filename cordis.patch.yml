@@ -3,5 +3,7 @@
       name: '@kadaliao/dsh-bots'
       config:
         enabled: true
-        # Directory bot conversations run in; empty means ~/.dsh/bots/workspace.
+        # Shared workspace. Defaults to ~/.dsh/bots/workspace.
         workdir: ''
+        # Existing folders by bot handle, e.g. { forge: /projects/forge }.
+        workdirs: {}
