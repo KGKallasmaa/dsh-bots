@@ -175,9 +175,8 @@ up), and several messages (you ask, then add "include the UK in the Europe one",
   `owner/repo`, or the repository's address, on github.com or a GitHub Enterprise server. The dispatcher reads the list of projects and files a new request under one
   when it clearly fits (`project` on `bot_send_message`); a sub-task works on its parent's project. Manage projects
   with **Projects** on the board; filter the board by project with the chips on top. Removing a project keeps its
-  cards, under no project; its tasks under way go on where they are, and those still waiting to start work in the
-  Bots workspace. Moving a card to another project leaves its tasks under way where they are; new ones work on the
-  new project.
+  cards under no project. Its active tasks continue in their current folders. Queued tasks start in the same folder as
+  other tasks without a project. Moving a card to another project affects tasks opened after the move.
 - **Name a card in a message**: `OPC-12 add the UK too`, in the panel or a chat app. A message to the dispatcher
   that starts with a card's reference goes straight to that card's task when it has one (as a reply to the task's
   message does), and its answers come back where you wrote; the dispatcher gets a note without being woken. If the
@@ -640,10 +639,12 @@ and the team takes it:
 
 ## How it works
 
-- Each bot owns one ordinary Harness conversation of its own, in the **Bots** workspace
-  (`~/.dsh/bots/workspace` unless `workdir` is set), and one more for each task it works on
-  (`ticket-<id>`), in the same workspace, or in its project's folder when the task works on a project that has one. A task's conversation is archived in Harness once the task has
-  been over for the hours set in Settings. Each thread is a conversation too, forked with Harness's session fork
+- Each bot has a home conversation in Harness and a separate conversation for each task (`ticket-<id>`).
+  Set `bots.config.workdirs` by handle (for example, `workdirs: { forge: /projects/forge }`) to use that folder
+  for Forge's new home conversations and tasks received without a project. If the handle has no entry or the path
+  is not an existing directory, they use the shared **Bots** workspace (`workdir`, default `~/.dsh/bots/workspace`).
+  Project tasks use the project's folder, or the shared workspace if the project has no folder set. Harness archives
+  a task's conversation once the task has been over for the hours set in Settings. Each thread is a conversation too, forked with Harness's session fork
   from the bot's conversation at the message replied to and titled "<bot> · <the start of that message>"; it is
   archived after a quiet day and taken out of the archive on the next reply.
 - When it runs, the bot's persona and the team roster join its system prompt; its own skills, ability

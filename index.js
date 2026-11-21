@@ -32,7 +32,7 @@
 
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, sep } from 'node:path';
+import { basename, isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
@@ -615,35 +615,43 @@ export function apply(ctx, config, deps = {}) {
   }
 
   // --- sessions ---------------------------------------------------------------------
-  async function workspaceId() {
-    const reg = service(ctx, 'workspaceRegistry');
-    if (!reg?.create) return undefined;
-    mkdirSync(workdir, { recursive: true });
-    const ws = await reg.create(workdir, 'Bots');
-    return ws?.id;
+  function isDirectory(path) {
+    try {
+      return statSync(path).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  /** Place a new session in the bot's configured folder, or in the shared Bots workspace. */
+  async function botPlace(bot) {
+    const configured = bot && cfg.workdirs?.[bot.handle];
+    const folder = typeof configured === 'string' ? configured.trim() : '';
+    const dir = folder && isDirectory(folder) ? folder : workdir;
+    try {
+      if (dir === workdir) mkdirSync(dir, { recursive: true });
+      const ws = await service(ctx, 'workspaceRegistry')?.create?.(dir, dir === workdir ? 'Bots' : basename(dir));
+      if (ws?.id) return { workspaceId: ws.id };
+    } catch {
+      // The session controller also accepts the selected folder directly.
+    }
+    return { cwd: dir };
   }
 
   /**
    * Where a ticket's Session is made: its project's folder (Bots 0.12), a Harness workspace of its
-   * own (the same one when the folder is a workspace already), else the Bots workspace. A project
-   * whose folder is gone fails the start, saying so.
+   * own. Projects without a configured folder use the shared workspace. Projectless tasks use the
+   * target bot's folder. A project whose configured folder is gone fails the start, saying so.
    */
-  async function ticketPlace(t) {
-    const p = t?.projectId ? projects.get(t.projectId) : undefined;
+  async function ticketPlace(t, bot) {
+    const p = t.projectId ? projects.get(t.projectId) : undefined;
     if (p?.dir) {
-      let ok = false;
-      try {
-        ok = statSync(p.dir).isDirectory();
-      } catch {
-        ok = false;
-      }
-      if (!ok) throw new Error(`the folder of project ${p.key}, ${p.dir}, is gone; set another one on the board`);
+      if (!isDirectory(p.dir)) throw new Error(`the folder of project ${p.key}, ${p.dir}, is gone; set another one on the board`);
       const reg = service(ctx, 'workspaceRegistry');
       const ws = reg?.create ? await reg.create(p.dir, p.name).catch(() => undefined) : undefined;
       return ws?.id ? { workspaceId: ws.id } : { cwd: p.dir };
     }
-    const wsId = await workspaceId().catch(() => undefined);
-    return wsId ? { workspaceId: wsId } : { cwd: workdir };
+    return botPlace(t.projectId ? undefined : bot);
   }
 
   /** The bot's home session, created on first need. Returns the session id. */
@@ -665,9 +673,9 @@ export function apply(ctx, config, deps = {}) {
     const sessionId = `session-${randomUUID()}`;
     // Mapped before the Agent exists, so its creation already finds the bot.
     store.patch(bot.id, { sessionId });
-    const wsId = await workspaceId().catch(() => undefined);
     try {
-      const created = await controller.create({ sessionId, ...(wsId ? { workspaceId: wsId } : { cwd: workdir }) });
+      const place = await botPlace(bot);
+      const created = await controller.create({ sessionId, ...place });
       if (created?.sessionId && created.sessionId !== sessionId) store.patch(bot.id, { sessionId: created.sessionId });
     } catch (error) {
       store.patch(bot.id, { sessionId: null });
@@ -2446,8 +2454,8 @@ export function apply(ctx, config, deps = {}) {
   }
 
   /**
-   * The Session a ticket works in: resolved when it exists, else made (in its project's folder, or
-   * the Bots workspace) and decorated as its bot. `info.created` says it had to be made.
+   * The Session a ticket works in: resolved when it exists, else made and decorated as its bot.
+   * `info.created` says it had to be made.
    */
   async function ticketAgent(t, info = {}) {
     const controller = service(ctx, 'sessionController');
@@ -2464,7 +2472,7 @@ export function apply(ctx, config, deps = {}) {
         return found.agent;
       }
     }
-    const place = await ticketPlace(t);
+    const place = await ticketPlace(t, bot);
     // The Agent's creation already finds the ticket by the `ticket-<id>` name and installs the bot.
     const created = await controller.create({ sessionId: wanted, ...place });
     info.created = true;

@@ -188,7 +188,7 @@ function fakeChannels() {
 }
 
 /** The plugin on a fresh (or given) home, with a fake Harness and fake chat connectors. */
-function boot({ home, pre, ...deps } = {}) {
+function boot({ home, pre, config = {}, ...deps } = {}) {
   const before = process.env.DSH_HOME;
   process.env.DSH_HOME = home ?? mkdtempSync(join(tmpdir(), 'bots-routing-'));
   try {
@@ -196,7 +196,7 @@ function boot({ home, pre, ...deps } = {}) {
     pre?.(h);
     const fake = fakeChannels();
     const { services: _services, ...rest } = deps;
-    const api = apply(h.ctx, {}, { prices: false, sweep: false, startupPumpMs: 5, loadConnector: fake.load, typingEveryMs: 5, complete: async () => ({ text: '{}', usage: {} }), ...rest });
+    const api = apply(h.ctx, config, { prices: false, sweep: false, startupPumpMs: 5, loadConnector: fake.load, typingEveryMs: 5, complete: async () => ({ text: '{}', usage: {} }), ...rest });
     const call = (name, args, sessionId) => h.tools.get(name).execute(args, { agent: h.agentsById.get(sessionId) ?? { session: { id: sessionId } } });
     return { h, api, fake, call, home: process.env.DSH_HOME, dispose: () => h.effects.forEach((d) => d()) };
   } finally {
@@ -1879,10 +1879,11 @@ test('needs: dropping one stops its open tasks; merging moves tasks and words; t
 // --- the board: cards and projects (Bots 0.12) ------------------------------------------------------
 
 /** A workspace registry that gives each folder a workspace of its own, and a session controller that records where Sessions are made. */
-function boardBoot() {
+function boardBoot(config) {
   const made = [];
   const archived = [];
   const env = boot({
+    config,
     services: {
       workspaceRegistry: {
         async create(path) {
@@ -1908,6 +1909,52 @@ function boardBoot() {
   return { ...env, made, folder, atlas: env.api.store.find('atlas') };
 }
 const promptOf = (agent) => [...agent.sections.values()].map((s) => s.text?.()).join('\n');
+
+test('workdirs: a team lead opens a projectless task in the member’s own workspace', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bots-workdirs-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workdirs = { forge: join(root, 'engineering'), scout: join(root, 'research') };
+  for (const path of Object.values(workdirs)) mkdirSync(path);
+  const { api, call, made, dispose } = boardBoot({ workdir: root, workdirs });
+  t.after(dispose);
+  const lead = api.store.save({ id: api.store.find('forge').id, team: 'dev', lead: true });
+  const member = api.store.save({ id: api.store.find('scout').id, team: 'dev' });
+  const sid = await api.userSend(lead, 'Have Scout check the release notes.');
+  const { ticket } = await call('bot_send_message', { to: '@scout', text: 'Check the release notes.' }, sid);
+  const task = api.tickets.get(ticket.id);
+  assert.equal(task.projectId, undefined);
+  assert.deepEqual(made.find((m) => m.sessionId === task.sessionId), { sessionId: task.sessionId, workspaceId: `ws:${workdirs.scout}` });
+  const memberHome = await api.userSend(member, 'Hello');
+  assert.equal(made.find((m) => m.sessionId === memberHome).workspaceId, `ws:${workdirs.scout}`);
+  assert.equal(made.find((m) => m.sessionId === sid).workspaceId, `ws:${workdirs.forge}`);
+});
+
+test('workdirs: cwd follows the selected folder when workspace registration fails', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'bots-workdirs-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const memberDir = join(root, 'member');
+  mkdirSync(memberDir);
+  const shared = join(root, 'shared');
+  const { api, h, made, folder, dispose } = boardBoot({ workdir: shared, workdirs: { forge: memberDir } });
+  t.after(dispose);
+  h.services.workspaceRegistry.create = async () => { throw new Error('registry unavailable'); };
+  async function checkTask(assignee, expectedDir, projectId) {
+    const card = await api.request('POST', '/needs/create', { title: 'Review', assignee, projectId });
+    const task = api.tickets.get(card.tickets[0].id);
+    assert.deepEqual(made.find((m) => m.sessionId === task.sessionId), { sessionId: task.sessionId, cwd: expectedDir });
+    await api.request('POST', `/needs/${card.id}/done`, {});
+  }
+  await checkTask('@forge', memberDir);
+  await checkTask('@scout', shared);
+  const project = (await api.request('POST', '/projects/save', { project: { name: 'Release', dir: folder } })).project;
+  await checkTask('@forge', folder, project.id);
+  const folderless = (await api.request('POST', '/projects/save', { project: { name: 'Planning' } })).project;
+  await checkTask('@forge', shared, folderless.id);
+  rmSync(memberDir, { recursive: true });
+  await checkTask('@forge', shared);
+  writeFileSync(memberDir, 'a file');
+  await checkTask('@forge', shared);
+});
 
 test('board: projects are kept through their routes; a card filed for the dispatcher counts its tasks, which work in the project folder', async () => {
   const env = boardBoot();
