@@ -39,7 +39,7 @@ import { randomUUID } from 'node:crypto';
 import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SKILLS_ON } from './lib/store.mjs';
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
-import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
+import { SKILL_SOURCES, importGithubSkill, importUrlSkill, inMagpieLibrary, linkLocalSkill, listGithubSkills, listLocalSkills, listMagpieSkills, magpieLibraryDir, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
 import { ADDED_LEADS, OLD_LEADS, TEAMS, namesBot, ownTeamView, teamIdFor, teamTiming, teamView } from './lib/teams.mjs';
 import { deskTasksOfLead, planLeadMigration, planTeamMigration } from './lib/team-migration.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
@@ -259,6 +259,8 @@ export function apply(ctx, config, deps = {}) {
   const slots = createSlots(settings.get().tickets.maxWorking);
   const prices = createPriceCatalog(dir, { enabled: deps.prices !== false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const home = deps.home ?? homedir();
+  /** Where Magpie looks for its files (Bots 0.17.2): this home, and XDG_CONFIG_HOME for its command line. */
+  const magpieAt = { home, env: deps.env ?? process.env };
   const workdir = typeof cfg.workdir === 'string' && cfg.workdir.trim() ? cfg.workdir.trim() : join(homeDir(), 'bots', 'workspace');
   // What work belongs to (Bots 0.12): a request filed under a project is numbered there, and its tasks work in its folder.
   const projects = createProjects(dir, { now: nowMs, home });
@@ -358,6 +360,15 @@ export function apply(ctx, config, deps = {}) {
    */
   const asks = new Map();
   const askingIn = (sessionId) => Boolean(sessionId) && [...asks.values()].some((a) => a.sessionId === sessionId);
+  /** Whether a Session waits for the person to allow a tool (Bots 0.17.2). */
+  const approvalIn = (sessionId) => Boolean(sessionId) && [...asks.values()].some((a) => a.sessionId === sessionId && a.approval);
+  /** What a task's conversation waits for from the person, for the bot that asked for it, or '' (Bots 0.17.2). */
+  function waitingFor(t) {
+    const a = t?.sessionId && !t.ended ? [...asks.values()].find((x) => x.sessionId === t.sessionId) : undefined;
+    if (!a) return '';
+    const what = clip(a.questions.map((q) => q.question).join(' / '), 300).text;
+    return a.approval ? `the person's approval in its conversation: ${what}` : `the person's answer to its question: ${what}`;
+  }
   /** The questions still waiting. One past its timed wait (`continued`) goes with its task's end, or with its home (a new topic). */
   function pendingAsks() {
     for (const a of asks.values()) {
@@ -2012,7 +2023,7 @@ export function apply(ctx, config, deps = {}) {
       // The person handed a card to this bot themselves (Bots 0.12): the dispatcher only carries it.
       ...(t.board ? { board: true } : {}),
       // Its conversation waits for the person's answer to a question (state `asks`): it needs you.
-      ...(askingIn(t.sessionId) ? { asking: true } : {}),
+      ...(askingIn(t.sessionId) ? { asking: true, ...(approvalIn(t.sessionId) ? { askingApproval: true } : {}) } : {}),
       // What its conversation does right now (lib/activity.mjs), while it runs.
       ...(!t.ended && activity.get(t.sessionId) ? { activity: activity.get(t.sessionId) } : {}),
       createdAt: t.createdAt,
@@ -2758,10 +2769,11 @@ export function apply(ctx, config, deps = {}) {
     await toTicket(cur, { content, source: sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' }, key: key || `msg:${cur.id}:${randomUUID()}`, human: human && !sender });
     // A panel message is in the timeline already (logged when it was sent).
     if (logged) return tickets.get(cur.id) ?? cur;
+    // `added`: this adds to a task opened earlier, so the chat shows its own words, not the task again.
     store.log(
       chat
         ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id, ...imageIdsOf(refs) }
-        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id, ...topicFieldsOf(cur), ...imageIdsOf(refs) },
+        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id, added: true, ...topicFieldsOf(cur), ...imageIdsOf(refs) },
     );
     return tickets.get(cur.id) ?? cur;
   }
@@ -3719,14 +3731,14 @@ export function apply(ctx, config, deps = {}) {
     };
   }
   /** A waiting question in state (`asks`). */
-  const askView = (a) => ({ id: a.id, botId: a.botId, sessionId: a.sessionId, ...(a.ticketId ? { ticketId: a.ticketId } : {}), at: a.at, ...(a.native ? { native: true } : {}), ...(a.continued ? { continued: true } : {}), questions: a.questions });
+  const askView = (a) => ({ id: a.id, botId: a.botId, sessionId: a.sessionId, ...(a.ticketId ? { ticketId: a.ticketId } : {}), at: a.at, ...(a.native ? { native: true } : {}), ...(a.approval ? { approval: a.approval } : {}), ...(a.continued ? { continued: true } : {}), questions: a.questions });
   /** The chats the asking turn came from (a home's), or the chat its task came from, hear once that it waits for an answer in Harness. */
   function askNotice(ask, bot) {
     const targets = ask.ticketId ? [channels.resolveReply(ask.sessionId, { ticket: ask.ticketId })] : channels.current(ask.sessionId);
     for (const target of targets) {
       if (!target || target.kind === 'panel' || !target.chatId) continue;
       try {
-        channels.replyTo(ask.sessionId, target, askNoticeText(bot, ask.questions));
+        channels.replyTo(ask.sessionId, target, askNoticeText(bot, ask.questions, { approval: ask.approval }));
       } catch (error) {
         ctx.logger?.info?.(`bots: question notice: ${error?.message ?? error}`);
       }
@@ -3795,6 +3807,78 @@ export function apply(ctx, config, deps = {}) {
   // First in the chain: the Harness forwards the request to its window and holds it there until that
   // card is answered, so a listener after it would never hear of the question while a window is open.
   ctx.on('user-questions/request', (request, next) => askRequest(request, next), { prepend: true });
+
+  /** An approval's text by language, from Harness's `displayReason` (text by language, or one string), or null. */
+  function approvalDisplay(d) {
+    if (typeof d === 'string') return d.trim() ? { en: clip(d.trim(), 600).text } : null;
+    if (!d || typeof d !== 'object') return null;
+    const out = {};
+    for (const [lang, text] of Object.entries(d)) if (/^[a-z]{2}$/.test(lang) && typeof text === 'string' && text.trim()) out[lang] = clip(text.trim(), 600).text;
+    return Object.keys(out).length ? out : null;
+  }
+  /**
+   * One `approval/request` (Bots 0.17.2): a tool in a bot's home or task Session waits for the person
+   * to allow it (a file write, a command outside the sandbox). Recorded like a question (`asks`, with
+   * `approval`), so the panel, the task's row and its chat say it waits for them, and its requester hears
+   * so. It settles with whichever answers first: the window's card (`next()`) or the panel (`answerAsk`:
+   * allow once, or reject); the other card then closes. An abort of the call withdraws it. Approvals of
+   * other Sessions pass by untouched.
+   */
+  function approvalRequest(request, next) {
+    const sessionId = request?.agent?.session?.id;
+    const bot = botOfSession(sessionId);
+    if (!bot) return next();
+    const ticket = ticketOf(sessionId);
+    const tool = typeof request.toolName === 'string' ? request.toolName.trim() : '';
+    const callId = typeof request.callId === 'string' ? request.callId : '';
+    const display = approvalDisplay(request.displayReason);
+    const reason = typeof request.reason === 'string' ? clip(request.reason.trim(), 600).text : '';
+    const ask = {
+      id: `ask-${randomUUID()}`,
+      botId: bot.id,
+      sessionId,
+      ...(ticket ? { ticketId: ticket.id } : {}),
+      at: nowMs(),
+      native: true,
+      approval: { tool, ...(callId ? { callId } : {}), ...(display ? { display } : {}) },
+      questions: [{ id: callId || 'approval', question: display?.en ?? (reason || `Run the tool "${tool || 'unknown'}"`) }],
+    };
+    asks.set(ask.id, ask);
+    askNotice(ask, bot);
+    const original = request.signal instanceof AbortSignal ? request.signal : undefined;
+    const panel = new AbortController();
+    try {
+      request.signal = original ? AbortSignal.any([original, panel.signal]) : panel.signal;
+    } catch {
+      // A frozen request keeps its own signal: the window's card then stays until the call ends.
+    }
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (outcome) => {
+        if (done) return;
+        done = true;
+        original?.removeEventListener('abort', onAbort);
+        delete ask.settle;
+        asks.delete(ask.id);
+        panel.abort(new Error('the approval was settled'));
+        resolve(outcome);
+      };
+      const onAbort = () => finish('cancelled');
+      ask.settle = finish;
+      if (original?.aborted) return onAbort();
+      original?.addEventListener('abort', onAbort, { once: true });
+      let chain;
+      try {
+        chain = Promise.resolve(next());
+      } catch (error) {
+        chain = Promise.reject(error);
+      }
+      // A window that fails to answer fails closed, as Harness's own answerer does.
+      chain.then(finish, () => finish('unavailable'));
+    });
+  }
+  // First in the chain for the same reason: the window's forwarder holds the request until its card is answered.
+  ctx.on('approval/request', (request, next) => approvalRequest(request, next), { prepend: true });
   // A continued question answered in the conversation: its reply reaches the Session.
   ctx.on('session/event', (session, event) => {
     const source = event?.type === 'user/message' ? event.data?.source : null;
@@ -3821,10 +3905,20 @@ export function apply(ctx, config, deps = {}) {
     }
     return out;
   }
-  /** POST /asks/:id/answer `{answers}`: the panel answers a waiting question; the timeline shows what was answered. */
+  /**
+   * POST /asks/:id/answer `{answers}`: the panel answers a waiting question; the timeline shows what was
+   * answered. An approval takes `{outcome}`: 'allowed-once' or 'rejected' (Bots 0.17.2).
+   */
   async function answerAsk(id, body) {
     const ask = asks.get(String(id ?? ''));
     if (!ask) return { ok: false, reason: 'no such question: it was answered already or is no longer waiting' };
+    if (ask.approval) {
+      const outcome = body?.outcome;
+      if (outcome !== 'allowed-once' && outcome !== 'rejected') return { ok: false, reason: 'answer an approval with outcome "allowed-once" or "rejected"' };
+      if (!ask.settle) return { ok: false, reason: 'the approval is no longer waiting' };
+      ask.settle(outcome);
+      return { ok: true };
+    }
     if (ask.native) return { ok: false, reason: 'this one is answered in the conversation' };
     const items = checkAnswers(ask.questions, body?.answers);
     if (typeof items === 'string') return { ok: false, reason: items };
@@ -4585,7 +4679,9 @@ export function apply(ctx, config, deps = {}) {
           const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
           const after = reportsGoDirect(next) ? `${handleOf(next.botId)} answers the person ${isPanelThread(next.showIn ?? next.origin?.threadKey) ? 'in the panel' : 'in the chat'} itself` : `${handleOf(next.botId)}'s report will arrive here by itself`;
           const need = routing ? needOf(next) : undefined;
-          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}).${carries(added)} ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
+          // A task held up by the person (Bots 0.17.2): adding more does not move it; they have to answer.
+          const held = waitingFor(next) ? ` It waits for ${waitingFor(next)}: tell the person to answer it there; your message reaches it after that.` : '';
+          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}).${carries(added)}${held} ${after}; do not wait for it.${needText(need)}`, ticket: row(next), ...(need ? { need: { id: need.id, title: need.title } } : {}), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
 
@@ -4723,6 +4819,7 @@ export function apply(ctx, config, deps = {}) {
           threads: recallThreads,
           bots: store.list(),
           stageOf,
+          waitingFor: (t) => waitingFor(t),
           transcript: (t) => transcriptOf(t),
           offset: args.offset,
           now: nowMs(),
@@ -4769,6 +4866,8 @@ export function apply(ctx, config, deps = {}) {
           said = `Task ${t.id} (${bot}) is ${stageOf(t)}; there is no work to report on. bot_recall reads its reports.`;
         } else if (!t.startedAt) {
           said = `Task ${t.id} (${bot}) is queued: it has not started yet.`;
+        } else if (waitingFor(t)) {
+          said = `Task ${t.id} (${bot}) waits for ${waitingFor(t)}. Tell the person to answer it there (the Bots panel shows it on the task); it goes on once they do. Messages to it wait until then, so do not repeat them.`;
         } else if (parkedOf(t).length > 0) {
           said = `Task ${t.id} (${bot}) waits for a free worker slot; the messages for it are handed over then, and its report arrives here by itself.`;
         } else if (agentStatusOf(t.sessionId) === 'running') {
@@ -5090,6 +5189,8 @@ export function apply(ctx, config, deps = {}) {
       categories: CATEGORIES,
       abilities: ABILITIES.map((a) => ({ ...a, available: a.tools.filter((t) => toolRows.some((r) => r.name === t)) })),
       skillSources: SKILL_SOURCES,
+      // Magpie's skill library on this machine (Bots 0.17.2): the panel offers it as a source.
+      magpie: magpieLibraryDir(magpieAt) ? { root: magpieLibraryDir(magpieAt) } : null,
       imageGen: imageGenAvailable(),
       tools: toolRows,
       models,
@@ -5481,7 +5582,11 @@ export function apply(ctx, config, deps = {}) {
   async function importSkill(spec) {
     const signal = AbortSignal.timeout(120_000);
     const id = `skill-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    if (typeof spec.local === 'string' && spec.local.trim() !== '') return { id, source: 'import', enabled: true, ...linkLocalSkill(spec.local) };
+    if (typeof spec.local === 'string' && spec.local.trim() !== '') {
+      const linked = linkLocalSkill(spec.local);
+      // A folder of Magpie's skill library says so (Bots 0.17.2), however it was picked.
+      return { id, source: 'import', enabled: true, ...linked, ...(inMagpieLibrary(linked.dir, magpieAt) ? { from: 'magpie' } : {}) };
+    }
     const gh = spec.repo ? { ...parseGithub(spec.repo), ...(spec.path !== undefined ? { path: spec.path } : {}), ...(spec.ref ? { ref: spec.ref } : {}) } : parseGithub(spec.url ?? '');
     if (gh) {
       const got = await importGithubSkill(gh, skillDir, id, { signal });
@@ -5497,10 +5602,11 @@ export function apply(ctx, config, deps = {}) {
       if (typeof s.dir === 'string' && s.dir.startsWith(skillDir + sep) && !used.has(s.dir)) rmSync(s.dir, { recursive: true, force: true });
     }
   }
-  /** Folders on this machine where other agents keep skills, as one-click starting points. */
+  /** Folders on this machine where other agents keep skills, as one-click starting points; Magpie's library first. */
   function localSkillPlaces() {
     const home = homedir();
-    return [join(home, '.claude', 'skills'), join(home, '.codex', 'skills'), join(home, '.agents', 'skills')]
+    const magpie = magpieLibraryDir(magpieAt);
+    const others = [join(home, '.claude', 'skills'), join(home, '.codex', 'skills'), join(home, '.agents', 'skills')]
       .filter((p) => {
         try {
           return statSync(p).isDirectory();
@@ -5509,6 +5615,7 @@ export function apply(ctx, config, deps = {}) {
         }
       })
       .map((p) => ({ path: p, label: `~${p.slice(home.length)}` }));
+    return [...(magpie ? [{ path: magpie, label: 'Magpie', magpie: true }] : []), ...others];
   }
 
   // --- teams -------------------------------------------------------------------------
@@ -5962,6 +6069,16 @@ export function apply(ctx, config, deps = {}) {
           failed,
           ...(failed.length && !changed ? { reason: failed[0].reason } : {}),
         };
+      },
+    },
+    // The skills of Magpie's library, with the agents Magpie gives each to (Bots 0.17.2); imported as `{local}` links.
+    'skills/magpie': {
+      get: () => {
+        try {
+          return { ok: true, ...listMagpieSkills(magpieAt) };
+        } catch (error) {
+          return { ok: false, reason: error?.message ?? String(error) };
+        }
       },
     },
     'skills/local': {

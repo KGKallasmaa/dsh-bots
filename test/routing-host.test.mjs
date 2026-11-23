@@ -1655,6 +1655,119 @@ test('approvals and plan reviews show in the panel as waiting in the conversatio
   env.dispose();
 });
 
+// --- tool approvals (Harness's `approval/request`): the panel sees and answers them (Bots 0.17.2) --------
+
+/** One tool approval through the plugin's answerer, shaped as Harness's tools pipeline sends it; `native` stands for the window's card. */
+function approve(h, agent, { toolName = 'write', callId = 'call-1', reason, displayReason, signal, native = () => new Promise(() => {}) } = {}) {
+  const request = { agent, toolName, ...(callId ? { callId } : {}), ...(reason ? { reason } : {}), ...(displayReason ? { displayReason } : {}), ...(signal ? { signal } : {}) };
+  const [answerer] = h.listeners['approval/request'];
+  return { request, out: answerer(request, () => native(request)) };
+}
+const WRITE_SKILL = { en: 'Write SKILL.md outside the workspace', zh: '在工作区外写入 SKILL.md' };
+const decideRoute = (api, id, body) => api.request('POST', `/__dsh_bots/asks/${id}/answer`, body);
+
+test('a tool approval in a bot\'s conversation: the panel shows it and allows it once, the window\'s card is withdrawn', async () => {
+  const env = boot();
+  const { h, api } = env;
+  // First in the chain, as for questions: the window's forwarder holds the request until its card is answered.
+  assert.deepEqual(h.onOptions['approval/request'], { prepend: true });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Add a skill');
+  const agent = h.agentsById.get(sid);
+  let windowSignal;
+  const { out } = approve(h, agent, { displayReason: WRITE_SKILL, reason: 'write outside the workspace', native: (req) => ((windowSignal = req.signal), new Promise(() => {})) });
+  const [ask] = api.state().asks;
+  assert.deepEqual({ ...ask, id: '', at: 0 }, { id: '', botId: atlas.id, sessionId: sid, at: 0, native: true, approval: { tool: 'write', callId: 'call-1', display: WRITE_SKILL }, questions: [{ id: 'call-1', question: 'Write SKILL.md outside the workspace' }] });
+  assert.equal(api.state().bots.find((b) => b.id === atlas.id).asking, 1);
+  // Only an outcome answers it; a question's answers do not.
+  assert.match((await decideRoute(api, ask.id, { answers: [{ id: 'call-1', selected: ['Allow'] }] })).reason, /outcome "allowed-once" or "rejected"/);
+  assert.match((await decideRoute(api, ask.id, { outcome: 'allowed-always' })).reason, /outcome "allowed-once" or "rejected"/);
+  assert.equal(api.state().asks.length, 1);
+  assert.deepEqual(await decideRoute(api, ask.id, { outcome: 'allowed-once' }), { ok: true });
+  assert.equal(await out, 'allowed-once');
+  assert.equal(windowSignal.aborted, true, 'the window card is withdrawn');
+  assert.deepEqual(api.state().asks, []);
+  assert.match((await decideRoute(api, ask.id, { outcome: 'rejected' })).reason, /no such question/);
+  // Rejected from the panel; the text falls back to the reason, then to the tool.
+  const second = approve(h, agent, { toolName: 'bash', reason: 'run outside the sandbox' });
+  assert.equal(api.state().asks[0].questions[0].question, 'run outside the sandbox');
+  assert.deepEqual(await decideRoute(api, api.state().asks[0].id, { outcome: 'rejected' }), { ok: true });
+  assert.equal(await second.out, 'rejected');
+  const third = approve(h, agent, { toolName: 'bash', callId: '' });
+  assert.deepEqual(api.state().asks[0].questions, [{ id: 'approval', question: 'Run the tool "bash"' }]);
+  assert.deepEqual(await decideRoute(api, api.state().asks[0].id, { outcome: 'allowed-once' }), { ok: true });
+  assert.equal(await third.out, 'allowed-once');
+  // Another conversation's approval passes straight on, its request unchanged.
+  const other = approve(h, { session: { id: 'someone-else' } }, { native: async () => 'rejected' });
+  assert.deepEqual(api.state().asks, []);
+  assert.equal(other.request.signal, undefined);
+  assert.equal(await other.out, 'rejected');
+  env.dispose();
+});
+
+test('a tool approval the window answers, the call withdraws, or the window fails clears from the panel', async () => {
+  const env = boot();
+  const { h, api } = env;
+  const agent = h.agentsById.get(await api.userSend(api.store.find('atlas'), 'Add a skill'));
+  // The window answers first.
+  let answerInWindow;
+  const first = approve(h, agent, { native: () => new Promise((resolve) => (answerInWindow = resolve)) });
+  const id = api.state().asks[0].id;
+  answerInWindow('rejected');
+  assert.equal(await first.out, 'rejected');
+  assert.deepEqual(api.state().asks, []);
+  assert.match((await decideRoute(api, id, { outcome: 'allowed-once' })).reason, /no such question/);
+  // The call is aborted (the turn stopped).
+  const stop = new AbortController();
+  const second = approve(h, agent, { signal: stop.signal });
+  assert.equal(api.state().asks.length, 1);
+  stop.abort(new Error('stopped'));
+  assert.equal(await second.out, 'cancelled');
+  assert.deepEqual(api.state().asks, []);
+  // The window fails: closed, as Harness's own answerer fails.
+  const third = approve(h, agent, { native: () => Promise.reject(new Error('the window went away')) });
+  assert.equal(await third.out, 'unavailable');
+  assert.deepEqual(api.state().asks, []);
+  env.dispose();
+});
+
+test('a task waiting for approval: its row says so, the watchdog leaves it alone, and the bot that asked is told to send the person there', async () => {
+  const clock = { t: Date.now() };
+  const env = boot({ now: () => clock.t });
+  const { h, api } = env;
+  api.store.save({ name: 'Forge' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Add a skill');
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Write the skill.' } }] });
+  const t = api.tickets.get(r.ticket.id);
+  await h.step(t.sessionId, { answer: 'Writing.' });
+  const worker = h.agentsById.get(t.sessionId);
+  const { out } = approve(h, worker, { displayReason: WRITE_SKILL });
+  assert.equal(api.state().asks[0].ticketId, t.id);
+  const row = await api.request('GET', `/__dsh_bots/tickets/${t.id}`);
+  assert.deepEqual([row.asking, row.askingApproval], [true, true]);
+  clock.t += 21 * 60_000;
+  await api.ticketUpkeep(clock.t);
+  assert.equal(worker.deliveries.filter((d) => /^\[Status check\]/.test(textOfMsg(d.message))).length, 0, 'no status check while it waits for the person');
+  // The dispatcher asks how it stands, adds to it, reads it: each says what it waits for.
+  const home = h.agentsById.get(sid);
+  const status = await h.tools.get('bot_ticket').execute({ id: t.id, action: 'status' }, { agent: home });
+  assert.match(status.text, /waits for the person's approval in its conversation: Write SKILL\.md outside the workspace\. Tell the person to answer it there/);
+  assert.equal(worker.deliveries.filter((d) => /^\[Status request\]/.test(textOfMsg(d.message))).length, 0, 'no status request it could not answer');
+  const added = await h.tools.get('bot_send_message').execute({ ticket: t.id, text: 'Hurry up.' }, { agent: home });
+  assert.match(added.text, /It waits for the person's approval in its conversation: .*: tell the person to answer it there/);
+  const recall = await h.tools.get('bot_recall').execute({ ref: `ticket/${t.id}` }, { agent: home });
+  assert.match(recall.card.waiting_for, /^the person's approval in its conversation: Write SKILL\.md/);
+  assert.equal((await h.tools.get('bot_recall').execute({ ref: 'tickets' }, { agent: home })).items.find((x) => x.id === t.id).waiting_for, recall.card.waiting_for);
+  // Allowed from the panel: it is working again, and nothing waits.
+  assert.deepEqual(await decideRoute(api, api.state().asks[0].id, { outcome: 'allowed-once' }), { ok: true });
+  assert.equal(await out, 'allowed-once');
+  const after = await api.request('GET', `/__dsh_bots/tickets/${t.id}`);
+  assert.deepEqual([after.asking, after.askingApproval], [undefined, undefined]);
+  assert.doesNotMatch((await h.tools.get('bot_ticket').execute({ id: t.id, action: 'status' }, { agent: home })).text, /waits for the person/);
+  env.dispose();
+});
+
 test('a task waiting on its question needs you (attention and its row), and the watchdog leaves it alone', async () => {
   const clock = { t: Date.now() };
   const env = boot({ now: () => clock.t });

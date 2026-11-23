@@ -8,6 +8,7 @@ import {
   CODE_TTL_MS,
   PRIVATE_TEXT,
   SECRET_MASK,
+  askNoticeText,
   channelEntry,
   channelIssue,
   contextText,
@@ -842,4 +843,20 @@ test('forwarded history on its own goes with the next message that asks about it
   await flush();
   assert.equal(s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada]\nwhat was that about?').context, undefined);
   await s.hub.stopAll();
+});
+
+test('a chat hears a tool waiting for approval in the bot\'s language, and that a reply there does not count', () => {
+  const approval = { tool: 'write', display: { en: 'Write SKILL.md outside the workspace', zh: '在工作区外写入 SKILL.md' } };
+  const questions = [{ id: 'c1', question: 'Write SKILL.md outside the workspace' }];
+  assert.equal(
+    askNoticeText({ name: 'Builder 开发', handle: 'builder' }, questions, { approval }),
+    'Builder 开发（@builder）在 DeepSeek Harness 里等你批准：\n\n在工作区外写入 SKILL.md\n\n请到 DeepSeek Harness 里允许或拒绝（Bots 面板里也可以），在这里回复不算数。',
+  );
+  assert.equal(
+    askNoticeText({ name: 'Forge', handle: 'forge' }, questions, { approval }),
+    'Forge (@forge) is waiting for your approval in DeepSeek Harness:\n\nWrite SKILL.md outside the workspace\n\nAllow or reject it in DeepSeek Harness (the Bots panel has it too); a reply here does not count.',
+  );
+  // Without text by language, the question's own; a question is unchanged.
+  assert.match(askNoticeText({ name: 'Builder 开发', handle: 'builder' }, [{ id: 'c1', question: 'Run the tool "bash"' }], { approval: { tool: 'bash' } }), /等你批准：\n\nRun the tool "bash"\n/);
+  assert.match(askNoticeText({ name: 'Forge', handle: 'forge' }, [{ id: 'db', question: 'Which database?' }]), /^Forge \(@forge\) is waiting for your answer/);
 });

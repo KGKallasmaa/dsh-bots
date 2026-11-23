@@ -241,7 +241,7 @@ test('delegation opens a ticket Session decorated as the bot, with the assignmen
   await h.step(t1.sessionId, { answer: 'Looking at the cookie code.' });
   assert.match(agent.prompts[0], /## This conversation is one task/);
   const logged = api.store.messages({ bot: forge().id });
-  assert.ok(logged.some((m) => m.ticket === t1.id && m.from === atlas().id && m.kind === 'dm'));
+  assert.ok(logged.some((m) => m.ticket === t1.id && m.from === atlas().id && m.kind === 'dm' && m.added === undefined), 'the opening is no addition');
   assert.ok(!logged.some((m) => m.text === 'Looking at the cookie code.'), "a worker's plain text reaches no one");
   assert.equal(api.state().sessionMap[t1.sessionId], forge().id);
   assert.equal(api.state().ticketMap[t1.sessionId], t1.id);
@@ -369,6 +369,10 @@ test('the requester adds to a ticket: a done one opens again; one the user stopp
   assert.match(textOfMsg(last.message), /^Bot message from @atlas \(Atlas\) about task/);
   assert.match(textOfMsg(last.message), /Answer in a report/);
   assert.deepEqual(last.message.source, { kind: 'agent-message', form: 'relay', senderSessionId: atlasSid });
+  // The chat logs it as an addition to the task, with its own words: the panel shows those, not the task again.
+  const addedMsg = api.store.messages({ bot: forge().id }).filter((m) => m.ticket === t1.id && m.from === atlas().id && m.kind === 'dm').at(-1);
+  assert.equal(addedMsg.text, 'Please also add a regression test.');
+  assert.equal(addedMsg.added, true);
   await api.request('POST', `/__dsh_bots/tickets/${t1.id}/stop`, {});
   await assert.rejects(call('bot_send_message', { ticket: t1.id, text: 'Go on anyway.' }, atlasSid), /stopped by the user/);
   // Only the requester (or the router) may add to a ticket.

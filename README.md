@@ -325,8 +325,19 @@ A bot can stop and ask you a multiple-choice question (Harness's `ask_user_quest
 above the message box, in the bot's Chat and on the task's page, and the bot or task is marked as needing you. Pick an
 option or type your own answer; answering in the Harness conversation works too, and whichever answer comes first
 counts. If the work came from a chat app, the bot also posts there that it is waiting for your answer in DeepSeek
-Harness. The answer itself is given in Harness, not in the chat. Permission prompts and plan reviews are answered in
-the conversation; the card links to it. A waiting question does not survive a restart of Harness.
+Harness. The answer itself is given in Harness, not in the chat. Plan reviews are answered in the conversation; the
+card links to it. A waiting question does not survive a restart of Harness.
+
+### When a tool waits for your approval
+
+A tool in a bot's conversation or task can wait for you to allow it, for example a file write outside the workspace or
+a command outside the sandbox. The approval shows as a card above the message box, in the bot's Chat and on the task's
+page, with what the tool wants to do, **Allow once** and **Reject**; deciding in the Harness conversation works too,
+and the first decision counts. The task is marked **Needs your approval** in the task list and in the chat line of the
+bot that handed it out, and the watchdog leaves it alone while it waits. When the bot that asked for the task checks on
+it or adds to it, it is told that the task waits for your approval, so it sends you there instead of messaging the task
+again. If the work came from a chat app, the bot posts there once that it waits for your approval in DeepSeek Harness;
+a reply in the chat does not decide it.
 
 ## Built on what Harness already does
 
@@ -344,6 +355,10 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
     whole skill folder comes along, scripts included;
   - **Add from a folder**: pick a skill folder on this machine (or a folder holding several, e.g.
     `~/.claude/skills`); linked, not copied, so editing the folder is enough;
+  - **Add from Magpie**: shown when this machine has a [Magpie](https://usemagpie.ai) skill library
+    (`~/.config/magpie/library/skills`, or under `XDG_CONFIG_HOME` for its command line). It lists the library's skills
+    and which agents Magpie gives each to. They are linked, not copied, so when Magpie updates or edits a skill, the bot
+    uses the new version; install, update and remove them in Magpie. The skill's card says **Magpie**;
   - a skill name is used once per bot: adding one that is already there is skipped, and importing again
     from the same GitHub folder updates it in place;
   - up to 50 skills can be on at once (each one on is in the bot's prompt every turn); a bot keeps up to

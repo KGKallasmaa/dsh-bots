@@ -138,11 +138,14 @@ hired before 0.11.1 that are not the dispatcher, until `lead-notice/dismiss`.
 | GET | `skills/library` | – | `{ skills: {name, description, source}[] /* installed Harness skills, ~90 here */, sources: SKILL_SOURCES }` |
 | POST | `skills/github` | `{ repo }` (owner/repo[/path] or github URL) | `{ ok, owner, repo, ref, skills: {name, description, path, files}[] }` |
 | POST | `skills/import` | `{ botId, items: [{repo, ref?, path} | {url} | {local}] }` | `{ ok, bot, added: string[], updated: string[] /* same name, same origin: replaced in place */, off: string[] /* added switched off: `skillsOn` already on */, skipped: {name, reason: 'exists'\|'full' /* `skills` kept */}[], failed }` |
-| GET | `skills/local` | – | `{ places: {path, label}[] /* skill folders of other agents found on this machine */ }` |
+| GET | `skills/local` | – | `{ places: {path, label, magpie?: true}[] /* skill folders of other agents found on this machine, Magpie's library first */ }` |
+| GET | `skills/magpie` | – | (0.17.2) `{ ok, root, skills: {name, description, path, files, agents: string[] /* Magpie's agent ids it gives the skill to, from its library.json */}[], truncated }`, or `{ ok: false, reason }` with no library. Imported as `{local: path}`; a folder inside the library is stored with `from: 'magpie'` |
 | POST | `skills/local` | `{ path }` (a skill folder or a folder of them; `~` allowed) | `{ ok, root, skills: {name, description, path, files}[], truncated }`; a `{local: path}` import links the folder (`linked: true`, `dir` = the folder), nothing is copied |
 | POST | `skills/write` | `{ botId, text }` | `{ ok, sessionId }` — asks the bot to write the skill itself (via skill-creator) and save it |
 Adding Harness skills: POST save with skills + `{name, source:'dsh', enabled:true}`.
 `catalog.skillSources = [{id:'anthropics', repo:'anthropics/skills', path:'skills', name, description}]`.
+`catalog.magpie = { root } | null` (0.17.2): Magpie's skill library, `<its files>/library/skills`, looked for in
+`~/.config/magpie` (where its app keeps its files) and then `$XDG_CONFIG_HOME/magpie` (its command line's).
 
 ### Abilities (DSH built-ins, replaces the raw tool checklist as the primary control)
 `catalog.abilities = [{ id, name:{en,zh}, description:{en,zh}, tools: string[], available: string[], risky? }]`
@@ -579,14 +582,36 @@ answered in the conversation. A timed question that ran out stays answerable (`c
 - A panel answer is logged in the timeline as a user message, `"<question>\n→ <answer>"`, with `ticket` for a task.
 - The watchdog skips a task that waits on a question. A chat the turn came from gets one notice per question.
 
+### Tool approvals (`approval/request`, 0.17.2)
+
+Harness's tool approvals (a write outside the workspace, a command outside the sandbox) do not go through
+`user-questions/request`: the tools pipeline asks `ctx.approval.request({agent, toolName, callId?, reason?,
+displayReason?, signal})`, whose answerers are `approval/request` waterfall listeners. Bots listens to it first
+(`prepend`) for a bot's home Session and for task Sessions; other Sessions pass by untouched. The request settles with
+whichever answers first, the window's card or the panel; the other is withdrawn (the forwarded request gets a signal
+that aborts once the panel decided). An abort of the call settles it `cancelled`; a window that fails, `unavailable`.
+
+- The approval is an entry of `state.asks` with `native: true` and `approval: {tool, callId?, display?: {[lang]: text}}`
+  (`display` from `displayReason`); its one question is `{id: callId | 'approval', question}`, the question being
+  `display.en`, else `reason`, else `Run the tool "<tool>"`. Task rows and views carry `asking: true` and
+  `askingApproval: true` meanwhile.
+- `POST /__dsh_bots/asks/:id/answer` with `{outcome: 'allowed-once' | 'rejected'}` decides it → `{ok: true}`, or
+  `{ok: false, reason}` for any other body or one no longer waiting. Nothing is logged in the timeline.
+- The bot that asked for the task hears what it waits for: `bot_ticket` `status` answers with it instead of sending a
+  status request, `bot_send_message` adding to the task says so, and `bot_recall` cards carry
+  `waiting_for: "the person's approval in its conversation: <question>"` (a question: `"the person's answer to its
+  question: …"`).
+- A chat the work came from gets one notice that the bot waits for approval, in the bot's language.
+
 ### Timeline
 ```ts
 Message += { thread?: string, ticket?: string, status?: 'done' | 'blocked' | 'question' | 'stalled' | 'failed',
-  notSent?: true, choices?: string[] }
+  added?: true, notSent?: true, choices?: string[] }
 ```
 | kind | Fields | Entry |
 |---|---|---|
-| `dm` | `ticket` | a bot opened the task for `to`, or added a message to it (`from: 'user'`: the user, from the panel) |
+| `dm` | `ticket` | a bot opened the task for `to` |
+| `dm` | `ticket`, `added: true` | a message added to a task opened earlier (`from: 'user'`: the user, from the panel). The chat shows its own words marked as added; older entries have no `added`, so the chat also reads each later `dm` of a task as added |
 | `dm` | `ticket`, `status: 'done' \| 'blocked' \| 'question'` | the task's report to its requester (`to`: the requesting bot); `progress` reports are not logged |
 | `dm` | `ticket`, `status: 'stalled' \| 'failed'` | the watchdog marked the task stalled, or it failed after an error |
 | `user` | `thread`, `via?`, `who?` | a message into a bot's home (`thread`: the chat Thread, or `panel:<sessionId>`) |

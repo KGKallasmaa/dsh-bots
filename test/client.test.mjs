@@ -387,6 +387,7 @@ function mockFetch(posts = []) {
     if (path.startsWith('/__dsh_bots/schedules')) return { ok: true, json: async () => ({ items: TASKS }) };
     if (path.startsWith('/__dsh_bots/teams')) return { ok: true, json: async () => TEAMS };
     if (path.startsWith('/__dsh_bots/skills/local')) return { ok: true, json: async () => ({ places: [{ path: '/home/me/.claude/skills', label: '~/.claude/skills' }] }) };
+    if (path.startsWith('/__dsh_bots/skills/magpie')) return { ok: true, json: async () => MAGPIE };
     if (path.startsWith('/__dsh_bots/skills/library')) return { ok: true, json: async () => LIBRARY };
     if (path.startsWith('/__dsh_bots/apps/external')) return { ok: true, json: async () => EXTERNAL };
     if (path.startsWith('/__dsh_bots/usage')) return { ok: true, json: async () => USAGE };
@@ -1332,6 +1333,53 @@ test('skills: the local picker scans a folder, marks conflicts and links by path
     v.hooks.runCleanups();
   } finally {
     STATE.bots = saved;
+  }
+});
+
+const MAGPIE_LIB = '/home/me/.config/magpie/library/skills';
+const MAGPIE = {
+  ok: true,
+  root: MAGPIE_LIB,
+  truncated: false,
+  skills: [
+    { name: 'review', description: 'Review a diff.', path: `${MAGPIE_LIB}/review`, files: 1, agents: ['claude', 'codex'] },
+    { name: 'tts', description: 'Text to speech.', path: `${MAGPIE_LIB}/tts`, files: 2, agents: [] },
+  ],
+};
+
+test('skills: Magpie\'s library is offered when there is one, lists who Magpie gives each skill to, and links by path', async () => {
+  const saved = STATE.bots;
+  STATE.bots = BOTS.map((b) => (b.id === 'bot-b' ? { ...b, skills: [{ id: 'k9', name: 'review', source: 'import', from: 'magpie', description: 'Review a diff.', content: '', enabled: true, origin: `${MAGPIE_LIB}/review` }] } : b));
+  try {
+    // No library on this machine: no button.
+    let v = await openTab('skills', 'bot-b');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-add-magpie']).length, 0);
+    v.hooks.runCleanups();
+    CATALOG.magpie = { root: MAGPIE_LIB };
+    v = await openTab('skills', 'bot-b');
+    // A skill linked from Magpie says so, and is managed there.
+    const card = findAll(v.tree, (n) => n.props['data-dsh-bots-skill'] === 'k9')[0];
+    assert.match(collect(findAll(card, (n) => n.props['data-dsh-bots-skill-source'] === 'magpie')[0]).join(''), /Magpie/);
+    assert.match(collect(findAll(card, (n) => n.props['data-dsh-bots-skill-origin'])[0]).join(''), /^Managed in Magpie$/);
+    assert.equal(findAll(card, (n) => n.props.title === 'Edit').length, 0);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-add-magpie'])[0].props.onClick();
+    await v.rerender(3);
+    // Listed at once, no folder to type; what Magpie gives each to; the one the bot has is linked already.
+    assert.match(collect(v.tree).join(' '), /Add skills from Magpie/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-local-path']).length, 0);
+    const row = (path) => findAll(v.tree, (n) => n.props['data-dsh-bots-local-skill'] === path)[0];
+    assert.equal(row(`${MAGPIE_LIB}/review`).props['data-state'], 'linked');
+    assert.match(collect(row(`${MAGPIE_LIB}/review`)).join(' '), /Magpie gives it to: claude, codex/);
+    assert.match(collect(row(`${MAGPIE_LIB}/tts`)).join(' '), /Magpie gives it to no agent yet/);
+    findAll(row(`${MAGPIE_LIB}/tts`), (n) => n.type === 'input')[0].props.onChange();
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-local-import'])[0].props.onClick();
+    await flush();
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/skills/import')).body, { botId: 'bot-b', items: [{ local: `${MAGPIE_LIB}/tts` }] });
+    v.hooks.runCleanups();
+  } finally {
+    STATE.bots = saved;
+    delete CATALOG.magpie;
   }
 });
 
@@ -2682,6 +2730,69 @@ test('chat: what bots say to each other runs as one compact group; Short adds tw
   );
 });
 
+test('chat: a message added to a task opened earlier shows its own words, marked Added, not the task a second time', async () => {
+  const ADDITIONS = () => {
+    const now = Date.now();
+    MESSAGES.push(
+      { id: 'm40', from: 'bot-a', to: 'bot-b', text: 'Fix the login bug\nIt fails on Safari only.', at: now - 5_000, kind: 'dm', ticket: 'tworking1' },
+      // Logged before the Host marked additions: told apart by coming after the task's opening.
+      { id: 'm41', from: 'bot-a', to: 'bot-b', text: 'Check Firefox too. It may be the same cookie.', at: now - 4_000, kind: 'dm', ticket: 'tworking1' },
+      { id: 'm42', from: 'bot-a', to: 'bot-b', text: 'The person says it is urgent.', at: now - 3_000, kind: 'dm', ticket: 'tworking1', added: true },
+      { id: 'm43', from: 'bot-b', to: 'bot-a', text: 'Found the cause.', at: now - 2_000, kind: 'dm', ticket: 'tworking1', status: 'progress' },
+    );
+  };
+  await withFixtures(ADDITIONS, async () => {
+    const v = await openTab('chat', 'bot-a');
+    await v.rerender();
+    // One row is the task; the two additions name what was added, and the report stays a report.
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-task-card'] === 'tworking1').length, 1);
+    const adds = findAll(v.tree, (n) => n.props['data-dsh-bots-added-task'] === 'tworking1');
+    assert.deepEqual(adds.map((r) => collect(findAll(r, (n) => n.props['data-dsh-bots-subject'])[0]).join('')), ['Check Firefox too.', 'The person says it is urgent.']);
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-added'] === 'tworking1').map((n) => collect(n).join('')), ['Added', 'Added']);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-added-task'] && findAll(n, (c) => c.props['data-dsh-bots-live'] || c.props['data-dsh-bots-stage']).length > 0).length, 0, 'an addition carries no stage of its own');
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-report']).map((n) => n.props['data-dsh-bots-report']), ['progress']);
+    // It opens its task.
+    adds[0].props.onClick({ stopPropagation() {} });
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tworking1').length, 1);
+    v.hooks.runCleanups();
+  });
+  await withLive({ state: { display: { botMessages: 'full' } } }, () =>
+    withFixtures(ADDITIONS, async () => {
+      const v = await openTab('chat', 'bot-a');
+      await v.rerender();
+      // In full: the task card once, the added words in whole, and a link to the task.
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-task-card']).map((n) => n.props['data-dsh-bots-task-card']), ['tworking1']);
+      assert.match(collect(v.tree).join(' '), /It may be the same cookie\./);
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-added-task'] === 'tworking1' && n.type === 'button').length, 2);
+      v.hooks.runCleanups();
+    }),
+  );
+});
+
+test('chat: a task waiting for the person says it asks them, before what it last ran', async () => {
+  const now = Date.now();
+  const task = { kind: 'tool', tool: 'write', detail: 'SKILL.md', startedAt: now - 60_000, stepAt: now - 55_000, steps: 4, botId: 'bot-b', title: 'Fix the login bug' };
+  const row = TICKETS.find((r) => r.id === 'tworking1');
+  row.asking = true;
+  try {
+    for (const level of ['line', 'full']) {
+      await withLive({ state: { at: now, taskActivity: { tworking1: task }, display: { botMessages: level } } }, () =>
+        withFixtures(DELEGATIONS, async () => {
+          const v = await openTab('chat', 'bot-a');
+          await v.rerender();
+          const [line] = findAll(v.tree, (n) => n.props.className === 'dshb-tline' && findAll(n, (c) => c.props['data-dsh-bots-task-asking'] === 'tworking1').length > 0);
+          assert.ok(line, `${level}: the row says the task asks you`);
+          assert.equal(findAll(line, (n) => n.props['data-dsh-bots-live'] === 'chip').length, 0, `${level}: not that it is still writing`);
+          v.hooks.runCleanups();
+        }),
+      );
+    }
+  } finally {
+    delete row.asking;
+  }
+});
+
 test('settings: messages between bots take one of three levels and save with the rest', async () => {
   const v = await openView('data-dsh-bots-settings');
   assert.match(collect(v.tree).join(' '), /Messages between bots/);
@@ -2838,6 +2949,33 @@ test('questions: the bot\'s chat shows its question, one click answers it, and i
     assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-ask-error'])[0]).join(''), /no longer waiting/);
     assert.ok(askCard(v.tree, 'ask-1'));
   });
+});
+
+test('approvals: a tool waiting for approval says so on its task, and is allowed once or rejected from the panel', async () => {
+  const approval = { id: 'ask-9', botId: 'bot-b', sessionId: 'ticket-tworking1', ticketId: 'tworking1', at: Date.now(), native: true, approval: { tool: 'write', callId: 'c1', display: { en: 'Write SKILL.md outside the workspace', zh: '在工作区外写入 SKILL.md' } }, questions: [{ id: 'c1', question: 'Write SKILL.md outside the workspace' }] };
+  const row = TICKETS.find((r) => r.id === 'tworking1');
+  row.askingApproval = true;
+  try {
+    await withAsks({ asks: [approval], rows: { tworking1: true } }, async (v) => {
+      click(v.tree, 'data-dsh-bots-tasks-entry');
+      await v.rerender();
+      assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-task-asking'] === 'tworking1')[0]).join(''), /Needs your approval/);
+      click(v.tree, 'data-dsh-bots-task', 'tworking1');
+      await v.rerender();
+      const card = askCard(v.tree, 'ask-9');
+      assert.match(collect(card).join(' '), /Bob is waiting for your approval .*Write SKILL\.md outside the workspace .*Tool: write .*Allowing it lets this one call go ahead/);
+      assert.equal(findAll(card, (n) => n.props['data-dsh-bots-ask-option'] !== undefined || n.props['data-dsh-bots-ask-other'] !== undefined).length, 0, 'no options or free text');
+      click(v.tree, 'data-dsh-bots-approval-allow', 'ask-9');
+      await v.rerender(1);
+      assert.match(v.posts.at(-1).path, /\/asks\/ask-9\/answer$/);
+      assert.deepEqual(v.posts.at(-1).body, { outcome: 'allowed-once' });
+      click(v.tree, 'data-dsh-bots-approval-reject', 'ask-9');
+      await v.rerender(1);
+      assert.deepEqual(v.posts.at(-1).body, { outcome: 'rejected' });
+    });
+  } finally {
+    delete row.askingApproval;
+  }
 });
 
 test('questions: a task\'s question puts it under Needs you; several questions are ticked and submitted; an approval opens the conversation', async () => {
@@ -3203,9 +3341,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.17\.1\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.17\.2\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.17.1' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.17.2' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();

@@ -968,6 +968,64 @@ test('chat channels: the real Discord module connects through the host and a rep
   await settle();
 });
 
+test('Magpie skills: its library is found and listed with the agents Magpie gives each to; a skill linked from it says so', async () => {
+  const { mkdtempSync: mkd, mkdirSync, writeFileSync } = await import('node:fs');
+  const { magpieLibraryDir, inMagpieLibrary } = await import('../lib/skills.mjs');
+  const home = mkd(join(tmpdir(), 'magpie-home-'));
+  const lib = join(home, '.config', 'magpie', 'library', 'skills');
+  const mk = (rel, text) => (mkdirSync(join(lib, rel, '..'), { recursive: true }), writeFileSync(join(lib, rel), text));
+  mk('tts/SKILL.md', '---\nname: tts\ndescription: Text to speech.\n---\n# TTS');
+  mk('tts/scripts/tts.py', 'print(1)');
+  mk('review/SKILL.md', '---\nname: review\ndescription: Review a diff.\n---\n# Review');
+  writeFileSync(join(home, '.config', 'magpie', 'library.json'), JSON.stringify({ skills: [{ name: 'tts', agents: [] }, { name: 'review', agents: ['claude', 'codex'] }] }));
+  // The app's place first; the command line's XDG_CONFIG_HOME after it; none at all.
+  assert.equal(magpieLibraryDir({ home, env: {} }), lib);
+  const xdg = mkd(join(tmpdir(), 'magpie-xdg-'));
+  mkdirSync(join(xdg, 'magpie', 'library', 'skills'), { recursive: true });
+  assert.equal(magpieLibraryDir({ home: tmpdir(), env: { XDG_CONFIG_HOME: xdg } }), join(xdg, 'magpie', 'library', 'skills'));
+  assert.equal(magpieLibraryDir({ home: mkd(join(tmpdir(), 'no-magpie-')), env: {} }), '');
+  assert.equal(inMagpieLibrary(join(lib, 'tts'), { home, env: {} }), true);
+  assert.equal(inMagpieLibrary(join(home, 'elsewhere', 'tts'), { home, env: {} }), false);
+
+  const before = process.env.DSH_HOME;
+  process.env.DSH_HOME = mkd(join(tmpdir(), 'bots-magpie-'));
+  let mapi;
+  try {
+    mapi = apply(fakeHarness().ctx, {}, { home, env: {} });
+  } finally {
+    process.env.DSH_HOME = before;
+  }
+  // The panel learns there is a library, and finds it first among the folders on this machine.
+  assert.deepEqual((await mapi.routes.catalog.get()).magpie, { root: lib });
+  assert.deepEqual(mapi.routes['skills/local'].get().places[0], { path: lib, label: 'Magpie', magpie: true });
+  const listed = mapi.routes['skills/magpie'].get();
+  assert.equal(listed.ok, true);
+  assert.equal(listed.root, lib);
+  assert.deepEqual(listed.skills.map((s) => [s.name, s.agents, s.files]), [['review', ['claude', 'codex'], 1], ['tts', [], 2]]);
+
+  // Linked, not copied, and marked as Magpie's; a folder elsewhere is not.
+  const bot = mapi.store.save({ name: 'Voice', handle: 'voice' });
+  const r = await mapi.routes['skills/import'].post({ botId: bot.id, items: [{ local: join(lib, 'tts') }] });
+  assert.deepEqual(r.added, ['tts']);
+  const tts = mapi.store.get(bot.id).skills.find((s) => s.name === 'tts');
+  assert.deepEqual([tts.origin, tts.linked, tts.from], [join(lib, 'tts'), true, 'magpie']);
+  const other = mkd(join(tmpdir(), 'own-skill-'));
+  writeFileSync(join(other, 'SKILL.md'), '---\nname: mine\n---\n# Mine');
+  await mapi.routes['skills/import'].post({ botId: bot.id, items: [{ local: other }] });
+  assert.equal(mapi.store.get(bot.id).skills.find((s) => s.name === 'mine').from, undefined);
+
+  // Without a library: no source in the panel, and the route says why.
+  process.env.DSH_HOME = mkd(join(tmpdir(), 'bots-no-magpie-'));
+  let napi;
+  try {
+    napi = apply(fakeHarness().ctx, {}, { home: mkd(join(tmpdir(), 'no-magpie-home-')), env: {} });
+  } finally {
+    process.env.DSH_HOME = before;
+  }
+  assert.equal((await napi.routes.catalog.get()).magpie, null);
+  assert.match(napi.routes['skills/magpie'].get().reason, /no Magpie skill library/);
+});
+
 test('local skills: a folder is scanned and linked once, read live, and name clashes are skipped', async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync } = await import('node:fs');
   const { listLocalSkills, resolveLocalPath, mergeImported } = await import('../lib/skills.mjs');

@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.17.1';
+    const BOTS_VERSION = '0.17.2';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -1494,6 +1494,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const names = threadNamesOf(items);
       const rows = [];
       let lastDay = '';
+      const added = addedToTasks(items);
       const shown = (fold ? fold.index.main : items).filter((m) => !selfTalk(m));
       shown.forEach((m, i) => {
         const at = toMs(m.at);
@@ -1523,9 +1524,10 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         }
         // What bots say to each other runs together in one compact group, under the main thread.
         if (isTraffic(m)) {
+          const item = added.has(m) && m.added !== true ? { ...m, added: true } : m;
           const last = rows[rows.length - 1];
-          if (last && last.traffic) last.items.push(m);
-          else rows.push({ traffic: true, key: `g${m.id ?? i}`, items: [m] });
+          if (last && last.traffic) last.items.push(item);
+          else rows.push({ traffic: true, key: `g${m.id ?? i}`, items: [item] });
           return;
         }
         const prev = shown[i - 1];
@@ -1598,6 +1600,21 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
 
+    /**
+     * The messages between bots that add to a task opened earlier, oldest first: those the Host marks
+     * `added`, and, in a chat logged before it did, each later one of a task whose opening is above.
+     */
+    function addedToTasks(items) {
+      const opened = new Set();
+      const added = new Set();
+      for (const m of items) {
+        const id = messageTicket(m);
+        if (!id || !isTraffic(m) || m.kind !== 'dm' || messageReport(m) || messageNotice(m)) continue;
+        if (m.added === true || opened.has(id)) added.add(m);
+        opened.add(id);
+      }
+      return added;
+    }
     /** A message between two bots (a delegation, a report, a DM), or a scheduled prompt: secondary traffic. */
     const isTraffic = (m) => m?.kind === 'system' || ((m?.kind === 'dm' || m?.kind === 'report') && m.from !== 'user' && m.to !== 'user');
     /** A bot's message to itself: work it hands itself (or its own report back). The chat leaves it out: to the person it is the bot at work. */
@@ -1636,6 +1653,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
      * One message between bots. `line`: who to whom, the task's title (or the first sentence), its stage
      * (alive while it works) and the time; a click opens the task, or unfolds a message without one.
      * `short`: that and two lines of the text. `full`: the whole text, and a delegation's task card.
+     * A message added to a task opened earlier (`added`) shows its own words and says it was added.
      */
     function TrafficItem({ t, m, level, time }) {
       const [open, setOpen] = useState(false);
@@ -1644,26 +1662,31 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       const ticketId = messageTicket(m);
       const report = messageReport(m);
       const notice = messageNotice(m);
-      const delegation = Boolean(ticketId) && !report && !notice;
+      const added = Boolean(ticketId) && !report && !notice && m.added === true;
+      const delegation = Boolean(ticketId) && !report && !notice && !added;
       usePoll(() => (delegation ? loadTicket(ticketId) : undefined), 10_000, [ticketId, delegation]);
       const view = delegation ? store.tickets.get(ticketId)?.view ?? null : null;
       const live = delegation ? liveTask(ticketId) : null;
       const stage = str(view?.stage) || (live ? 'working' : '');
       const subject = delegation ? str(view?.title).trim() || firstLine(m.text) : firstSentence(m.text);
       const full = level === 'full' || open;
+      // A task waiting for the person's answer (or approval) says so before what it last ran.
       const chip = notice
         ? h(StageChip, { t, stage: notice })
         : report
           ? h(ReportChip, { t, status: report })
           : m.kind === 'system'
             ? h(Badge, { color: C.warn }, t('scheduled'))
-            : delegation
-              ? live && (!stage || stage === 'working')
-                ? h(LiveChip, { t, a: live })
-                : view?.asking
+            : added
+              ? h(Badge, { color: C.muted, title: t('addedToTaskHint'), 'data-dsh-bots-added': ticketId }, t('addedToTask'))
+              : delegation
+                ? view?.asking
                   ? h(TaskChip, { t, row: view })
-                  : h(StageChip, { t, stage })
-              : null;
+                  : live && (!stage || stage === 'working')
+                    ? h(LiveChip, { t, a: live })
+                    : h(StageChip, { t, stage })
+                : null;
+      const taskAttr = added ? 'data-dsh-bots-added-task' : 'data-dsh-bots-report-task';
       const who = [
         h(PartyAvatar, { key: 'fa', p: from, size: 16 }),
         h('span', { key: 'fn', className: 'dshb-tname' }, from.name),
@@ -1682,8 +1705,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             { className: 'dshb-tline', style: { cursor: 'default' } },
             who,
             h('span', { style: { flex: 1 } }),
-            delegation ? (live ? h(LiveChip, { t, a: live }) : null) : chip,
-            ticketId && !delegation ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY, flex: 'none' } }, t('openTask')) : null,
+            delegation ? (view?.asking ? h(TaskChip, { t, row: view }) : live ? h(LiveChip, { t, a: live }) : null) : chip,
+            ticketId && !delegation ? h('button', { type: 'button', className: 'dshb-link', [taskAttr]: ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY, flex: 'none' } }, t('openTask')) : null,
             open && level !== 'full' ? h('button', { type: 'button', className: 'dshb-link', onClick: () => setOpen(false), style: { fontSize: TINY, flex: 'none' } }, t('showLess')) : null,
             timeEl,
           ),
@@ -1710,7 +1733,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             type: 'button',
             className: 'dshb-tline',
             title: ticketId ? `${t('openTask')}: ${subject}` : t('showMore'),
-            ...(delegation ? { 'data-dsh-bots-task-card': ticketId } : ticketId ? { 'data-dsh-bots-report-task': ticketId } : { 'data-dsh-bots-expand': m.id ?? true }),
+            ...(delegation ? { 'data-dsh-bots-task-card': ticketId } : ticketId ? { [taskAttr]: ticketId } : { 'data-dsh-bots-expand': m.id ?? true }),
             onClick: (e) => {
               e?.stopPropagation?.();
               if (ticketId) openTicket(ticketId);
@@ -2675,6 +2698,22 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           .finally(() => setBusy(false));
       };
       const submit = () => (complete ? post(questions.map((q) => item(q, pickOf(q)))) : undefined);
+      // A tool waiting for approval (Bots 0.17.2): allowed once or rejected here, or in the conversation.
+      const approval = ask.approval && typeof ask.approval === 'object' ? ask.approval : null;
+      const decide = (outcome) => {
+        if (busy) return;
+        setBusy(true);
+        setError('');
+        postJson(`asks/${encodeURIComponent(ask.id)}/answer`, { outcome })
+          .then((r) => {
+            if (r?.ok) {
+              onAnswered?.();
+              void refreshState();
+            } else setError(str(r?.reason) || t('askFailed'));
+          })
+          .finally(() => setBusy(false));
+      };
+      const approvalText = (q) => str(approval?.display?.[langOf(t)]) || str(approval?.display?.en) || str(q.question);
       const choose = (q, label) => {
         if (quick) return post([{ id: q.id, selected: [label] }]);
         change(q, (p) => (q.multiSelect ? { selected: p.selected.includes(label) ? p.selected.filter((x) => x !== label) : [...p.selected, label] } : { selected: [label], custom: '' }));
@@ -2726,13 +2765,14 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       return h(
         'div',
         { className: 'dshb-card dshb-fade', 'data-dsh-bots-ask': ask.id, 'data-native': ask.native ? true : undefined, style: { borderColor: tint(C.warn, 55), display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 } },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, fontWeight: 600, color: C.warn } }, Icon.question(13), t(ask.native ? 'askNativeTitle' : 'askTitle', { name })),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, fontWeight: 600, color: C.warn } }, Icon.question(13), t(approval ? 'askApprovalTitle' : ask.native ? 'askNativeTitle' : 'askTitle', { name })),
         questions.map((q) =>
           h(
             'div',
             { key: q.id, 'data-dsh-bots-ask-question': q.id, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
             q.header ? h('div', null, h(Badge, { color: C.label }, str(q.header))) : null,
-            h('div', { style: { fontWeight: 600, fontSize: FONT, wordBreak: 'break-word' } }, str(q.question)),
+            h('div', { style: { fontWeight: 600, fontSize: FONT, wordBreak: 'break-word' } }, approval ? approvalText(q) : str(q.question)),
+            approval && str(approval.tool) ? h('div', { 'data-dsh-bots-approval-tool': approval.tool, style: { fontSize: TINY, color: C.muted } }, t('askApprovalTool', { tool: str(approval.tool) })) : null,
             q.detail ? h(Clamp, { t, text: q.detail, lines: 6, style: { fontSize: SMALL, color: C.muted } }) : null,
             ask.native ? null : q.multiSelect ? h('div', { style: { fontSize: TINY, color: C.faint } }, t('askMulti')) : null,
             ask.native || !Array.isArray(q.options) || q.options.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, q.options.filter((o) => o && typeof o.label === 'string').map((o) => option(q, o))),
@@ -2744,7 +2784,9 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           ? h(
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-              h('span', { style: { fontSize: SMALL, color: C.muted, flex: 1, minWidth: 160 } }, t('askNativeHint')),
+              h('span', { style: { fontSize: SMALL, color: C.muted, flex: 1, minWidth: 160 } }, t(approval ? 'askApprovalHint' : 'askNativeHint')),
+              approval ? h(Btn, { size: 'sm', disabled: busy, onClick: () => decide('rejected'), 'data-dsh-bots-approval-reject': ask.id }, t('approvalReject')) : null,
+              approval ? h(Btn, { kind: 'primary', size: 'sm', disabled: busy, onClick: () => decide('allowed-once'), 'data-dsh-bots-approval-allow': ask.id }, t('approvalAllowOnce')) : null,
               env?.canOpen?.()
                 ? h(Btn, { icon: Icon.chat(14), size: 'sm', 'data-dsh-bots-ask-open': ask.sessionId, onClick: () => (env.openSession?.(ask.sessionId) === true ? undefined : setError(t('openFailed'))) }, t('openConversation'))
                 : null,
@@ -3253,7 +3295,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       return h(Badge, { color: STAGE_COLOR[stage], 'data-dsh-bots-stage': stage }, stage === 'working' ? h(StatusDot, { status: 'running', size: 6 }) : null, t(`stage_${stage}`));
     }
     /** A task's stage, or that it waits for your answer to its question. */
-    const TaskChip = ({ t, row }) => (row?.asking ? h(Badge, { color: C.warn, 'data-dsh-bots-task-asking': row.id }, Icon.question(11), t('askingChip')) : h(StageChip, { t, stage: row?.stage }));
+    const TaskChip = ({ t, row }) => (row?.asking ? h(Badge, { color: C.warn, 'data-dsh-bots-task-asking': row.id }, Icon.question(11), t(row.askingApproval ? 'approvalChip' : 'askingChip')) : h(StageChip, { t, stage: row?.stage }));
     const ReportChip = ({ t, status }) => (REPORT_COLOR[status] ? h(Badge, { color: REPORT_COLOR[status], 'data-dsh-bots-report': status }, t(`report_${status}`)) : null);
     /** Who asked for a task: you (also a card you handed to a bot on the board), or a bot (the dispatcher, or the bot of a parent task). */
     const requesterBot = (row) => {
@@ -5516,13 +5558,15 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
     const onCount = (skills) => skills.filter((s) => s.enabled !== false).length;
     /** A skill linked to a folder on this machine (its origin is a path, not a URL): read live, never copied. */
     const isLocalSkill = (s) => s?.source === 'import' && typeof s.origin === 'string' && s.origin !== '' && !/^https?:\/\//i.test(s.origin);
-    const SOURCE_COLOR = { dsh: '#2563eb', import: '#475569', own: '#16a34a' };
-    function SourceBadge({ t, source, local }) {
+    /** A skill linked from Magpie's skill library (Bots 0.17.2): Magpie keeps it up to date there. */
+    const isMagpieSkill = (s) => isLocalSkill(s) && s.from === 'magpie';
+    const SOURCE_COLOR = { dsh: '#2563eb', import: '#475569', own: '#16a34a', magpie: '#0f766e' };
+    function SourceBadge({ t, source, local, magpie }) {
       return h(
         Badge,
-        { color: SOURCE_COLOR[source] ?? C.muted, 'data-dsh-bots-skill-source': source },
+        { color: SOURCE_COLOR[magpie ? 'magpie' : source] ?? C.muted, 'data-dsh-bots-skill-source': magpie ? 'magpie' : source },
         source === 'dsh' ? Icon.layers(10) : source === 'import' ? (local ? Icon.folder(10) : Icon.github(10)) : Icon.edit(10),
-        t(local ? 'src_local' : `src_${source}`),
+        t(magpie ? 'src_magpie' : local ? 'src_local' : `src_${source}`),
       );
     }
     /** The bot's skills by lower-cased name: what an import could collide with. */
@@ -5790,8 +5834,12 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       );
     }
 
-    /** Import skill folders from this machine: one skill folder, or a folder that holds several. */
-    function LocalPicker({ t, bot, catalog, env, onClose, onImported, toast }) {
+    /**
+     * Import skill folders from this machine: one skill folder, or a folder that holds several. With
+     * `magpie`, the skills of Magpie's library (Bots 0.17.2), listed at once with the agents Magpie gives
+     * each to; they are linked the same way, so Magpie's updates reach the bot.
+     */
+    function LocalPicker({ t, bot, catalog, env, onClose, onImported, toast, magpie = false }) {
       const places = useLoaded('localPlaces', 'skills/local')?.places;
       const [path, setPath] = useState('');
       const [listing, setListing] = useState(null); // {root, skills, truncated}
@@ -5824,6 +5872,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
           })
           .finally(() => setLoading(false));
       };
+      useEffect(() => {
+        if (!magpie) return;
+        setLoading(true);
+        getJson('skills/magpie')
+          .then((r) => {
+            if (r?.ok && Array.isArray(r.skills)) setListing(r);
+            else setError(str(r?.reason) || t('magpieFailed'));
+          })
+          .catch(() => setError(t('magpieFailed')))
+          .finally(() => setLoading(false));
+      }, [magpie]);
       const canPick = typeof env?.pickDirectory === 'function' && env.canPickDirectory?.() !== false;
       const choose = () => {
         setError('');
@@ -5852,38 +5911,40 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
       return h(
         Modal,
         {
-          title: t('localPickerTitle'),
+          title: t(magpie ? 'magpiePickerTitle' : 'localPickerTitle'),
           closeLabel: t('close'),
           width: 700,
           onClose,
           footer: [
-            importing ? h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted } }, h('span', { className: 'dshb-spinner' }), t('importing')) : h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', fontSize: TINY, color: C.faint } }, t('localNote')),
+            importing ? h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted } }, h('span', { className: 'dshb-spinner' }), t('importing')) : h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', fontSize: TINY, color: C.faint } }, t(magpie ? 'magpieNote' : 'localNote')),
             h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
             h(Btn, { key: 'i', kind: 'primary', icon: Icon.folder(12), disabled: sel.length === 0 || importing, onClick: doImport, 'data-dsh-bots-local-import': true }, t('addN', { n: sel.length })),
           ],
         },
-        h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('localHint')),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8 } },
-          h(Input, {
-            value: path,
-            mono: true,
-            autoFocus: true,
-            placeholder: '~/skills/my-skill',
-            'data-dsh-bots-local-path': true,
-            onChange: (e) => setPath(e.target.value),
-            onKeyDown: (e) => {
-              if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
-                e.preventDefault();
-                scan(path);
-              }
-            },
-          }),
-          canPick ? h(Btn, { icon: Icon.folder(13), disabled: loading, onClick: choose, 'data-dsh-bots-local-pick': true }, t('chooseFolder')) : null,
-          h(Btn, { disabled: !path.trim() || loading, onClick: () => scan(path), 'data-dsh-bots-local-scan': true }, loading ? t('loading') : t('scan')),
-        ),
-        Array.isArray(places) && places.length
+        h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t(magpie ? 'magpieHint' : 'localHint')),
+        magpie
+          ? null
+          : h(
+              'div',
+              { style: { display: 'flex', gap: 8 } },
+              h(Input, {
+                value: path,
+                mono: true,
+                autoFocus: true,
+                placeholder: '~/skills/my-skill',
+                'data-dsh-bots-local-path': true,
+                onChange: (e) => setPath(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
+                    e.preventDefault();
+                    scan(path);
+                  }
+                },
+              }),
+              canPick ? h(Btn, { icon: Icon.folder(13), disabled: loading, onClick: choose, 'data-dsh-bots-local-pick': true }, t('chooseFolder')) : null,
+              h(Btn, { disabled: !path.trim() || loading, onClick: () => scan(path), 'data-dsh-bots-local-scan': true }, loading ? t('loading') : t('scan')),
+            ),
+        !magpie && Array.isArray(places) && places.length
           ? h(
               'div',
               { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: TINY, color: C.faint, marginTop: -6 } },
@@ -5942,14 +6003,22 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                         disabled: state !== 'new',
                         meta: state === 'linked' ? t('linked') : state === 'taken' ? t('nameTaken') : t('nFiles', { n: s.files ?? 0 }),
                         description: s.description,
-                        note: bad ? h('span', { style: { color: C.error } }, bad.reason) : state === 'new' && inHarness.has(s.name) ? t('alsoInHarness') : rel && rel !== s.name ? h('span', { className: 'dshb-mono' }, rel) : null,
+                        note: bad
+                          ? h('span', { style: { color: C.error } }, bad.reason)
+                          : magpie
+                            ? h('span', { 'data-dsh-bots-magpie-agents': (Array.isArray(s.agents) ? s.agents : []).join(',') }, Array.isArray(s.agents) && s.agents.length ? t('magpieAgents', { list: s.agents.join(', ') }) : t('magpieNoAgent'))
+                            : state === 'new' && inHarness.has(s.name)
+                              ? t('alsoInHarness')
+                              : rel && rel !== s.name
+                                ? h('span', { className: 'dshb-mono' }, rel)
+                                : null,
                       });
                     }),
                   ),
               listing.truncated ? h('div', { style: { fontSize: TINY, color: C.faint } }, t('localTruncated')) : null,
             )
           : loading
-            ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted, padding: 8 } }, h('span', { className: 'dshb-spinner' }), t('readingFolder'))
+            ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted, padding: 8 } }, h('span', { className: 'dshb-spinner' }), t(magpie ? 'readingMagpie' : 'readingFolder'))
             : null,
       );
     }
@@ -6043,6 +6112,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
             h(Btn, { kind: 'primary', icon: Icon.layers(13), onClick: () => setPicker('harness'), 'data-dsh-bots-add-harness': true }, t('addFromHarness')),
             h(Btn, { icon: Icon.github(13), onClick: () => setPicker('github'), 'data-dsh-bots-add-github': true }, t('importGithub')),
             h(Btn, { icon: Icon.folder(13), onClick: () => setPicker('local'), 'data-dsh-bots-add-local': true }, t('importLocal')),
+            // Magpie's skill library, when there is one on this machine (Bots 0.17.2).
+            catalog?.magpie ? h(Btn, { icon: Icon.layers(13), onClick: () => setPicker('magpie'), 'data-dsh-bots-add-magpie': true }, t('importMagpie')) : null,
             h(Btn, { icon: Icon.wand(13), onClick: () => setPicker('write'), 'data-dsh-bots-add-write': true }, t('letBotWrite')),
             h('span', { style: { flex: 1 } }),
             editing ? null : h('button', { type: 'button', className: 'dshb-link', style: { fontSize: SMALL, color: C.muted }, onClick: () => setEditing({ name: '', description: '', content: '', enabled: true }), 'data-dsh-bots-add-skill': true }, t('writeByHand')),
@@ -6076,7 +6147,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                         'div',
                         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
                         h('span', { className: 'dshb-mono', style: { fontWeight: 650, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.name }, s.name),
-                        h(SourceBadge, { t, source: src, local: isLocalSkill(s) }),
+                        h(SourceBadge, { t, source: src, local: isLocalSkill(s), magpie: isMagpieSkill(s) }),
                         h(Switch, {
                           on: s.enabled !== false,
                           disabled: busy,
@@ -6095,7 +6166,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
                           ? h('span', { style: { fontSize: TINY, color: C.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t('harnessManaged'))
                           : src === 'import'
                             ? isLocalSkill(s)
-                              ? h('span', { className: 'dshb-mono', 'data-dsh-bots-skill-origin': s.origin, 'data-missing': s.missing ? true : undefined, style: { fontSize: TINY, color: s.missing ? C.error : C.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.missing ? `${t('folderMissing')} ${s.origin}` : `${t('linkedHint')} ${s.origin}` }, s.missing ? t('folderMissing') : str(s.origin).split(/[\\/]/).filter(Boolean).slice(-2).join('/'))
+                              ? h('span', { className: 'dshb-mono', 'data-dsh-bots-skill-origin': s.origin, 'data-missing': s.missing ? true : undefined, style: { fontSize: TINY, color: s.missing ? C.error : C.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.missing ? `${t('folderMissing')} ${s.origin}` : `${t(isMagpieSkill(s) ? 'magpieLinkedHint' : 'linkedHint')} ${s.origin}` }, s.missing ? t('folderMissing') : isMagpieSkill(s) ? t('magpieManaged') : str(s.origin).split(/[\\/]/).filter(Boolean).slice(-2).join('/'))
                               : h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden' } }, s.origin ? h(ExtLink, { href: s.origin, title: s.origin }, str(s.origin).replace(/^https:\/\/github\.com\//, '').split('/').slice(0, 2).join('/')) : null)
                             : h('span', { style: { fontSize: TINY, color: C.faint, flex: 1 } }, t('chars', { n: str(s.content).length })),
                         src === 'dsh' || isLocalSkill(s) ? null : h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.edit(12), title: t('edit'), onClick: () => setEditing({ ...s, description: str(s.description), content: str(s.content) }) }),
@@ -6109,6 +6180,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         picker === 'harness' ? h(HarnessPicker, { t, bot, busy, onClose: () => setPicker(null), onAdd: addHarness }) : null,
         picker === 'github' ? h(GithubPicker, { t, lang, bot, catalog, toast, onClose: () => setPicker(null), onImported: () => setPicker(null) }) : null,
         picker === 'local' ? h(LocalPicker, { t, bot, catalog, env, toast, onClose: () => setPicker(null), onImported: () => setPicker(null) }) : null,
+        picker === 'magpie' ? h(LocalPicker, { t, bot, catalog, env, toast, magpie: true, onClose: () => setPicker(null), onImported: () => setPicker(null) }) : null,
         picker === 'write'
           ? h(WriteSkillModal, {
               t,
@@ -9908,6 +9980,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         reimport: "Imported · import again to update",
         skillNameTaken: "This bot already has a skill named “{name}”.",
         importLocal: "Add from a folder",
+        importMagpie: "Add from Magpie",
+        magpiePickerTitle: "Add skills from Magpie",
+        magpieHint: "The skills in Magpie's library on this machine. Magpie still manages them: install, update and remove them there.",
+        magpieNote: "Linked, never copied: when Magpie updates a skill, the bot uses the new version.",
+        magpieAgents: "Magpie gives it to: {list}",
+        magpieNoAgent: "Magpie gives it to no agent yet",
+        magpieFailed: "Could not read Magpie's skill library.",
+        readingMagpie: "Reading Magpie's library…",
+        magpieManaged: "Managed in Magpie",
+        magpieLinkedHint: "Read from Magpie's library each time; update or remove it in Magpie.",
+        src_magpie: "Magpie",
         localPickerTitle: "Add skills from a local folder",
         localHint: "Pick a skill folder (one with a SKILL.md), or a folder that holds several.",
         localNote: "Linked, never copied: edit the folder and the bot uses the new version.",
@@ -10027,6 +10110,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askTitle: '{name} is asking you',
         askNativeTitle: '{name} is waiting for you in the conversation',
         askNativeHint: 'Answer this one in the conversation.',
+        askApprovalTitle: '{name} is waiting for your approval',
+        askApprovalTool: 'Tool: {tool}',
+        askApprovalHint: 'Allowing it lets this one call go ahead. You can also decide in the conversation.',
+        approvalAllowOnce: 'Allow once',
+        approvalReject: 'Reject',
         askContinued: '{name} went on with other work; your answer still reaches it.',
         askMulti: 'Choose all that apply',
         askOtherPlaceholder: 'Or type your own answer',
@@ -10038,6 +10126,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         groupUnfold: 'Show this team',
         groupBusy: '{n} at work',
         askingChip: 'Asks you',
+        approvalChip: 'Needs your approval',
         tasksInProgress: '{n} in progress',
         // requests (needs, Bots 0.11)
         needs: 'Requests',
@@ -10179,6 +10268,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         untitledTask: 'Untitled task',
         openTask: 'Open task',
         followUpTask: 'Went to its task',
+        addedToTask: 'Added',
+        addedToTaskHint: 'Added to a task handed out earlier; it is not a new task.',
         followUpHint: 'A follow-up in the chat a task came from goes straight to that task.',
         taskOf: 'Task · {name}',
         stage_question: 'Needs your answer',
@@ -10982,6 +11073,17 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         reimport: "已导入 · 再次导入可更新",
         skillNameTaken: "这个 Bot 已经有名为“{name}”的技能。",
         importLocal: "从本地文件夹添加",
+        importMagpie: "从 Magpie 添加",
+        magpiePickerTitle: "从 Magpie 添加技能",
+        magpieHint: "本机 Magpie 技能库里的技能。它们仍由 Magpie 管理：安装、更新和删除都在 Magpie 里做。",
+        magpieNote: "只引用、不复制：Magpie 更新了技能，Bot 就用新的。",
+        magpieAgents: "Magpie 已分发给：{list}",
+        magpieNoAgent: "Magpie 还没有分发给任何 agent",
+        magpieFailed: "读不到 Magpie 的技能库。",
+        readingMagpie: "正在读取 Magpie 技能库…",
+        magpieManaged: "由 Magpie 管理",
+        magpieLinkedHint: "每次都从 Magpie 技能库读取，要更新或删除请在 Magpie 里操作。",
+        src_magpie: "Magpie",
         localPickerTitle: "从本地文件夹添加技能",
         localHint: "选一个技能文件夹（里面有 SKILL.md），或者一个装着多个技能的文件夹。",
         localNote: "只引用、不复制：改了原文件夹，Bot 就用新的。",
@@ -11101,6 +11203,11 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         askTitle: '{name} 在问你',
         askNativeTitle: '{name} 在对话里等你决定',
         askNativeHint: '这一项请在对话里回答。',
+        askApprovalTitle: '{name} 在等你批准',
+        askApprovalTool: '工具：{tool}',
+        askApprovalHint: '允许只放行这一次调用。也可以在对话里决定。',
+        approvalAllowOnce: '允许一次',
+        approvalReject: '拒绝',
         askContinued: '{name} 先去做别的了，你的回答仍会送到。',
         askMulti: '可多选',
         askOtherPlaceholder: '或者输入你自己的回答',
@@ -11112,6 +11219,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         groupUnfold: '展开这个团队',
         groupBusy: '{n} 个在忙',
         askingChip: '在问你',
+        approvalChip: '等你批准',
         tasksInProgress: '{n} 个进行中',
         // requests (needs, Bots 0.11)
         needs: '需求',
@@ -11253,6 +11361,8 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         untitledTask: '未命名任务',
         openTask: '打开任务',
         followUpTask: '已交给所属任务',
+        addedToTask: '补充',
+        addedToTaskHint: '补充到之前派出的任务，不是新任务。',
         followUpHint: '在任务来源的聊天里跟进，消息会直接交给那个任务。',
         taskOf: '任务 · {name}',
         stage_question: '等你回答',
