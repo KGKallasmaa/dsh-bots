@@ -282,7 +282,7 @@ Bot 在普通的 Harness 会话里工作，所以 Harness 能做的它都能做�
 | 销售与收款 | Stripe 收款 🔑、HubSpot 客户管理 🔑 |
 | 团队与办公 | 飞书 🔑、Telegram 🔑、Slack 🔑、Discord 🔑（聊天应用，见下文）、GitHub Issues 🔑（[见下文](#从-github-issue-派活)）、飞书开放平台 🔑、Notion 🔑、Slack 工作区 🔑、长期记忆 |
 | 研发与交付 | GitHub 🔑、Git 仓库、Supabase 🔑、Sentry 🔑、Context7 文档 |
-| 调研与内容 | Exa、Tavily 🔑、Brave 🔑、Firecrawl 🔑 |
+| 调研与内容 | Exa、Keenable、Tavily 🔑、Brave 🔑、Firecrawl 🔑 |
 | 电脑与浏览器 | Open Computer Use（操控 macOS 应用）、Playwright 浏览器 |
 | 数据 | PostgreSQL 🔑、SQLite |
 | 地图与本地 | 高德地图 🔑、百度地图 🔑 |

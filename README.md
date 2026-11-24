@@ -377,7 +377,7 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 | Sales & payments | Stripe 🔑, HubSpot CRM 🔑 |
 | Team & office | Feishu / Lark 🔑, Telegram 🔑, Slack 🔑 and Discord 🔑 (chat apps, below), GitHub Issues 🔑 ([below](#hand-work-out-from-github-issues)), Feishu / Lark Open Platform 🔑, Notion 🔑, Slack workspace 🔑, Memory |
 | Build & ship | GitHub 🔑, Git, Supabase 🔑, Sentry 🔑, Context7 Docs |
-| Research & content | Exa, Tavily 🔑, Brave 🔑, Firecrawl 🔑 |
+| Research & content | Exa, Keenable, Tavily 🔑, Brave 🔑, Firecrawl 🔑 |
 | Computer & browser | Open Computer Use (operate macOS apps), Playwright |
 | Data | PostgreSQL 🔑, SQLite |
 | Maps & local | Amap 🔑, Baidu Maps 🔑 |
