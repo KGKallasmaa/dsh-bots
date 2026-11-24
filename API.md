@@ -546,8 +546,8 @@ Inbound routing (`lib/threads.mjs` `routeInbound`):
 3. Otherwise the owner's home (the router).
 
 Plain replies (`createOrigins`): each turn of a home collects the Threads of its inputs (user messages, and the
-origin Threads of the tasks a report, a `[Failed]` or `[Stalled]` note, or a `[Reminder]` is about). One chat Thread
-and nothing else: the reply goes there. Only the panel, or nothing: it stays in the panel. Anything more, the panel
+origin Threads of the tasks a report, a `[Failed]` or `[Stalled]` note, or a `[Reminder]` is about; a task from no
+Thread counts as the home's own, the panel, since 0.17.4). One chat Thread and nothing else: the reply goes there. Only the panel, or nothing: it stays in the panel. Anything more, the panel
 and one chat included: it stays in the panel (timeline entry `notSent: true`), and the bot sends each answer with
 `bot_reply`. A task Session's text reaches no chat.
 
@@ -669,8 +669,9 @@ names `bot`), and `bot_recall` reads nothing.
 | the requester's Session, the requesting bot's current home, or the router home | `ticket`, `text`, `to?` (must be the task's bot) | adds a message to the task; an ended task opens again, except one the user stopped; with every slot taken it waits in `parked` | `{ ok, text, ticket, to, from }` |
 | a conversation of no bot | `to`, `text` | into the other bot's home | `{ ok, text, to, from }` |
 
-`title` defaults to the first line of `text`. `thread` names, when a turn has several chats, the Thread (one of the
-turn's) a new task is for; left out then, the task belongs to none. A sub-task takes no Thread. `status` is refused
+`title` defaults to the first line of `text`. `thread` names, when a turn has several chats (the panel as a whole and
+a chat count as two), the Thread (one of the turn's, or `panel` for the panel as a whole) a new task is for; left out
+then, the call is refused with the choices (0.17.4; before, the task belonged to none). A sub-task takes no Thread. `status` is refused
 outside a report. New tasks and added messages count toward the 16 messages per pair of bots in 10 minutes. `to` and
 `from` are bot faces (`{ id, name, handle, avatar, role }`).
 
@@ -751,8 +752,10 @@ merged into it when the log is read, and dropped when the log is compacted.
   (`bots:panel:<id>:<ticketId>`, `[Panel]\nIn reply to …` when it answers a message other than the root), and the
   chat's bot gets an injected `[follow_up]` note. Without one it goes to the home, with `In reply to <who>: "…"`.
 - One topic in a turn is a Thread like a chat thread: plain replies go into it. Several topics (or a topic and a
-  chat) make a choice: `bot_reply` names each, and a new task must name its `thread` (refused otherwise, with the
-  choices). Plain text of such a turn is not logged when `bot_reply` already answered every topic and chat of it.
+  chat, or one and the panel as a whole) make a choice: `bot_reply` names each, and a new task must name its `thread`
+  (refused otherwise, with the choices). Plain text of such a turn is not logged when `bot_reply` already answered
+  every topic and chat of it and the panel as a whole was none of its inputs; it is marked `notSent` only while a
+  topic or chat of it has no answer.
 - `bot_send_message { ticket }` from a home whose turn has one other panel topic that is only a person's message (or the
   one `thread` names) files that message under the task's topic (`movedTo`), and the turn's replies go there.
 
@@ -762,7 +765,9 @@ and was not opened with `report_to: 'me'` (`Ticket += { relay?: true }` for thos
 `done`, `question` and `blocked` reports are logged as replies in its panel topic (or the panel), or posted to its chat
 Thread through that chat's app (signed `【Name】` when the worker is not the bot the chat belongs to; quoting the
 message that started it). The requester gets an injected note, id `bots:shown:<ticket>:<index>:<at>`, text
-`[Shown] @bot's report on task …`, which is no input of its turn. When the chat cannot be reached the report goes to
+`[Shown] @bot's report on task …`, which is no input of its turn; it asks the requester to leave the task out of its
+next answer, which goes to whoever woke it. A `[Failed]`, `[Stalled]` or relayed report names the chat its task came
+from (or says it came from none, so the answer stays in the panel). When the chat cannot be reached the report goes to
 the requester as in 0.8. Requester reminders skip these tasks. The worker's tool result says where it was shown.
 
 ### Router

@@ -374,6 +374,74 @@ test('two chats each delegate a task; each worker answers in its own chat itself
   s.dispose();
 });
 
+test('a task failing in one chat wakes the Router with that chat named, and the other chat\'s [Shown] note asks to stay out of the answer (a Feishu group heard of another task)', async () => {
+  const s = await twoChats();
+  const { h, tg, sid, router, ta, tb, call } = s;
+  // Lin's task is done in chat 43: the Router is told quietly, and reads it with whatever wakes it next.
+  await call('bot_send_message', { status: 'done', text: 'Notes are in docs/2.4.md.' }, tb.sessionId);
+  await settle();
+  const [shown] = router.deliveries.filter((d) => /^bots:shown:/.test(d.message.id));
+  assert.equal(shown.mode, 'inject');
+  assert.match(textOfMsg(shown.message), /Do not bring it up when you next answer someone, unless they ask about it/);
+  // Kada's task fails in chat 42: that wakes it, and says where its answer goes.
+  const before = router.deliveries.length;
+  h.emit('agent/error', { agent: h.agentsById.get(ta.sessionId), turn: 1, step: 1, error: Object.assign(new Error('insufficient_quota'), { status: 429 }) });
+  await settle();
+  const [failed] = router.deliveries.slice(before);
+  assert.equal(failed.mode, 'steer');
+  assert.match(textOfMsg(failed.message), /^\[Failed\] Task /);
+  assert.match(textOfMsg(failed.message), /It came from Telegram · Kada: what you say about it goes there, so say nothing there about other tasks\./);
+  tg.c.sent.length = 0;
+  await h.step(sid, { answer: 'The login fix stopped; I am handing it over again.' });
+  await settle();
+  assert.deepEqual(tg.c.sent, [{ chatId: '42', text: 'The login fix stopped; I am handing it over again.' }]);
+  s.dispose();
+});
+
+test('a report on a task from no chat, in a turn with a chat message, stays in the panel: the chat gets only its bot_reply, and a new task names its place', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'Good morning');
+  await h.step(sid, { answer: 'Morning!' });
+  // A scheduled run with no chat to report to hands out work: that task comes from no chat.
+  const [s] = await h.step(sid, {
+    claim: [{ id: 'sched-1', content: [{ type: 'text', text: '[SCHEDULE REMINDER] Build the yearly ranking.' }], source: { kind: 'schedule' } }],
+    calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Build the yearly ranking.' } }],
+  });
+  await settle();
+  const yearly = api.tickets.get(s.ticket.id);
+  assert.equal(yearly.origin.threadKey, undefined);
+  const tg = await withTelegram(env);
+  // Kada writes from Telegram while the ranking's report comes in: one turn takes both.
+  tg.say('42', 10, 'How is the game list going?');
+  await call('bot_send_message', { status: 'done', text: 'The yearly ranking is out.' }, yearly.sessionId);
+  await settle();
+  const router = h.agentsById.get(sid);
+  const relay = router.inbox.nextStep.find((m) => /^bots:report:/.test(m.id));
+  assert.match(textOfMsg(relay), /It came from no chat: what you say about it stays in the panel\. If someone wrote from a chat in this turn too, answer them with bot_reply\./);
+  const claim = router.inbox.nextStep.splice(0);
+  assert.equal(claim.length, 2);
+  for (const m of claim) h.emit('session/event', router.session, { type: 'user/message', data: m });
+  // A new task must say which of the two it is for.
+  await assert.rejects(call('bot_send_message', { to: '@forge', text: 'Check the game list.' }, sid), (e) => /several topics or chats: say which one this task is for with `thread`/.test(e.message) && e.message.includes(`${tg.key('42')} (Telegram · Kada)`) && e.message.includes('panel (the panel itself)'));
+  const named = await call('bot_send_message', { to: '@forge', text: 'Check the game list.', thread: tg.key('42') }, sid);
+  assert.equal(api.tickets.get(named.ticket.id).origin.threadKey, tg.key('42'));
+  const again = await call('bot_send_message', { to: '@forge', text: 'Publish the ranking.', thread: 'panel' }, sid);
+  assert.equal(api.tickets.get(again.ticket.id).origin.threadKey, `panel:${sid}`);
+  // The chat gets its own answer; the words about the ranking stay in the panel, shown as the panel's answer.
+  await call('bot_reply', { thread: tg.key('42'), text: 'Forge is checking the game list.' }, sid);
+  h.emit('session/event', router.session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'The yearly ranking is out; publishing it next.' }] } } });
+  h.emit('session/event', router.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+  await settle();
+  assert.deepEqual(tg.c.sent.map((m) => [m.chatId, m.text]), [['42', 'Forge is checking the game list.']]);
+  const plain = api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply').at(-1);
+  assert.equal(plain.text, 'The yearly ranking is out; publishing it next.');
+  assert.equal(plain.via, undefined);
+  assert.equal(plain.notSent, undefined);
+  env.dispose();
+});
+
 test('with report_to "me", each result returns through the Router to its own chat, in its own turn', async () => {
   const s = await twoChats({ relay: true });
   const { api, h, tg, sid, router, ta, tb, call } = s;

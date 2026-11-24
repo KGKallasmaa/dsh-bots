@@ -2445,9 +2445,9 @@ export function apply(ctx, config, deps = {}) {
   /**
    * Where the turn that is delegating now came from (PLAN-0.8 §4.3, §10 `origin`): its one chat
    * Thread (which the ticket then subscribes to); the Thread the call names with `thread` when the
-   * turn has several; the panel conversation when only the panel spoke; no Thread at all for a
-   * scheduled run without a chat, or several Threads and none named. A sub-ticket tells who it is
-   * for but takes no Thread: follow-ups on it reach the parent.
+   * turn has several, or one and the panel itself (refused when it names none); the panel
+   * conversation when only the panel spoke; no Thread at all for a scheduled run without a chat. A
+   * sub-ticket tells who it is for but takes no Thread: follow-ups on it reach the parent.
    * @param {string} sessionId
    * @param {string} [chosen] - a Thread key of this turn the delegating call named
    */
@@ -2461,19 +2461,20 @@ export function apply(ctx, config, deps = {}) {
     }
     const plan = channels.replyPlan(sessionId);
     if (chosen) {
-      const key = toThreadKey(String(chosen).trim().replace(/^thread\//, ''));
+      const named = String(chosen).trim().replace(/^thread\//, '');
+      // `panel`: the panel itself, when it is one of the turn's places.
+      const key = /^panel$/i.test(named) ? toThreadKey(plan.origins.find((o) => o.kind === 'panel' && o.rootId === undefined)) : toThreadKey(named);
       const hit = key ? plan.origins.find((o) => o.threadKey === key) : undefined;
       if (!hit) throw new Error(`\`thread\` must be one of this turn's threads: ${threadChoices(plan.origins) || 'none (this turn has no thread); leave it out'}`);
       return originFrom(hit);
     }
     if (plan.mode === 'thread') return originFrom(plan.target);
     if (plan.mode === 'choose') {
-      // Several topics or chats a person is waiting in (Bots 0.9): the task must say which one is its own.
-      const topics = plan.origins.filter((o) => isTopicThread(o.threadKey));
-      if (topics.length > 1) throw new Error(`this turn involves several topics or chats: say which one this task is for with \`thread\`: ${turnChoices(sessionId).join('; ')}`);
-      // Several Threads and none named: the task belongs to none of them (its report reaches the requester only).
-      const people = [...new Set(plan.origins.map((o) => o.who).filter(Boolean))];
-      return { origin: { ...(people.length === 1 ? { who: people[0] } : { who: 'the user' }) } };
+      // Several topics or chats a person is waiting in (Bots 0.9), or one and the panel itself (the person there, or a
+      // task from no chat reporting): the task must say which one is its own. Guessing put one chat's work in another.
+      const panelToo = plan.origins.some((o) => !isTopicThread(o.threadKey));
+      const choices = [...turnChoices(sessionId), ...(panelToo ? ['panel (the panel itself)'] : [])];
+      throw new Error(`this turn involves several topics or chats: say which one this task is for with \`thread\`: ${choices.join('; ')}`);
     }
     if (trigger.get(sessionId) === 'schedule') return { origin: { who: 'the user', via: 'schedule' } };
     return originFrom({ threadKey: panelThreadKey(sessionId), kind: 'panel' });
@@ -3579,7 +3580,13 @@ export function apply(ctx, config, deps = {}) {
           // A report's ticket came from a Thread: the answer to the person goes there (PLAN-0.8 §4.3).
           for (const t of about) {
             const key = t.origin?.threadKey;
-            if (!key) continue;
+            // A task from no chat (a scheduled run with none, a turn that named none): what is said about it belongs
+            // where this conversation answers by itself, the panel. With a chat in the same turn that makes two places,
+            // so the text no longer goes into that chat whole; bot_reply answers it.
+            if (!key) {
+              channels.noteInput(session.id, { ticket: t.id });
+              continue;
+            }
             const th = tickets.thread(key);
             // The answer quotes the message that started the task, not whatever was said there last.
             channels.noteInput(session.id, { threadKey: key, origin: { ...(t.origin?.who ? { who: t.origin.who } : {}), ...(th?.label ? { label: th.label } : {}), ...(t.origin?.replyTo ? { replyTo: t.origin.replyTo } : {}) }, ticket: t.id });
@@ -3637,7 +3644,10 @@ export function apply(ctx, config, deps = {}) {
         const plan = channels.replyPlan(session.id);
         // Closing words after bot_reply answered every topic or chat of the turn (Bots 0.9): each has its answer already.
         const topicsOfTurn = plan.origins.filter((o) => isTopicThread(o.threadKey));
-        const allAnswered = topicsOfTurn.length > 0 && topicsOfTurn.every((o) => st?.replied?.has(o.threadKey));
+        const unanswered = topicsOfTurn.filter((o) => !st?.replied?.has(o.threadKey));
+        // The panel as a whole had an input too (the person there, a task from no chat): the closing words are its answer.
+        const panelToo = plan.origins.some((o) => !isTopicThread(o.threadKey));
+        const allAnswered = topicsOfTurn.length > 0 && unanswered.length === 0 && !panelToo;
         const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id))) || (why === 'report' && closingOnly(session.id)) || allAnswered;
         if (text && !hidden) {
           // To the turn's one chat Thread; with several (or the panel and a chat) it stays in the panel,
@@ -3649,7 +3659,8 @@ export function apply(ctx, config, deps = {}) {
           const thread = sent ? sent.threadKey : homeThreadOf(session.id);
           // A thread in the panel (a discussion, or a 0.9 topic): the reply is shown in it.
           const topic = isPanelThread(thread) ? panelTopicOf(thread) : '';
-          const choices = plan.mode === 'choose' ? plan.origins.filter((o) => o.kind !== 'panel').map((o) => o.threadKey) : [];
+          // Marked as sent nowhere while a chat of the turn still waits for its answer.
+          const choices = plan.mode === 'choose' && unanswered.length ? plan.origins.filter((o) => o.kind !== 'panel').map((o) => o.threadKey) : [];
           const logged = store.log({ from: bot.id, to: 'user', chat: bot.id, text, kind: 'reply', ...(sent && sent.kind !== 'panel' ? { via: sent.kind } : {}), ...(thread ? { thread } : {}), ...(topic ? { topic } : {}), ...(choices.length ? { notSent: true, choices } : {}) });
           if (home) {
             discussions.anchor(messageRef(logged.id), at);
@@ -4601,7 +4612,7 @@ export function apply(ctx, config, deps = {}) {
         ticket: { type: 'string', description: 'Id of an open task to add this message to.' },
         status: { type: 'string', enum: REPORT_STATUSES, description: 'Required when reporting from a task conversation: progress (an update worth keeping), done (with the result), blocked, question.' },
         title: { type: 'string', description: 'A short title for a new task; taken from the first line of text when left out.' },
-        thread: { type: 'string', description: 'Only when this turn involves several topics or chats: the thread (as the message header "(thread …)" shows it) the new task, or the message added to a task, is for. A new task then answers there, and follow-ups there reach it. Left out with several, a new task belongs to none of them.' },
+        thread: { type: 'string', description: 'Only when this turn involves several topics or chats (the panel and a chat count as two): the thread (as the message header "(thread …)" shows it, or `panel` for the panel itself) the new task, or the message added to a task, is for. A new task then answers there, and follow-ups there reach it. Left out then, a new task is refused with the choices.' },
         report_to: { type: 'string', enum: ['thread', 'me'], description: 'For a new task: "thread" (default) — its bot answers the person in the topic or chat the request came from; "me" — its reports come back to you.' },
         need: { type: 'string', description: 'Dispatcher only: the person\'s request this task serves. For a new request, restate it for the person in one short line in their language, saying what they get (not who does it); tasks for the same request pass the same line or the need id the first call returned. For more work on an open need ("Open needs: …"), its id (n…) or its card (OPC-12).' },
         project: { type: 'string', description: 'Dispatcher only: the key of the project a new request belongs to (as "## Projects" lists them, e.g. OPC). Its tasks then work in the project\'s folder. Leave it out when no project clearly fits.' },

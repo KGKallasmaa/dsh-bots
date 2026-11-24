@@ -1,6 +1,6 @@
 # Bots
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md) · [Changelog](https://github.com/kadaliao/dsh-bots/blob/main/CHANGELOG.md)
 
 Grok-style bots inside DeepSeek Harness: a team of bots that work together. Each bot has its own **avatar,
 persona, model, skills, abilities, apps, scheduled tasks and memory**, and its own conversation. Bots **message each
@@ -43,8 +43,7 @@ and Market dig, Skeptic checks the draft). The dispatcher hands such a team's wo
 you name a member yourself ("ask @tester to reproduce it"); the lead's teammates report back to the lead, and the lead
 answers you once. In the one-person company, whose four roles (product, growth, customers, money) are peers, Compass
 leads: its own work is the week's plan (`plan.md`) and the follow-through, it hands each part to the role that fits, and
-it runs the team's routines. A one-person company hired before 0.16 is offered Compass once in the panel: it joins
-with those routines, and the dispatcher stops running its own copies. You can still message any bot directly, a lead or a member. Change who leads
+it runs the team's routines. You can still message any bot directly, a lead or a member. Change who leads
 on a bot's **Profile** (**Leads …**), or ask the dispatcher to; a team has one lead at most.
 
 The dispatcher is an ordinary bot: rename it, give it another avatar or persona on its **Profile**, or make another
@@ -143,7 +142,6 @@ bot answers in that message's **thread**.
   whole result. Only when the dispatcher splits one request between several bots and has to put the results together
   does it ask for their reports back and answer you itself.
 - A thread quiet for a day leaves the Harness sidebar; a new reply brings it back, and the thread goes on where it was.
-- 0.9's topics read as the chat they were, with a link to each under its first message.
 
 ## The board: every request as a card, filed under projects
 
@@ -248,7 +246,7 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 The dispatcher understands the request, hands the work out and keeps track of it. It does not run commands, write or
 edit files, search the web, use sub-agents and workflows, draw images, make Office files or put question cards to you
 (a card holds every message after it until you answer); it can still read files and use its skills. Work that needs
-any of those goes to a teammate, never to itself (0.9 handed it to itself when no teammate fit; 0.10 doesn't), while
+any of those goes to a teammate, never to itself, while
 its own conversation stays free for you. When you say "ask me which tone before you write", it hands the work out with
 that request and the teammate asks you in its task; when it must know something itself before it can hand a request
 out, it asks in one line of its reply, and your next message is the answer.
@@ -274,9 +272,12 @@ a Telegram topic, or the panel.
 
 - **Answers go back where the request came from.** The bot doing a task answers in that task's chat itself, signed
   with its name (`【Forge】`) when the chat app belongs to another bot, so two requests from two chats are answered each
-  in its own chat. When one turn of the dispatcher involves more than one chat (the panel and a chat app, say), it
-  answers each with `bot_reply`, and a task it opens there has to say which one it is for. Plain text left over from
-  such a turn stays in the panel, marked **Not sent**, unless each chat has its answer already.
+  in its own chat. The dispatcher hears of it with a note that wakes nothing, and leaves that task out of what it says
+  in other chats. When one turn of the dispatcher involves more than one chat (the panel and a chat app, say; news of
+  a task that came from no chat counts as the panel), it answers each with `bot_reply`, and a task it opens there has
+  to say which one it is for (`panel` for the panel). Plain text left over from such a turn stays in the panel, marked
+  **Not sent** while a chat still waits for its answer. Once each chat has one it is not shown, unless the panel
+  itself was part of the turn: then it is the panel's answer.
 - **A follow-up in a thread goes straight to the task.** In a Slack or Discord thread, a Feishu topic or reply chain,
   or a Telegram topic, what you write later in the same thread goes to the tasks started there; the dispatcher only
   gets a note, which does not wake it. Until its conversation is archived, a done task also takes such a message and
@@ -287,7 +288,7 @@ a Telegram topic, or the panel.
   answered there, what you write later in the same thread goes to a conversation forked from the bot's at that
   exchange: it doesn't see what the bot talked about elsewhere since, and nothing said in the thread goes back.
   Replying to one of the bot's own chat messages (a Feishu or Discord reply, a Slack thread) works the same way,
-  forked at that message; this needs the message's id from the chat app, so it works for messages sent since 0.10.
+  forked at that message.
   In Telegram only forum topics are threads; a reply in a private chat is not.
 - **A follow-up in a private chat goes to the dispatcher.** A private chat (and a group without threads) is one long
   conversation where new requests arrive too, so a message sent there (not a reply) goes to the dispatcher, unless one task asked a
@@ -774,145 +775,17 @@ card for a day, **Skip this version** until the next one. With several of these 
 card covers all of them, including copies too old to check for themselves. Copies installed from a
 folder or from Git are not checked.
 
-## Upgrading from 0.16.2
-
-- **Images in the chat.** Attach, paste or drop images in a bot's chat, a thread or a task; the bot sees them, and work
-  it hands on takes them along. `bot_send_message` takes `images`. See [The chat](#the-chat-reply-to-a-message-to-open-a-thread).
-- **Your own teams.** Make a team with your own name, description, colour and lead, or rename a hired one. See
-  [Hire a whole team](#hire-a-whole-team-in-one-click).
-- **Team memory consolidation works on models that route by conversation** (OpenCode Go answered **Consolidate
-  now** with `400 MissingSessionID`). Each consolidation call names a conversation of its own now.
-- **With Harness's sidebar collapsed**, the window buttons no longer sit over the Bots title and the **New bot** button.
-
-## Upgrading from 0.16.1
-
-- **Feishu messages come with their chat context.** To use it, add the permission `im:message:readonly` to your Feishu
-  app (and `im:message.group_msg` for the earlier messages of a topic, a sensitive scope an admin approves), then
-  publish a new version of the app in the developer console. Until then messages arrive as before, and the Harness log
-  says once which permission is missing. See [Feishu / Lark](#feishu--lark).
-- Chat history forwarded to the bot in a private chat is read now; it used to be dropped without a word.
-- Tasks opened from now on keep the chat message they came from (any chat app); tasks opened before stay as they were.
-
-## Upgrading from 0.15
-
-- **Every team has a lead, listed first.** The one-person company gets a fifth bot, **Compass** (operations): it keeps
-  the week's plan (`plan.md`), hands each part to the role that fits, and runs the team's inbox sweep, weekly
-  numbers and market pulse. A one-person company you hired before is offered Compass once in the panel: **Add**
-  hires it with those routines and removes your dispatcher's copies still as hired (an edited one stays, and the
-  dispatcher hands its work to Compass); **No thanks** is not asked again. The content studio lists Quill first.
-- Quill is **Quill 主编** and Memo **Memo 主笔** in Chinese, where the name is still as hired.
-- **Teams for your own bots**: **Team** in **New bot** and on the **Profile**.
-- **Memory**: shared notes, project memory, and a last day on dated notes. Nothing to migrate: your notes stay
-  shared, and the nightly consolidation is told to move a note about one project into it and to drop notes that only
-  record the state of work. Review **Team memory** once and delete what is out of date.
-- **Projects**: **Choose folder…** for the folder; the GitHub repository may be on GitHub Enterprise.
-- **GitHub Issues** watches a GitHub Enterprise server when its repositories are written as their addresses (one
-  server per app).
-
-## Upgrading from 0.14
-
-- Teams hired since 0.11.1 get their lead at the first start: Builder in the software squad, Quill in the content
-  studio, Memo in the research desk (the bot with that handle). Taking it away on the bot's Profile sticks.
-- Builder's persona and bio, and the content studio's **Plan this week** task, take their 0.15 words where they still
-  read as hired; ones you edited stay as they are.
-
-## Upgrading from 0.13
-
-- Nothing to migrate. GitHub Issues is a new app; projects have a new **GitHub repository** field.
-
-## Upgrading from 0.12
-
-- Nothing to migrate. A message that starts with a card's reference (`OPC-12 …`) now goes to that card's task when it
-  has one; to ask the dispatcher about the card instead, put the reference later in the message.
-- Cards in To do can wait for others (**Starts after** on the card's page).
-
-## Upgrading from 0.11.1
-
-- **Requests** is a board now: the same requests, in columns (To do, In progress, Waiting for you, Done) instead of
-  groups. Nothing to migrate: your requests stay as they were, under no project, without numbers.
-- Make projects with **Projects** on the board when you want cards numbered and their tasks working in a folder; the
-  dispatcher sees them at its next step. Requests from before can be filed under one from their page.
-- Tasks under way keep working where they started; a task opened after you give a project a folder works in that
-  folder.
-
-## Upgrading from 0.11.0
-
-- Team templates have no lead any more, and teams you hired are brought along at the first start. Only what still reads
-  exactly as it was hired changes; a persona, bio or scheduled task you edited stays as it is:
-  - a lead that is your dispatcher (Atlas, Lead, Editor or Desk) keeps its name and becomes the front desk: its persona
-    and bio are the dispatcher's, the skills of its lead role go, and an app of that role (Lead's GitHub) is turned
-    off, its keys kept;
-  - members get their current persona and bio (Forge asks you itself, Builder has Tester and Review check its change,
-    Quill keeps the calendar…);
-  - the team's routine (morning brief, weekly review, inbox sweep, numbers, market pulse, topic planning) is the
-    dispatcher's, at the times it had; one the dispatcher already has by that name is not added twice.
-- A lead that is not your dispatcher would only pass its messages on: the panel names it once and offers to remove it
-  (its teammates stay, its routine is already the dispatcher's).
-- New members and skills (the research desk's Memo, Builder's GitHub, Echo's deep-research) come when you hire the
-  team again, which updates the members you have, their personas included.
-- Hiring no longer asks whether the team's lead becomes the dispatcher: the team joins the one you have.
-
-## Upgrading from 0.10
-
-- Nothing to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are; 0.11 adds `needs.json`
-  for requests. Tasks from before the upgrade belong to no request; when you follow one up in a chat, your words name
-  a request for it.
-- Hands-on mode is gone, and there is no mode to pick: with a teammate the dispatcher routes, on its own it does the
-  work itself. A team that had picked Hands-on switches to routing and sees the notice once; turn on the small jobs
-  you want the dispatcher to do itself under its **Abilities**.
-- With models that follow the prompt to the letter (GPT, say), the occasional `returned a completed response with no
-  content` (a bot answered with nothing after a report, and its task failed) is gone.
-
-## Upgrading from 0.9
-
-- **Quit and reopen Harness** once after the upgrade. A page reload alone gives you the new page while Harness still
-  runs the old Bots, and replies don't land in threads; a banner at the top of the panel says so until you reopen it.
-- Nothing else to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are; 0.10 adds
-  `discussions.json` for threads.
-- The messages of 0.9's topics show in the chat in the order they were said, with a link to each topic's thread under
-  its first message; in one with a live task, what you write there still goes to the task.
-- Messages from before the upgrade can be replied to: Bots finds the message's place in the conversation's log by its
-  time and forks there. When it cannot (a very long conversation, or one that is gone), it forks at the
-  conversation's latest turn and tells the bot that the chat may have gone on past that message.
-- Threads use Harness's session fork; on a Harness without it, a reply says to update Harness first.
-
-## Upgrading from 0.8
-
-- Nothing to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are. The timeline in
-  `messages.jsonl` gains fields for topics; older messages stay in the main timeline.
-- A task opened before the upgrade that came from a chat or the panel now answers the person itself when it
-  reports, like new ones.
-- The dispatcher in **Router** mode loses web search in its own conversation (it hands searches to a task, its own
-  if no teammate fits); **Turn back on** under its **Abilities** gives it back.
-
-## Upgrading from 0.7
-
-- Bots, memory, scheduled tasks, topics, chat apps and pairings stay as they are. 0.8 adds `tickets.json`
-  for tasks.
-- A team that already had bots switches to **Router**: the dispatcher stops doing work itself and loses the
-  tools listed under [The dispatcher as a router](#the-dispatcher-as-a-router) in its own conversation, and
-  work handed from one bot to another becomes a task. The Bots panel says so once, with **Open its profile**
-  and **Got it**; the notice waits until the team has a bot besides the dispatcher.
-- From 0.8 to 0.10 the dispatcher's **Profile** could switch **How it works** back to **Hands-on**; 0.11 has no such
-  choice ([Upgrading from 0.10](#upgrading-from-010)).
-- Replies to chat apps follow the request they answer ([Chats and threads](#chats-and-threads)); in 0.7 they
-  went to the chat of the latest request.
-- In **Usage**, what 0.7 called tasks are runs now (**Runs**, **Recent runs**), with the same numbers.
-  **By task** starts with the first task after the upgrade.
+What each version changed, and what to do after upgrading, is in the [changelog](https://github.com/kadaliao/dsh-bots/blob/main/CHANGELOG.md).
 
 ## Limits
 
 - Web UI only.
 - Group chats between bots are not there yet; bots work together through tasks and direct messages.
 - In a group chat a bot hears only messages that @mention it (or reply to it); it does not listen to the
-  rest of the conversation. 0.8 does not change that.
-- Thread history starts with 0.8: messages from before the upgrade belong to no thread, so reading a chat
-  thread with `bot_recall` shows only what was said there since. Panel threads start with 0.10.
+  rest of the conversation.
 - A thread doesn't see the main chat's later messages because it is a fork, and a fork needs the message's place in
   the conversation's log. For a very old message whose place cannot be found, the thread forks at the latest turn and
   sees what came after (the bot is told so).
-- In a chat app, replying to one of the bot's messages makes a thread only for messages sent since 0.10; a message
-  sent straight into a private chat is still part of one conversation and goes to the dispatcher.
 - The watchdog goes by time and status only; it does not judge whether a task is heading the right way.
 - Costs are estimates. Gateways, subscriptions and discounts bill differently; set your own prices.
 - Only the Codex CLI's login can be borrowed so far; other subscriptions sign in from Harness Settings →

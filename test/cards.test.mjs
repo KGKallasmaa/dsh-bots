@@ -15,6 +15,7 @@ import {
   reminderText,
   reportRelayText,
   retryText,
+  shownNoticeText,
   stalledNoticeText,
   ticketCard,
 } from '../lib/cards.mjs';
@@ -210,6 +211,27 @@ test('the follow-up notice tells the router it needs no reply', () => {
   const two = followUpNoticeText({ tickets: [list[0], list[2]], thread: { key: TG, label: 'Lee (DM)' }, text: 'x'.repeat(500) }, opts);
   assert.match(two, /^\[follow_up\] Someone in Lee \(DM\) wrote about tasks t0000par1 .*, t0000kid2 \(@coder, question:/);
   assert.ok(two.split('\n')[1].length <= 202);
+});
+
+test('a notice that wakes the requester names the chat its answer goes to; a [Shown] note stays out of later answers', () => {
+  const { list, opts } = world();
+  const t = list[0];
+  const where = /It came from #general: what you say about it goes there, so say nothing there about other tasks\./;
+  assert.match(failedNoticeText({ ...t, error: 'DNS' }, opts), where);
+  assert.match(stalledNoticeText(t, opts), where);
+  assert.match(reportRelayText(t, { status: 'done', text: 'Ready.' }, opts), where);
+  assert.match(reportRelayText(list[3], { status: 'question', text: 'Which?' }, opts), /It came from Lee \(DM\)/);
+  // A sub-task's requester answers no one.
+  assert.doesNotMatch(failedNoticeText(list[1], opts), /It came from/);
+  assert.doesNotMatch(stalledNoticeText(t, { bots }), /It came from/, 'no thread store, no label');
+  // A task from the panel as a whole, or from no chat at all, is answered in the panel; a chat in the turn gets bot_reply.
+  assert.match(failedNoticeText({ ...t, origin: { threadKey: 'panel:home-atlas' } }, opts), /It came from the panel: what you say about it stays in the panel\. If someone wrote from a chat in this turn too, answer them with bot_reply\./);
+  assert.match(stalledNoticeText({ ...t, origin: { who: 'the user', via: 'schedule' } }, opts), /It came from no chat: what you say about it stays in the panel\./);
+  assert.match(reportRelayText({ ...t, origin: { who: 'the user' } }, { status: 'done', text: 'Ready.' }, opts), /It came from no chat/);
+
+  const shown = shownNoticeText(list[3], { status: 'done', text: 'The yearly list is out.' }, { ...opts, where: 'Telegram · Lee' });
+  assert.match(shown, /needs no reply: do not repeat the result/);
+  assert.match(shown, /Do not bring it up when you next answer someone, unless they ask about it/);
 });
 
 test('recovery, nudge, stall, failure, retry and reminder texts', () => {
