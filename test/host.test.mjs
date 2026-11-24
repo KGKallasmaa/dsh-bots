@@ -240,6 +240,12 @@ test('catalog apps fill keys, paths and headers from values', () => {
   assert.match(mem.env.MEMORY_FILE_PATH, /atlas\.jsonl$/);
   const exa = mcpConfigOf({ template: 'exa', serverName: 'exa', values: { exaApiKey: 'e' } });
   assert.match(exa.url, /exaApiKey=e/);
+  const keen = mcpConfigOf({ template: 'keenable', serverName: 'keenable', values: { KEENABLE_API_KEY: 'keen_k' } });
+  assert.equal(keen.url, 'https://api.keenable.ai/mcp');
+  assert.equal(keen.headers['X-API-Key'], 'keen_k');
+  const keyless = mcpConfigOf({ template: 'keenable', serverName: 'keenable', values: {} });
+  assert.equal(keyless.transport, 'streamable-http');
+  assert.deepEqual(keyless.headers, {});
 });
 
 test('initials avatars, including pinyin', async () => {
