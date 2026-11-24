@@ -438,7 +438,7 @@ test('the client registers its tool views, the panel, the badges and /bots', asy
   assert.equal(icon.component({ size: 20, active: true }).props.width, 20);
   assert.equal(seen.locale.ns, 'bots');
   assert.deepEqual(Object.keys(seen.locale.dict.zh).sort(), Object.keys(seen.locale.dict.en).sort());
-  assert.deepEqual(seen.injected, ['layout', 'commandUi']);
+  assert.deepEqual(seen.injected, ['remote', 'remote.pluginManager', 'remoteAccess', 'slots', 'layout', 'commandUi']);
   const [decoration] = seen.decorations;
   assert.equal(decoration.name, 'bots');
   assert.equal(decoration.available(), true);

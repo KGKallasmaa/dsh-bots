@@ -755,6 +755,17 @@ For the latest unreleased code, use the Git spec `git+https://github.com/kadalia
 
 Refresh the page once after installing. For AI avatars, install [Images](https://github.com/kadaliao/dsh-images) too.
 
+## Updates
+
+About 20 seconds after the page opens, and every six hours after that, the plugin checks for a newer
+version through Harness's own plugin manager. It is the same check as the Versions section in
+**Plugins**, and it asks the npm registry only about `@kadaliao/dsh-*` package names. A new version
+shows up as a card in the bottom-right corner. **Update** has Harness install it, after checking that
+it works with your Harness; if the install fails, the version you had is put back. **Later** hides the
+card for a day, **Skip this version** until the next one. With several of these plugins installed, one
+card covers all of them, including copies too old to check for themselves. Copies installed from a
+folder or from Git are not checked.
+
 ## Upgrading from 0.16.2
 
 - **Images in the chat.** Attach, paste or drop images in a bot's chat, a thread or a task; the bot sees them, and work
