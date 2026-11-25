@@ -5,6 +5,15 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 What changed in each version of Bots, newest first, and what to do after upgrading. Bots tells you when a new
 version is out ([Updates](README.md#updates)).
 
+## 0.17.6 — 2026-11-25
+
+- **Bots checks for a new version when you open its panel, not on a timer.** It asks about Bots only, at most once a
+  minute, and a new version shows as a bar across the top of the panel: **Update**, **Later** or **Skip this
+  version**. Harness closes the panel while it replaces Bots; the panel opens again by itself and says how the update
+  went. See [Updates](README.md#updates).
+- The bottom-right card from 0.17.3, one for all `@kadaliao/dsh-*` plugins, goes away once every plugin that shows it
+  is updated (Archify 0.4.2, Atlas 0.1.6, Images 0.5.8, Prompt EN 0.2.3 or later).
+
 ## 0.17.5 — 2026-11-25
 
 - **A short message keeps what you said.** A brief exchange ("I merged it myself, drop it" → "Noted, that one is
