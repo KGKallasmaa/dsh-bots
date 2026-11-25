@@ -443,6 +443,8 @@ test('chat app threads: the first message goes home; a later one, after the home
   await h.step(sid, { answer: 'Here is the plan.' });
   await settle();
   assert.equal(tg.c.sent.at(-1).text, 'Here is the plan.');
+  // The task is titled by what the person wrote, not by the chat's header line before it.
+  assert.equal(api.openTasks.get(sid)?.title, 'Plan the launch');
   assert.equal(h.forks.length, 0);
   const homeEnd = h.events.filter((e) => e.sessionId === sid && e.event.type === 'turn/end').at(-1).event.seq;
   tg.say(11, 'Move it to Friday', 't5');

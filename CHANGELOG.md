@@ -5,6 +5,16 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 What changed in each version of Bots, newest first, and what to do after upgrading. Bots tells you when a new
 version is out ([Updates](README.md#updates)).
 
+## 0.17.5 — 2026-11-25
+
+- **A short message keeps what you said.** A brief exchange ("I merged it myself, drop it" → "Noted, that one is
+  closed") gets no summary from the model, only a line in the bot's journal, and that line held the list of open
+  needs sent before your message instead of your words. Once the conversation moved to a new topic, the bot no
+  longer knew you had settled it, and the next morning's brief asked again. The line now holds what you said and
+  what the bot answered.
+- A task started from a chat app or after the open needs is titled by your words, in the usage view and the topic
+  history too, not by the chat's header or the open needs.
+
 ## 0.17.4 — 2026-11-24
 
 - **A chat no longer hears about other tasks.** When one task finished in its own chat and another failed in a Feishu

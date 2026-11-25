@@ -852,7 +852,8 @@ export function apply(ctx, config, deps = {}) {
       ...(via ? { via: via.kind } : {}),
       ...(from ? { from } : {}),
       ...(sched ? { sched } : {}),
-      title: taskTitle(kind, content, said) || '…',
+      // A chat message is titled by what the person wrote, not by the open needs or the chat's header before it.
+      title: taskTitle(kind, content, via?.body ?? (kind === 'user' ? withoutNeedsLine(said) : said)) || '…',
       start: Number(event.time) || Date.now(),
       status: 'running',
       log: [],
@@ -965,6 +966,13 @@ export function apply(ctx, config, deps = {}) {
     const said = store.messages({ limit: 2000, roots: false }).filter((m) => m.from === 'user').slice(-40).map((m) => m.text);
     return languageOf(said) || languageOf(material) || (zh ? 'zh' : 'en');
   }
+  /** A short transcript as one line: what was said, then what was answered, without the tags or tool calls. */
+  const exchangeLine = (log) =>
+    log
+      .filter((l) => !/^\[(?:tool|result)\]/.test(l))
+      .map((l) => l.replace(/^\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join(' → ');
   async function reflect(bot, task) {
     // A bot deleted while its summary waited keeps nothing.
     if (!store.get(bot.id)) return;
@@ -992,7 +1000,10 @@ export function apply(ctx, config, deps = {}) {
         ctx.logger?.warn?.(`bots: summarizing a task of @${bot.handle} failed: ${error?.message ?? error}`);
       }
     }
-    if (worth || summary) memory.addJournal({ bot: bot.id, task: task.id, trigger: task.trigger, ...(task.ticket ? { ticket: task.ticket } : {}), title: task.title, summary: summary || task.title });
+    // A short exchange keeps what was said and answered ("I merged it myself" → "noted, PR #1 is done"):
+    // its title alone loses the answer, and with it what the person settled.
+    const fallback = big ? task.title : exchangeLine(task.log) || task.title;
+    if (worth || summary) memory.addJournal({ bot: bot.id, task: task.id, trigger: task.trigger, ...(task.ticket ? { ticket: task.ticket } : {}), title: task.title, summary: summary || fallback });
     // The bot started a new topic before this summary was written: that topic reads its memory again.
     const now = store.get(bot.id)?.sessionId;
     if (now && now !== task.s) staleMemory(now);
@@ -3685,7 +3696,7 @@ export function apply(ctx, config, deps = {}) {
       if (event.type === 'user/message') {
         if (!TASK_KINDS.has(kind)) return;
         const task = openTasks.get(sid) ?? startTask(bot, sid, kind, event, via, typedText);
-        const said = typedText ?? textOf(event.data?.content);
+        const said = typedText ?? (kind === 'user' ? withoutNeedsLine(textOf(event.data?.content)) : textOf(event.data?.content));
         const who = kind === 'schedule' ? 'scheduled' : kind === 'agent-message' ? (ticket ? 'task message' : 'bot message') : via ? `user via ${via.kind}` : 'user';
         logLine(task, `[${who}] ${via ? via.body : said}`);
       } else if (event.type === 'assistant/message') {

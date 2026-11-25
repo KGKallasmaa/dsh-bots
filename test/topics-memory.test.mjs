@@ -530,7 +530,23 @@ test('a short exchange gets a journal line but no model call', async () => {
   await h.runTask(atlas().sessionId, { text: 'ok', answer: 'Noted.' });
   assert.equal(calls.length, 0);
   assert.equal(api.memory.journal({ bot: atlas().id }).length, before + 1);
-  assert.equal(api.memory.journal({ bot: atlas().id }).at(-1).summary, 'ok');
+  assert.equal(api.memory.journal({ bot: atlas().id }).at(-1).summary, 'ok → Noted.');
+});
+
+test('a short message after the open needs is titled by its words, and its journal line keeps the answer', async () => {
+  calls.length = 0;
+  await h.runTask(atlas().sessionId, {
+    text: [
+      { type: 'text', text: 'Open needs: n1a2b3c4d HGR-3 "Show the top 20 on the home page" (done, 3/3 done)\n' },
+      { type: 'text', text: 'I merged it myself yesterday, drop it.' },
+    ],
+    answer: 'Noted: PR #1 is merged and live, that one is closed.',
+  });
+  assert.equal(calls.length, 0, 'still no model call for a short exchange');
+  const line = api.memory.journal({ bot: atlas().id }).at(-1);
+  assert.equal(line.title, 'I merged it myself yesterday, drop it.');
+  assert.equal(line.summary, 'I merged it myself yesterday, drop it. → Noted: PR #1 is merged and live, that one is closed.');
+  assert.equal(api.ledger.tasks().at(-1).title, 'I merged it myself yesterday, drop it.');
 });
 
 test('deleting a bot forgets its memory and topics', async () => {
